@@ -12,7 +12,7 @@
 [![Brain](https://img.shields.io/badge/brain-DeepSeek%20%2B%20本地工具-4a7dff.svg)](#架构)
 [![Voice](https://img.shields.io/badge/voice-MiniMax%20流式男声-d75cff.svg)](#架构)
 
-[中文](README.md) · [NextKDE 集成计划](docs/nextkde-integration.md) · [IPC 契约](docs/ipc.md) · [语音交互状态机](docs/voice-interaction.md) · [贡献](CONTRIBUTING.md)
+[中文](README.md) · [English](README.en.md) · [NextKDE 集成计划](docs/nextkde-integration.md) · [IPC 契约](docs/ipc.md) · [语音交互状态机](docs/voice-interaction.md) · [贡献](CONTRIBUTING.md)
 
 </div>
 
