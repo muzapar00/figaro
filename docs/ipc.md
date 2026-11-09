@@ -146,6 +146,33 @@ export function createTts({
 - `level` 不 replay（下一秒就有新值，UI 不要依赖）。
 - 音频链路：ASR/TTS 任一模块缺失时 daemon 只 warn 降级，纯文本 `ask` 仍可用。
 
+
+## 3.1 设置/测试扩展（GUI 用，additive）
+
+GUI（`qs -c figaro-settings`）与诊断脚本通过同一 socket 使用以下消息。**旧客户端不受影响**。
+
+**客户端 → daemon**
+
+| 消息 | 字段 | 说明 |
+|---|---|---|
+| `{type:"config.get"}` | `id?` | 回 `{type:"config", id, config}`（脱敏：不进 keys） |
+| `{type:"config.set"}` | `id?`, `patch` | 深合并写入 `~/.config/figaro/config.json`（600），回 `{type:"config", ...}`；`patch` 里的敏感字段不落盘回显 |
+| `{type:"test.mic.start"}` | `id?`, `ms?`（默认 4000） | 开始按 20Hz 推 `{type:"mic", rms, peak, level}`，结束推 `{type:"mic.end"}` |
+| `{type:"test.mic.stop"}` | `id?` | 提前结束 |
+| `{type:"test.asr.start"}` / `{type:"test.asr.stop"}` | `id?` | 单独测一次"录音→转写"：过程中推 `partial`，结束推 `{type:"test.asr.result", id, text, streamingText, ms, audioMs}`（两个模型都给，便于对比） |
+| `{type:"test.wake.arm"}` | `id?`, `ms?`（默认 15000） | 进入唤醒测试窗口：KWS 每帧最高分按 `{type:"wake.score", score, keyword}` 推送（最多 10Hz），命中推 `{type:"wake.hit", score, latencyMs}`；窗口结束推 `{type:"test.wake.end", hits, misses, falseAlarms}` |
+| `{type:"test.tts"}` | `id?`, `text`, `voiceId?` | 直接用当前 TTS 试听一段（走同一 sink/音色），回 `{type:"test.tts.result", id, ms, ok}` |
+| `{type:"service.restart"}` | `id?` | 重启守护进程（GUI 按钮用；daemon 先回 ack 再 exec 自身或退出由 systemd 拉起） |
+| `{type:"diagnostics"}` | `id?` | 回 `{type:"diagnostics", id, configPath, version, uptimeMs, asr, tts, ack, mic:{gainPercent, rms, peak}, latency:{...}, recentErrors[]}` |
+
+**daemon → 客户端**：`config`、`mic`、`mic.end`、`test.asr.result`、`wake.score`、`wake.hit`、`test.wake.end`、`test.tts.result`、`diagnostics`（字段如上）。
+
+**配置项新增（GUI 直接读写）**
+- `asr.sensitivity`: `"low" | "medium" | "high"`（映射 KWS 的 `keywordsScore`/`keywordsThreshold`：low=更不容易误触发）
+- `asr.wakeCooldownMs`: 两次唤醒之间的最小间隔（默认 2500）
+- `asr.inputGainPercent`: 显式麦克风增益（`null`=允许自动校准；数字=固定值，不自动改）
+- `tts.ack.*`（已有）、`tts.sink`（已有）
+
 ## 4. 系统集成（Lead + A 共同）
 
 - systemd user unit：`figaro.service`（`ExecStart=/usr/bin/node <repo>/bin/figaro daemon`，
