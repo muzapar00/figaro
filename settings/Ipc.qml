@@ -50,6 +50,9 @@ Singleton {
     property bool configLoaded: false
     property bool configDirty: false
     property var configErrors: []      // last config.set errors (whitelist rejections etc.)
+    // Authoritative overlay prefs pushed by the daemon ({type:"ui", scale, shape,
+    // motion, windowButtonSize}) so the settings window can live-update too.
+    property var uiSnapshot: ({})
     property var configApplied: []     // last config.set applied paths
     property var configRestartRequired: []
     // Per-config-path write state, so every control can show 已生效/需重启/未开放.
@@ -347,6 +350,14 @@ Singleton {
         }
 
         // ---- §3.1 ----------------------------------------------------------
+        case "ui":
+            root.uiSnapshot = ({
+                scale: msg.scale,
+                shape: msg.shape,
+                motion: msg.motion,
+                windowButtonSize: msg.windowButtonSize,
+            });
+            break;
         case "config":
             if (msg.config) root.config = msg.config;
             root.configLoaded = true;
@@ -474,6 +485,40 @@ Singleton {
         });
     }
 
+    // Overlay appearance preference: prefer the daemon-pushed ui frame, fall
+    // back to config.get, then the documented default.
+    function uiValue(key, fallback) {
+        const snap = root.uiSnapshot || ({});
+        if (snap[key] !== undefined && snap[key] !== null) return snap[key];
+        return root.cfg("ui." + key, fallback);
+    }
+
+    // Secret fields are write-only: config.get returns "***" (or nothing) for
+    // apiKey, so the UI can only show whether one is stored - never the value.
+    function secretRaw(path) {
+        return root.cfg(path, undefined);
+    }
+
+    // The daemon answers "***" for a secret (it never returns the key itself);
+    // an empty string means unset. "***" cannot tell us whether one is stored
+    // when the daemon masks unconditionally, so the UI says so explicitly.
+    function secretStored(path) {
+        const raw = root.secretRaw(path);
+        if (typeof raw !== "string") return false;
+        return raw.length > 0;
+    }
+
+    function secretMaskedOnly(path) {
+        return root.secretRaw(path) === "***";
+    }
+
+    function secretPlaceholder(path, hint) {
+        if (!root.configLoaded) return "读取中…";
+        if (!root.secretStored(path)) return (hint || "未设置");
+        if (root.secretMaskedOnly(path)) return "已保存（daemon 只回传掩码，不回显）";
+        return "已保存";
+    }
+
     // Read a config value with a fallback (daemon may not have answered yet).
     function cfg(path, fallback) {
         let cur = root.config;
@@ -582,6 +627,11 @@ Singleton {
                 root.markFieldStatus([path], "restart", "已写入，重启 daemon 后生效");
             } else if (root.pathMatches(applied, path)) {
                 root.markFieldStatus([path], "applied", "已生效");
+            } else if (Array.isArray(msg && msg.applied) && Array.isArray(msg && msg.restartRequired)
+                       && applied.length === 0 && restart.length === 0 && forbidden.length === 0) {
+                // The daemon accepted and wrote the value but reported no apply
+                // path for it: it may need a restart or silently ignore it.
+                root.markFieldStatus([path], "unknown", "已写入 · daemon 未报告是否生效");
             } else if (msg && msg.ok === false) {
                 root.markFieldStatus([path], "forbidden", "daemon 拒绝写入");
             } else if (errors.length > 0) {

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-09T07:02:33.792Z",
+  "generatedAt": "2026-11-09T13:44:17.752Z",
   "generator": "figaro-settings GUI",
   "socket": "/tmp/figaro-settings-dev/sock",
   "usingTestSocket": true,
@@ -20,21 +20,22 @@
     "deepseek": {
       "baseUrl": "https://api.deepseek.com",
       "model": "deepseek-flash",
-      "maxToolRounds": 24
+      "maxToolRounds": 24,
+      "apiKey": "***"
     },
     "minimax": {
       "baseUrl": "https://api.minimax.cn",
       "model": "speech-2.6-turbo",
-      "voiceId": "male-qn-jingying",
-      "speed": 1
+      "voiceId": "male-qn-qingse",
+      "speed": 1,
+      "apiKey": "***"
     },
     "asr": {
+      "modelDir": null,
       "wakeWords": [
         "费加罗",
         "菲加罗",
-        "飞加罗",
-        "figaro",
-        "费加"
+        "飞加罗"
       ],
       "wakeWordsEn": [
         "figaro",
@@ -44,13 +45,13 @@
       "hotkey": "F9",
       "sensitivity": "low",
       "wakeCooldownMs": 2500,
-      "inputGainPercent": 45,
+      "inputGainPercent": 17,
       "silenceStopMs": 900,
       "bargeIn": {
         "enabled": true,
-        "minRms": 0.09,
-        "echoFactor": 2.5,
-        "minMs": 500
+        "minRms": 0.06,
+        "echoFactor": 3,
+        "minMs": 600
       }
     },
     "interaction": {
@@ -65,18 +66,25 @@
       ],
       "dismissPhrases": [
         "退下",
-        "退下吧",
         "先退下",
-        "你可以退下了",
-        "可以退下了",
         "休息吧",
         "没事了",
-        "结束吧",
-        "关了"
+        "关了",
+        "告退"
       ],
       "followUpWindowMs": 7000,
       "followUpMinRms": 0.012,
       "followUpMinMs": 180
+    },
+    "sfx": {
+      "enabled": true,
+      "volume": 0.5
+    },
+    "ui": {
+      "scale": 1.25,
+      "shape": "ball",
+      "motion": "auto",
+      "windowButtonSize": 20
     },
     "tts": {
       "enabled": true,
@@ -89,7 +97,8 @@
           "请指示"
         ],
         "timeoutMs": 800
-      }
+      },
+      "voiceId": "male-qn-qingse"
     }
   },
   "diagnostics": {
@@ -98,16 +107,17 @@
     "logPath": "journalctl --user -u figaro",
     "socketPath": "/tmp/figaro-settings-dev/sock",
     "version": "0.1.0-fake (self-test daemon)",
-    "pid": 174966,
+    "pid": 41393,
     "state": "idle",
-    "uptimeMs": 49237,
+    "uptimeMs": 303778,
     "asr": {
       "available": true,
       "state": "idle",
       "capturing": false,
+      "modelDir": null,
       "sensitivity": "low",
       "wakeCooldownMs": 2500,
-      "inputGainPercent": 45,
+      "inputGainPercent": 17,
       "hotkey": "F9",
       "hotkeyState": {
         "state": "active",
@@ -122,9 +132,9 @@
       ],
       "bargeIn": {
         "enabled": true,
-        "minRms": 0.09,
-        "echoFactor": 2.5,
-        "minMs": 500
+        "minRms": 0.06,
+        "echoFactor": 3,
+        "minMs": 600
       },
       "modelInfo": {
         "threads": {
@@ -138,7 +148,7 @@
           "keywordsThreshold": 0.3
         },
         "wakeCooldownMs": 2500,
-        "inputGainPercent": 45,
+        "inputGainPercent": 17,
         "lastFinalMs": 860,
         "offlineLoaded": true,
         "offlineLoadError": null,
@@ -150,9 +160,7 @@
         "keywords": [
           "费加罗",
           "菲加罗",
-          "飞加罗",
-          "figaro",
-          "费加"
+          "飞加罗"
         ],
         "streaming": true,
         "offline": "paraformer",
@@ -163,7 +171,7 @@
     "tts": {
       "available": true,
       "model": "speech-2.6-turbo",
-      "voiceId": "male-qn-jingying",
+      "voiceId": "male-qn-qingse",
       "sink": "alsa_output.pci-0000_00_1f.3.analog-stereo",
       "sinkStatus": "ok",
       "speaking": false,
@@ -212,9 +220,9 @@
       "reason": null
     },
     "mic": {
-      "gainPercent": 45,
-      "rms": 0.323,
-      "peak": 0.677,
+      "gainPercent": 17,
+      "rms": 0.025,
+      "peak": 0.058,
       "fixed": true
     },
     "latency": {
@@ -230,28 +238,36 @@
     },
     "recentErrors": [
       {
-        "at": "2026-11-09T07:01:42.724Z",
+        "at": "2026-11-09T13:39:12.317Z",
         "message": "TTS 连接超时一次，已自动重试（fake）"
       },
       {
-        "at": "2026-11-09T07:01:49.724Z",
+        "at": "2026-11-09T13:39:19.317Z",
         "message": "KWS 模型热加载完成（fake）"
       }
     ],
+    "ui": {
+      "type": "ui",
+      "scale": 1.25,
+      "shape": "ball",
+      "motion": "auto",
+      "windowButtonSize": 20
+    },
+    "sfx": {
+      "enabled": true,
+      "volume": 0.5
+    },
     "interaction": {
       "followUpWindowMs": 7000,
       "followUpMinRms": 0.012,
       "followUpMinMs": 180,
       "dismissPhrases": [
         "退下",
-        "退下吧",
         "先退下",
-        "你可以退下了",
-        "可以退下了",
         "休息吧",
         "没事了",
-        "结束吧",
-        "关了"
+        "关了",
+        "告退"
       ],
       "cancelPhrases": [
         "取消",
@@ -272,11 +288,11 @@
   },
   "recentErrors": [
     {
-      "t": 1794207709724,
+      "t": 1794231559317,
       "message": "KWS 模型热加载完成（fake）"
     },
     {
-      "t": 1794207702724,
+      "t": 1794231552317,
       "message": "TTS 连接超时一次，已自动重试（fake）"
     }
   ],

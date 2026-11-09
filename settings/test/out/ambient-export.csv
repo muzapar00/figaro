@@ -1,5 +1,6 @@
 time,score,kws_hit,false_trigger,latency_ms
-15:01:59,0.976,yes,yes,325
-15:02:00,0.878,yes,yes,226
-15:02:07,0.969,yes,yes,325
-# summary: rows=3 hits=3 duration_ms=12703 generated=2026-11-09T07:02:11.455Z
+21:43:45,0.816,yes,yes,260
+21:43:47,0.926,yes,yes,307
+21:43:49,0.916,yes,yes,221
+21:43:53,0.804,yes,yes,114
+# summary: rows=4 hits=4 duration_ms=12672 generated=2026-11-09T13:43:54.474Z

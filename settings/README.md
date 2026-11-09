@@ -1,7 +1,8 @@
 # 费加罗设置 / 自测面板（`qs -c figaro-settings`）
 
 macOS 系统设置风格的独立 Quickshell 窗口，既是设置面板，也是**误唤醒/环境音/麦克风/识别**
-的完整自测工具。七页：概览、唤醒、交互、麦克风、语音、识别、诊断。
+的完整自测工具。常用页只保留 4 个（概览、引导测试、外观、连接），其余 6 个（唤醒、交互、
+麦克风、语音、识别、诊断）收进侧边栏「高级」折叠组。
 
 ```
 settings/
@@ -9,7 +10,7 @@ settings/
 ├── App.qml                # 标题栏 + sidebar + 七页堆栈
 ├── Theme.qml / Ipc.qml    # 单例：macOS 深色主题 / NDJSON IPC 客户端（docs/ipc.md §3+§3.1）
 ├── components/            # 自绘控件：Toggle/Slider/Segmented/电平条/下拉/卡片/交通灯…
-├── pages/                 # 七个分区（交互 = barge-in / 等待窗口 / 退下·取消短语）
+├── pages/                 # 10 个分区（向导 / 外观 / 连接 / 交互 / 唤醒 / 麦克风 / 语音 / 识别 / 诊断 / 概览）
 ├── kwin-noborder.js       # 运行时 KWin 脚本：去掉服务端标题栏（否则会和 macOS 标题栏重复）
 ├── ctl.sh                 # start/stop/restart/logs/deploy/install-desktop
 └── test/
@@ -52,10 +53,10 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 
 `shoot.sh` 会驱动 GUI 做：唤醒测试（KWS 分数/命中/延迟）、环境音抑制统计（误唤醒表格 +
 CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 partial vs final 与字级正确率、
-诊断 JSON 导出、复制日志；以及 task-8 新增的打断/等待窗口/退下·取消短语/中英唤醒词/音色
-写回验证（截图 10–15，断言新字段真的写进 daemon 的 config.json 并被诊断接口回读）。
-最后断言状态并打印 PASS/FAIL；也可以用 `qs ipc call figaro-settings writeB64 <path> <base64-json>`
-单独写一个字段。
+诊断 JSON 导出、复制日志；task-8 的打断/等待窗口/短语/中英唤醒词/音色写回；task-12 的
+外观四字段、两个 API Key（占位值）、ASR 模型路径、音效音量、以及**完整的 5 步引导向导**
+（截图 20–31，断言向导 5/5 通过）。最后断言状态并打印 PASS/FAIL；也可以用
+`qs ipc call figaro-settings writeB64 <path> <base64-json>` 单独写一个字段。
 
 ## 与 daemon 的兼容
 
@@ -92,6 +93,40 @@ CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 
 - 可选后续：`asr.verifyWake.enabled`（两段式唤醒校验）已进白名单且 ASR 模块支持热切换，但 GUI 还没做控件，
   需要时可加一个唤醒页开关；daemon 若要热生效需把它加进 `ASR_HOT_PATHS`。
 - 真机验证记录：`settings/test/out/16`–`19-real-daemon-applied*.png` + `real-daemon-hot-apply.log`（写入均为用户当前值，config md5 前后一致）。
+
+## task-12：外观 / 连接 / 模型路径 / 声音 / 引导向导（二期）
+
+新增页面与能力：
+- **外观**（`ui.scale` 0.5–2.0 滑块 + `ui.shape` 三种形状 + `ui.motion` 动画开关 +
+  `ui.windowButtonSize` 12/16/20）：热生效，daemon 会广播 `{type:"ui", ...}`，设置窗口的
+  交通灯也立刻跟着变；默认 16px（旧版 12px）。
+- **连接**（`deepseek.apiKey` / `minimax.apiKey`）：`MTextField` 密码模式，**只写不读**，
+  输入框保存后立即清空；config.get 只回传 `***`，因此界面只显示“已保存（掩码）/未设置”，
+  绝不显示完整 key。带二次确认的“重启服务”按钮。
+- **识别页模型路径**（`asr.modelDir`）：默认仓库自带中英双语模型，可填绝对路径并做
+  encoder/decoder/joiner/tokens 轻量校验；写入后需重启 daemon。
+- **音效**（`sfx.enabled` / `sfx.volume`）：语音页新增开关 + 0–1 音量滑块（默认 0.35），
+  说明“音效比语音低 4–6 dB，不会盖住说话”。
+- **引导测试**（新页，概览页有入口）：5 步卡片式向导（安静检查→麦克风增益→唤醒词→
+  一句话转写→音色试听），顶部步骤进度、每步一个主按钮与结果状态，完成显示“全部通过 ✓”。
+- **简化界面**：侧边栏只保留 4 个常用页，其余 6 页在「高级」折叠组；唤醒页的热键/防抖、
+  Mic 页的底噪测量、语音页的语速/唤醒应答都收进「高级」折叠卡片。
+
+### task-12 字段热生效矩阵（真 daemon 实测见 `test/out/real-daemon-task12.log`）
+
+| 字段 | 结果 |
+|---|---|
+| `ui.scale` / `ui.shape` / `ui.motion` / `ui.windowButtonSize` | **applied（热）**，并收到 `{type:"ui"}` 广播 |
+| `deepseek.apiKey` | 当前 daemon 返回 **applied**（agent 每次请求读配置） |
+| `minimax.apiKey` | TTS 可重建时 applied，重建失败时 restartRequired（临时 daemon `--no-tts` 实测 restartRequired） |
+| `asr.modelDir` | **restartRequired**（要重启 daemon 重新加载 KWS 模型） |
+| `sfx.enabled` / `sfx.volume` | 白名单已放行，但当前 daemon 的 applyConfigPatch **没有给 sfx 归类**（applied/restart 都为空）→ GUI 如实显示“已写入 · 未报告生效”，待 daemon 补重建音效模块 |
+
+### 仍缺的 daemon 能力（task-12 报告）
+1. `sfx.*` 需要 daemon 在 `applyConfigPatch` 里重建 sfx 模块并返回 `applied`（现在返回空列表）。
+2. API Key 状态：`config.get` 对所有 secret 一律回 `***`，GUI 无法区分“已设置/未设置”，
+   也拿不到尾号；建议 daemon 增加 `hasDeepseekKey`/`hasMinimaxKey` 布尔或尾号掩码。
+3. （可选）`ui.scale` 文档范围 0.5–2.0；GUI 已按此范围实现。
 
 ## 待 Lead 集成（install.sh）
 

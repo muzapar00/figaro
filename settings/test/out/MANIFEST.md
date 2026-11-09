@@ -7,6 +7,9 @@
 > 再用 22 条断言检查「GUI 快照 / 每字段状态 / daemon 回读 / config.json」四处一致
 > （见 shoot.sh 输出 `[shoot] task-8 new config fields`）。
 >
+> task-12 新增 `20`–`37`：外观/连接/模型路径/音效/5 步向导（假 daemon 全流程断言）+
+> 真 daemon 代码实例的 applied/restart 实测（详见 `real-daemon-task12.log`）。
+>
 > daemon 侧白名单/热路径补齐后，`16`–`19` 是真机正向证据：8 个新字段与 `asr.wakeCooldownMs`
 > 在**生产 daemon** 上全部返回 `applied`、`restartRequired: []`，界面显示绿色「已生效」，
 > daemon 日志打出 `interaction settings reloaded (...)`，且用户 config 的 md5 前后一致
@@ -58,6 +61,22 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 | `18-real-daemon-applied-phrases.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.dismissPhrases`（恢复默认 9 条）与 `followUpWindowMs` → 全部绿色「已生效」，chips 与 daemon 回读一致 |
 | `real-daemon-hot-apply.log` | 真 daemon（task-8） | 写配置期间的 daemon 日志：`interaction settings reloaded (followUp 7000ms, gate 0.012/180ms, 9 dismiss phrases)` ×4，证明运行时重读；bargeIn 走 ASR `applyRuntimeConfig({bargeIn})`（无日志行，以 config.set 返回 applied 为准） |
 | `19-real-daemon-applied.png` | 真 daemon（task-8） | 唤醒页热字段 `asr.wakeCooldownMs`（写同值 2500）显示「已生效」。全部 9 次真机写入后 `~/.config/figaro/config.json` 的 md5 与写入前一致（`ac550ed1…`），证明按用户当前值写入、其它配置未被改动 |
+
+| `20-appearance.png` | 外观（task-12） | 尺寸滑块（0.5–2.0）+ 三种形状卡片 + 动画开关；三颗交通灯默认已从 12px 调到 16px |
+| `21-appearance-demo.png` | 外观（task-12） | 写入 ×1.25 / 始终球 / 按钮 20px 后的状态，改动全部「已生效」（热） |
+| `22-appearance-buttons.png` | 外观（task-12） | 窗口按钮大小 12/16/20px 三档选择 + 三种尺寸的实物预览 |
+| `23-api.png` | 连接（task-12） | DeepSeek / MiniMax 两个密码输入框；只写不读，占位显示“已保存（daemon 只回传掩码）”，DeepSeek 已生效、MiniMax 需重启 |
+| `24-asr-model.png` | 识别（task-12） | ASR 模型路径：默认“仓库自带（中英双语）”，可填绝对路径 + 目录校验 + 恢复默认，需重启生效 |
+| `25-sfx.png` | 语音（task-12） | 音效开关 + 音量滑块（50% 已生效）+ “比语音低 4–6 dB”说明 |
+| `26-wizard-step1.png` … `30-wizard-step5.png` | 引导测试（task-12） | 5 步向导的每一步：进度 1/5…5/5、主按钮、结果状态（安静/增益/唤醒命中/转写/试听） |
+| `31-wizard-summary.png` | 引导测试（task-12） | 全部通过 ✓ 汇总（5/5 pass）与“重来/回到概览” |
+| `33-real-appearance-applied.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 ui.*：四个字段全部绿色「已生效」 |
+| `34-real-api-restart.png` | 真 daemon（task-12） | 真 daemon 代码实例上写两个 API Key（占位值）：DeepSeek 已生效、MiniMax 需重启 |
+| `35-real-model-restart.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 `asr.modelDir`：显示「已写入 · 需重启 daemon」 |
+| `36-real-sfx-unconfirmed.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 sfx：daemon 未报告归类 → 显示「已写入 · 未报告生效」（缺口证据） |
+| `37-prod-appearance-applied.png` | 生产 daemon（task-12） | 生产 daemon 上写同值 ui.*：四个字段全部「已生效」并收到 ui 广播 |
+| `real-daemon-task12.log` | 真 daemon（task-12） | 生产 daemon 的 ui/sfx 状态 + 临时真 daemon 实例上 9 个字段的 applied/restartRequired 原始应答 |
+| `wizard-result.log` | 引导向导（task-12） | shoot.sh 走完 5 步后的 wizard 快照（step=5, allPassed=true, results 全 pass） |
 
 ## 数据/日志
 

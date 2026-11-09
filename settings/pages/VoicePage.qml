@@ -18,6 +18,8 @@ MPageScroll {
     property string draftPhrases: ""
     property string previewText: "你好，我是费加罗。今天想帮你做点什么？"
     property int previewSeq: 0
+    property bool sfxEnabled: true
+    property real sfxVolume: 0.35
 
     readonly property var ttsInfo: (Ipc.diagnostics.tts || ({}))
     readonly property var ackInfo: (Ipc.diagnostics.ack || ({}))
@@ -40,6 +42,8 @@ MPageScroll {
         page.ackEnabled = Ipc.cfg("tts.ack.enabled", true) !== false;
         const phrases = Ipc.cfg("tts.ack.phrases", []);
         page.ackPhrases = Array.isArray(phrases) ? phrases : [];
+        page.sfxEnabled = Ipc.cfg("sfx.enabled", true) !== false;
+        page.sfxVolume = Number(Ipc.cfg("sfx.volume", 0.35));
     }
 
     // The daemon returns [{name, description, isDefault, isCurrent}]; the fake
@@ -61,6 +65,17 @@ MPageScroll {
     function applySink(value) {
         page.sink = value;
         Ipc.applyPatch({ tts: { sink: value } });
+    }
+
+    function setSfxEnabled(value) {
+        page.sfxEnabled = value;
+        Ipc.writeField("sfx.enabled", value);
+    }
+
+    function setSfxVolume(value) {
+        const v = Math.round(value * 100) / 100;
+        page.sfxVolume = v;
+        Ipc.writeField("sfx.volume", v);
     }
 
     function applySpeed(value) {
@@ -113,12 +128,24 @@ MPageScroll {
         return "voice-demo-written";
     }
 
+    function demoSfxWrite() {
+        page.sfxEnabled = true;
+        page.sfxVolume = 0.5;
+        Ipc.writeFields([
+            { path: "sfx.enabled", value: true },
+            { path: "sfx.volume", value: 0.5 },
+        ]);
+        return "sfx-demo-written";
+    }
+
     function snapshot() {
         return {
             title: "语音",
             sink: page.sink,
             voiceId: page.voiceId,
             speed: page.speed,
+            sfxEnabled: page.sfxEnabled,
+            sfxVolume: page.sfxVolume,
             ackEnabled: page.ackEnabled,
             ackPhrases: page.ackPhrases,
             ttsSupported: page.ttsSupported,
@@ -313,8 +340,61 @@ MPageScroll {
         }
     }
 
+    // -------------------------------------------------------------- 音效
     MCard {
-        title: "语速"
+        title: "音效"
+        subtitle: "界面提示音（唤醒 / 采集结束 / 回答结束 / 退下 / 错误）· sfx.* · 音效比语音低 4–6 dB，不会盖住说话"
+
+        MRow {
+            label: "音效开关"
+            subtitle: "sfx.enabled · 5 个短音，走和语音同一个输出 sink"
+            RowLayout {
+                spacing: 8
+                MApplyStatus { paths: ["sfx.enabled"] }
+                MToggle {
+                    checked: page.sfxEnabled
+                    onToggled: (value) => page.setSfxEnabled(value)
+                }
+            }
+        }
+        MRow {
+            label: "音效音量"
+            subtitle: "sfx.volume · 0–1（默认 0.35，比语音低 4–6 dB）"
+            showSeparator: false
+            RowLayout {
+                spacing: 8
+                Text {
+                    text: Math.round(page.sfxVolume * 100) + "%"
+                    color: Theme.textDim
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.fsSmall
+                    Layout.preferredWidth: 44
+                    horizontalAlignment: Text.AlignRight
+                }
+                MSlider {
+                    Layout.preferredWidth: 170
+                    from: 0
+                    to: 1
+                    value: page.sfxVolume
+                    markers: [0.35]
+                    onMoved: (v) => page.setSfxVolume(v)
+                }
+                MApplyStatus { paths: ["sfx.volume"] }
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: "说明：音效与语音共用同一个 sink，做成短促的一声（约 100–300 ms）；音量刻意压低，"
+                + "不会盖住正在说的话。改动立即生效，无需重启 daemon。"
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    MAdvancedCard {
+        title: "高级 · 语速"
         subtitle: "写入 tts.speed（MiniMax 语速倍率）"
 
         MRow {
@@ -344,8 +424,8 @@ MPageScroll {
         }
     }
 
-    MCard {
-        title: "唤醒应答"
+    MAdvancedCard {
+        title: "高级 · 唤醒应答"
         subtitle: "唤醒后立刻播报的短语（tts.ack.*），把“听到了”的反馈压到最短"
 
         MRow {

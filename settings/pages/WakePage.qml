@@ -425,6 +425,21 @@ MPageScroll {
             font.pixelSize: Theme.fsTiny
             wrapMode: Text.WordWrap
         }
+        Text {
+            visible: Ipc.configErrors.length > 0
+            Layout.fillWidth: true
+            text: "daemon 拒绝：" + Ipc.configErrors.join("；")
+            color: Theme.orange
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    MAdvancedCard {
+        title: "高级 · 热键与防抖"
+        subtitle: "平时不用管：两次唤醒的最小间隔、全局热键重新绑定"
+
         MRow {
             label: "防抖冷却"
             subtitle: "两次唤醒之间的最小间隔 · 写入 asr.wakeCooldownMs"
@@ -519,14 +534,9 @@ MPageScroll {
                 }
             }
         }
-        Text {
-            visible: Ipc.configErrors.length > 0
+        MApplyStatus {
             Layout.fillWidth: true
-            text: "daemon 拒绝：" + Ipc.configErrors.join("；")
-            color: Theme.orange
-            font.family: Theme.fontSans
-            font.pixelSize: Theme.fsSmall
-            wrapMode: Text.WordWrap
+            paths: ["asr.wakeCooldownMs", "asr.hotkey"]
         }
     }
 

@@ -1,22 +1,24 @@
 import QtQuick
 import ".."
 
-// macOS traffic light button (12px circle, glyph appears on hover).
+// macOS traffic light button. Size is configurable (settings GUI reads
+// ui.windowButtonSize, default 16px; the old hardcoded size was 12px).
 Item {
     id: root
 
     property color tone: Theme.red
     property string glyph: "close"
     property bool enabled: true
+    property int size: 16
 
     signal clicked()
 
-    width: 12
-    height: 12
+    width: size
+    height: size
 
     Rectangle {
         anchors.fill: parent
-        radius: 6
+        radius: root.size / 2
         color: root.enabled ? root.tone : "#4a4a52"
         border.width: 0.5
         border.color: Qt.rgba(0, 0, 0, 0.19)
@@ -26,7 +28,7 @@ Item {
         anchors.centerIn: parent
         visible: lightMouse.containsMouse && root.enabled
         kind: root.glyph
-        size: 8
+        size: Math.max(7, Math.round(root.size * 0.55))
         color: Qt.rgba(0, 0, 0, 0.53)
     }
 

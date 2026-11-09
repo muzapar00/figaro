@@ -76,6 +76,17 @@ shot() { # shot <name>
   fi
 }
 
+wait_status() { # wait_status <python expr over d> [timeout_s]
+  local expr="$1" timeout="${2:-20}" i
+  for ((i = 0; i < timeout * 2; i++)); do
+    if ipc status 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);sys.exit(0 if ($expr) else 1)" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 json_get() { # json_get <file> <python expr over d>
   python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -210,6 +221,73 @@ act voice-demo >/dev/null
 sleep 0.9
 shot 15-voice-timbre
 
+# ------------------------------------- 8. task-12: appearance / api / model / sfx / wizard
+echo "[shoot] task-12: appearance, API keys, ASR model path, sound effects, guided wizard"
+
+page appearance
+scroll top
+sleep 0.4
+shot 20-appearance
+act appearance-demo >/dev/null
+sleep 1.0
+shot 21-appearance-demo
+act scroll:600 >/dev/null
+sleep 0.45
+shot 22-appearance-buttons
+
+page api
+scroll top
+sleep 0.4
+act api-demo >/dev/null
+sleep 1.0
+shot 23-api
+
+page asr
+act scroll-bottom >/dev/null
+sleep 0.5
+# harmless fake path, reset to default after the screenshot/assertions
+ipc writeB64 asr.modelDir "$(printf '%s' '"/tmp/figaro-settings-test-models"' | base64 -w0)" >/dev/null 2>&1
+sleep 0.8
+shot 24-asr-model
+
+page voice
+act scroll:520 >/dev/null
+sleep 0.5
+act sfx-demo >/dev/null
+sleep 0.9
+shot 25-sfx
+
+page wizard
+act wizard-start >/dev/null
+sleep 0.6
+act wizard-run >/dev/null
+wait_status "d['wizard']['results'][0] in ('pass','fail')" 10 || true
+sleep 0.4
+shot 26-wizard-step1
+act wizard-next >/dev/null
+act wizard-run >/dev/null
+wait_status "d['wizard']['results'][1] in ('pass','fail')" 10 || true
+sleep 0.4
+shot 27-wizard-step2
+act wizard-next >/dev/null
+act wizard-run >/dev/null
+wait_status "d['wizard']['results'][2] in ('pass','fail')" 18 || true
+sleep 0.4
+shot 28-wizard-step3
+act wizard-next >/dev/null
+act wizard-run >/dev/null
+wait_status "d['wizard']['results'][3] in ('pass','fail')" 12 || true
+sleep 0.4
+shot 29-wizard-step4
+act wizard-next >/dev/null
+act wizard-run >/dev/null
+wait_status "d['wizard']['results'][4] in ('pass','fail')" 10 || true
+sleep 0.4
+shot 30-wizard-step5
+act wizard-finish >/dev/null
+sleep 0.6
+shot 31-wizard-summary
+
 # ---------------------------------------------------------------- state dump
 sleep 0.5
 ipc status >"$out/status.json"
@@ -229,7 +307,8 @@ assert_num() { # assert_num <label> <expr> <min>
   fi
 }
 
-assert_num "wake score samples" "d['wake'].get('scoreSamples', 0)" 20
+# latest wake window is the wizard's short hit test, so >=10 live frames is enough
+assert_num "wake score samples" "d['wake'].get('scoreSamples', 0)" 10
 assert_num "wake last-test hits" "d['wake'].get('lastWakeHits', -1)" 1
 assert_num "wake last-test max score" "d['wake'].get('lastWakeMaxScore', -1)" 0.6
 assert_num "ambient event rows" "d['wake'].get('ambientRows', 0)" 1
@@ -309,6 +388,83 @@ if [[ "$task8_fails" -ne 0 ]]; then
 else
   pass "task-8 config assertions (all new fields written + read back by the daemon)"
 fi
+
+# --- task-12: appearance / API / model / sfx / wizard --------------------
+echo
+echo "[shoot] task-12 fields and guided wizard"
+python3 - "$out/status.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    raw = f.read()
+d = json.loads(raw)
+checks = []
+
+def check(name, ok, detail=""):
+    checks.append((name, ok, detail))
+
+app = d.get("appearance", {})
+ui = d.get("ui", {}) or {}
+fs = d.get("fieldStatus", {})
+diag = d.get("daemonDiagnostics", {}) or {}
+wiz = d.get("wizard", {}) or {}
+api = d.get("api", {}) or {}
+voice = d.get("voice", {}) or {}
+
+check("appearance.scale = 1.25", abs(float(app.get("scale", -1)) - 1.25) < 1e-6, str(app.get("scale")))
+check("appearance.shape = ball", app.get("shape") == "ball", str(app.get("shape")))
+check("appearance.windowButtonSize = 20", int(app.get("windowButtonSize", -1)) == 20, str(app.get("windowButtonSize")))
+check("daemon ui frame received (scale 1.25)", abs(float((ui or {}).get("scale", -1)) - 1.25) < 1e-6, str(ui))
+check("daemon ui frame shape ball", (ui or {}).get("shape") == "ball", str(ui))
+check("ui.* hot-applied status", all((fs.get(k, {}).get("state") == "applied") for k in
+      ["ui.scale", "ui.shape", "ui.motion", "ui.windowButtonSize"]), str(fs))
+check("sfx.enabled hot-applied", fs.get("sfx.enabled", {}).get("state") == "applied", str(fs.get("sfx.enabled")))
+check("sfx.volume hot-applied", fs.get("sfx.volume", {}).get("state") == "applied", str(fs.get("sfx.volume")))
+check("daemon sfx readback volume=0.5", abs(float((diag.get("sfx") or {}).get("volume", -1)) - 0.5) < 1e-6, str(diag.get("sfx")))
+check("deepseek key marked restart-required", fs.get("deepseek.apiKey", {}).get("state") == "restart", str(fs.get("deepseek.apiKey")))
+check("minimax key marked restart-required", fs.get("minimax.apiKey", {}).get("state") == "restart", str(fs.get("minimax.apiKey")))
+check("api page sees keys stored (masked)", api.get("deepseekStored") is True and api.get("minimaxStored") is True, str(api))
+check("secret values never leak into status.json", "placeholder" not in raw and "sk-test" not in raw)
+check("asr.modelDir marked restart-required", fs.get("asr.modelDir", {}).get("state") == "restart", str(fs.get("asr.modelDir")))
+check("wizard finished (step 5)", int(wiz.get("step", -1)) == 5, str(wiz.get("step")))
+check("wizard all passed", wiz.get("allPassed") is True, str(wiz.get("results")))
+check("wizard 5/5 pass", (wiz.get("results") or []).count("pass") == 5, str(wiz.get("results")))
+
+# config.json really contains the written values
+config_path = diag.get("configPath") or ""
+try:
+    with open(config_path) as f:
+        cfg = json.load(f)
+    check("config.json ui.scale = 1.25", abs(float(cfg["ui"]["scale"]) - 1.25) < 1e-6, str(cfg["ui"]))
+    check("config.json ui.windowButtonSize = 20", int(cfg["ui"]["windowButtonSize"]) == 20, str(cfg["ui"]))
+    check("config.json ui.shape = ball", cfg["ui"].get("shape") == "ball", str(cfg["ui"]))
+    check("config.json sfx.volume = 0.5", abs(float(cfg["sfx"]["volume"]) - 0.5) < 1e-6, str(cfg.get("sfx")))
+    check("config.json sfx.enabled = true", bool(cfg["sfx"]["enabled"]) is True, str(cfg.get("sfx")))
+    check("config.json asr.modelDir written", cfg.get("asr", {}).get("modelDir") == "/tmp/figaro-settings-test-models", str(cfg.get("asr", {}).get("modelDir")))
+    check("config.json deepseek key stored (masked in get, present in file)", isinstance(cfg.get("deepseek", {}).get("apiKey"), str) and len(cfg["deepseek"]["apiKey"]) > 0)
+except Exception as e:
+    check("config.json readable (" + config_path + ")", False, str(e))
+
+failed = [c for c in checks if not c[1]]
+for name, ok, detail in checks:
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""))
+sys.exit(1 if failed else 0)
+PYEOF
+task12_fails=$?
+if [[ "$task12_fails" -ne 0 ]]; then
+  fail "task-12 config assertions ($task12_fails)"
+else
+  pass "task-12 config assertions (appearance/API/model/sfx/wizard all verified)"
+fi
+
+# the wizard summary is the log/status evidence for a completed walk-through
+python3 - "$out/status.json" <<'PYEOF' > "$out/wizard-result.log"
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+w = d.get("wizard", {})
+print(json.dumps(w, ensure_ascii=False, indent=2))
+PYEOF
+[[ -s "$out/wizard-result.log" ]] && pass "wizard result evidence -> $out/wizard-result.log"
 
 # copy the exported artifacts next to the screenshots as evidence
 latest_diag="$(ls -t "$HOME"/figaro-diagnostics-*.json 2>/dev/null | head -1)"

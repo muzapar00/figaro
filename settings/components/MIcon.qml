@@ -118,6 +118,55 @@ Item {
                 ctx.arc(6.5, 13, 1.6, 0, Math.PI * 2, false);
                 ctx.fill();
                 break;
+            case "shapePill":
+                ctx.beginPath();
+                ctx.moveTo(6.2, 5.4); ctx.lineTo(11.8, 5.4);
+                ctx.quadraticCurveTo(14.6, 5.4, 14.6, 9);
+                ctx.quadraticCurveTo(14.6, 12.6, 11.8, 12.6);
+                ctx.lineTo(6.2, 12.6);
+                ctx.quadraticCurveTo(3.4, 12.6, 3.4, 9);
+                ctx.quadraticCurveTo(3.4, 5.4, 6.2, 5.4);
+                ctx.closePath();
+                ctx.stroke();
+                break;
+            case "shapeBall":
+                ctx.beginPath();
+                ctx.arc(9, 9, 5.6, 0, Math.PI * 2, false);
+                ctx.stroke();
+                break;
+            case "shapeLine":
+                ctx.beginPath();
+                ctx.moveTo(2.8, 9); ctx.lineTo(15.2, 9);
+                ctx.stroke();
+                break;
+            case "key":
+                ctx.beginPath();
+                ctx.arc(6.4, 9, 2.6, 0, Math.PI * 2, false);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(9, 9); ctx.lineTo(15.4, 9);
+                ctx.moveTo(13, 9); ctx.lineTo(13, 11.6);
+                ctx.moveTo(15.4, 9); ctx.lineTo(15.4, 11.1);
+                ctx.stroke();
+                break;
+            case "folder":
+                ctx.beginPath();
+                ctx.moveTo(3.2, 6.2); ctx.lineTo(7.4, 6.2); ctx.lineTo(8.6, 7.8);
+                ctx.lineTo(14.8, 7.8); ctx.lineTo(14.8, 13.2); ctx.lineTo(3.2, 13.2);
+                ctx.closePath();
+                ctx.stroke();
+                break;
+            case "wand":
+                ctx.beginPath();
+                ctx.moveTo(4, 14); ctx.lineTo(11.4, 6.6);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(12.6, 3.2); ctx.lineTo(13.4, 5.2); ctx.lineTo(15.4, 6);
+                ctx.lineTo(13.4, 6.8); ctx.lineTo(12.6, 8.8); ctx.lineTo(11.8, 6.8);
+                ctx.lineTo(9.8, 6); ctx.lineTo(11.8, 5.2);
+                ctx.closePath();
+                ctx.fill();
+                break;
             case "chat":
                 ctx.beginPath();
                 ctx.moveTo(5.2, 3.8); ctx.lineTo(13.6, 3.8);

@@ -17,6 +17,7 @@ Item {
         case "applied": return "已生效";
         case "restart": return "已写入 · 需重启 daemon";
         case "forbidden": return "daemon 未开放此配置";
+        case "unknown": return "已写入 · 未报告生效";
         case "error": return root.status && root.status.message ? root.status.message : "写入失败";
         default: return "";
         }
@@ -27,6 +28,7 @@ Item {
         case "restart": return Theme.orange;
         case "pending": return Theme.yellow;
         case "forbidden": return Theme.red;
+        case "unknown": return Theme.orange;
         case "error": return Theme.red;
         default: return Theme.textFaint;
         }

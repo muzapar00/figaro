@@ -6,6 +6,8 @@ import "../components"
 MPageScroll {
     id: page
 
+    signal startWizard()
+
     readonly property var diag: Ipc.diagnostics || ({})
     readonly property bool hasDiag: Ipc.diagnosticsLoaded && Ipc.supported("diagnostics")
     readonly property var asrInfo: (page.diag.asr || ({}))
@@ -101,6 +103,57 @@ MPageScroll {
                     font.pixelSize: Theme.fsSmall
                     wrapMode: Text.WordWrap
                     lineHeight: 1.25
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------ 引导测试入口
+    MCard {
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 84
+            radius: 10
+            color: Qt.rgba(0.04, 0.52, 1.0, 0.14)
+            border.width: 0.5
+            border.color: Qt.rgba(0.04, 0.52, 1.0, 0.35)
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 14
+                spacing: 12
+                Rectangle {
+                    width: 40
+                    height: 40
+                    radius: 12
+                    color: Theme.accent
+                    MIcon { anchors.centerIn: parent; kind: "wand"; size: 20; color: "#ffffff" }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Text {
+                        Layout.fillWidth: true
+                        text: "第一次用？跟着引导走一遍"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 15
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "5 步测完麦克风、增益、唤醒、转写和扬声器，每步都有提示。"
+                        color: Theme.textDim
+                        font.family: Theme.fontSans
+                        font.pixelSize: Theme.fsSmall
+                        wrapMode: Text.WordWrap
+                    }
+                }
+                MButton {
+                    text: "开始引导测试 →"
+                    icon: "play"
+                    primary: true
+                    onClicked: page.startWizard()
                 }
             }
         }

@@ -11,6 +11,37 @@ MPageScroll {
     readonly property var result: (Ipc.asrResult || ({}))
     readonly property bool asrSupported: !Ipc.unsupported("test.asr.start")
 
+    // ---- ASR model directory (null = repo bundled bilingual model) --------
+    property string modelDirDraft: ""
+    property string modelCheckText: ""
+    property bool modelCheckRunning: false
+    readonly property string effectiveModelDir: String(Ipc.cfg("asr.modelDir", "") || "")
+    readonly property bool modelDirCustom: page.effectiveModelDir.length > 0
+
+    function applyModelDir() {
+        const value = page.modelDirDraft.trim();
+        page.modelCheckText = "";
+        if (value.length === 0) {
+            Ipc.writeField("asr.modelDir", null);
+            page.modelCheckText = "已恢复为仓库自带模型";
+            return "model-dir-default";
+        }
+        page.modelCheckRunning = true;
+        modelCheck.exec(["sh", "-c",
+            'd="$1"; for f in encoder.onnx decoder.onnx joiner.onnx tokens.txt; do '
+            + '[ -e "$d/$f" ] || { echo "missing: $f"; exit 3; }; done; echo ok',
+            "sh", value]);
+        return "model-dir-checking";
+    }
+
+    function resetModelDir() {
+        page.modelDirDraft = "";
+        page.modelCheckText = "";
+        if (modelDirField) modelDirField.text = "";
+        Ipc.writeField("asr.modelDir", null);
+        return "model-dir-default";
+    }
+
     // ---- accuracy helpers --------------------------------------------------
     function normalize(text) {
         if (!text) return "";
@@ -82,6 +113,34 @@ MPageScroll {
             accuracy: page.result.text !== undefined ? Math.round(page.accuracy(page.result.text) * 1000) / 1000 : null,
         };
     }
+
+    Process {
+        id: modelCheck
+        running: false
+        stdout: StdioCollector {
+            onStreamFinished: modelCheck.checkOutput = this.text
+        }
+        property string checkOutput: ""
+        onExited: (code, status) => {
+            page.modelCheckRunning = false;
+            if (code === 0) {
+                page.modelCheckText = "目录校验通过（encoder/decoder/joiner/tokens 都在）";
+                Ipc.writeField("asr.modelDir", page.modelDirDraft.trim());
+            } else {
+                page.modelCheckText = "目录里缺少模型文件："
+                    + (modelCheck.checkOutput.length > 0 ? modelCheck.checkOutput.trim() : "encoder/decoder/joiner/tokens");
+            }
+        }
+    }
+
+    Connections {
+        target: Ipc
+        function onConfigChanged() {
+            if (page.modelDirDraft.length === 0) page.modelDirDraft = page.effectiveModelDir;
+        }
+    }
+
+    Component.onCompleted: page.modelDirDraft = page.effectiveModelDir
 
     MPageHeader {
         title: "识别"
@@ -352,4 +411,85 @@ MPageScroll {
             wrapMode: Text.WordWrap
         }
     }
+
+    // ---------------------------------------------------------- 模型路径
+    MCard {
+        title: "语音识别模型"
+        subtitle: "asr.modelDir · 默认使用仓库自带的中英双语 KWS 模型；也可指定自定义模型目录（需重启 daemon 生效）"
+
+        MRow {
+            label: "当前模型"
+            subtitle: "默认：仓库自带（中英双语 zh-en）"
+            showSeparator: true
+            MPill {
+                text: page.modelDirCustom ? "自定义目录" : "仓库自带（中英双语）"
+                tone: page.modelDirCustom ? Theme.accent : Theme.green
+            }
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            Text {
+                Layout.fillWidth: true
+                text: "模型目录"
+                color: Theme.text
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fs
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "填绝对路径；目录中需包含 encoder.onnx / decoder.onnx / joiner.onnx / tokens.txt（留空 = 恢复默认）"
+                color: Theme.textFaint
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fsSmall
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                MTextField {
+                    id: modelDirField
+                    Layout.fillWidth: true
+                    text: page.modelDirDraft
+                    placeholder: "留空 = 仓库自带模型"
+                    onTextChanged: page.modelDirDraft = text
+                    onAccepted: page.applyModelDir()
+                }
+                MButton {
+                    text: page.modelCheckRunning ? "校验中…" : "应用"
+                    primary: true
+                    enabled: !page.modelCheckRunning
+                    onClicked: page.applyModelDir()
+                }
+                MButton {
+                    text: "恢复默认"
+                    icon: "refresh"
+                    enabled: page.modelDirCustom || page.modelDirDraft.length > 0
+                    onClicked: page.resetModelDir()
+                }
+                MApplyStatus { paths: ["asr.modelDir"] }
+            }
+        }
+        Text {
+            visible: page.modelCheckText.length > 0
+            Layout.fillWidth: true
+            text: page.modelCheckText
+            color: page.modelCheckText.indexOf("通过") >= 0 || page.modelCheckText.indexOf("恢复") >= 0
+                ? Theme.green : Theme.orange
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+        Text {
+            Layout.fillWidth: true
+            text: "说明：语音识别完全在本地运行，不需要 API Key；自定义目录需要包含完整的 sherpa-onnx KWS 模型文件，"
+                + "写入后重启 daemon 才会加载。"
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
+            wrapMode: Text.WordWrap
+        }
+    }
+
 }

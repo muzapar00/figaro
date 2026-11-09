@@ -335,8 +335,8 @@ MPageScroll {
         }
     }
 
-    MCard {
-        title: "底噪测量"
+    MAdvancedCard {
+        title: "高级 · 底噪测量"
         subtitle: "保持安静 3 秒，测出环境底噪并给出建议增益"
 
         RowLayout {

@@ -8,6 +8,7 @@ Item {
     id: root
 
     property var targetWindow: null
+    property int buttonSize: 16
     property string title: ""
     property string subtitle: ""
     property string statusText: ""
@@ -36,15 +37,17 @@ Item {
         anchors.left: parent.left
         anchors.leftMargin: 16
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 8
+        spacing: root.buttonSize >= 20 ? 9 : 8
         z: 2
 
         MTrafficLight {
+            size: root.buttonSize
             tone: "#ff5f57"
             glyph: "close"
             onClicked: Qt.quit()
         }
         MTrafficLight {
+            size: root.buttonSize
             tone: "#febc2e"
             glyph: "minus"
             onClicked: {
@@ -52,6 +55,7 @@ Item {
             }
         }
         MTrafficLight {
+            size: root.buttonSize
             tone: "#28c840"
             glyph: "plus"
             onClicked: {

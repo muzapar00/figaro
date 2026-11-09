@@ -80,6 +80,8 @@ const DEFAULTS = {
     speed: 1.0,
   },
   asr: {
+    // null = repo bundled bilingual KWS model; a path overrides it.
+    modelDir: null,
     wakeWords: ['费加罗', '菲加罗', '飞加罗', 'figaro', '费加'],
     wakeWordsEn: ['figaro', 'hey figaro'],
     device: 'default',
@@ -96,6 +98,16 @@ const DEFAULTS = {
     followUpWindowMs: 7000,
     followUpMinRms: 0.012,
     followUpMinMs: 180,
+  },
+  sfx: {
+    enabled: true,
+    volume: 0.35,
+  },
+  ui: {
+    scale: 1.0,
+    shape: 'orb',
+    motion: 'auto',
+    windowButtonSize: 16,
   },
   tts: {
     enabled: true,
@@ -132,6 +144,13 @@ const HOT_PATHS = [
   'interaction.followUpMinMs',
   'interaction.dismissPhrases',
   'interaction.cancelPhrases',
+  // ui.* are hot-applied: the daemon re-emits a {type:"ui"} frame
+  'sfx.enabled',
+  'sfx.volume',
+  'ui.scale',
+  'ui.shape',
+  'ui.motion',
+  'ui.windowButtonSize',
   'tts.sink',
   'tts.model',
   'tts.voiceId',
@@ -160,6 +179,31 @@ let config = deepMerge(DEFAULTS, readConfigFile());
 function saveConfig() {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
+// Never print secrets (apiKey) into logs.
+function redactPatch(value) {
+  if (Array.isArray(value)) return value.map(redactPatch);
+  if (isPlainObject(value)) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = /apiKey$/i.test(k) ? '***' : redactPatch(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function uiSnapshot() {
+  const ui = config.ui || {};
+  const size = Number(ui.windowButtonSize);
+  return {
+    type: 'ui',
+    scale: Number.isFinite(Number(ui.scale)) ? Math.min(2, Math.max(0.5, Number(ui.scale))) : 1.0,
+    shape: ['orb', 'ball', 'line'].includes(ui.shape) ? ui.shape : 'orb',
+    motion: ui.motion === 'off' ? 'off' : 'auto',
+    windowButtonSize: Number.isFinite(size) && size >= 12 && size <= 24 ? size : 16,
+  };
+}
+
 // The real daemon maps the docs/ipc.md §3.1 aliases tts.voiceId/model/speed
 // onto minimax.* before exposing the effective config (src/daemon.js
 // applyTtsAliases). Mirror that so the GUI reads the same thing here.
@@ -178,8 +222,15 @@ function applyTtsAliases(target) {
 function publicConfig() {
   const c = JSON.parse(JSON.stringify(config));
   applyTtsAliases(c);
-  if (c.deepseek) delete c.deepseek.apiKey;
-  if (c.minimax) delete c.minimax.apiKey;
+  // Same as src/agent/settings.js sanitizeConfig: secrets become "***"; the
+  // GUI can only tell that a key is stored, never read it back.
+  // Mask only stored keys; an unset key stays "" so the GUI can show 未设置.
+  c.deepseek = c.deepseek || {};
+  c.deepseek.apiKey = config.deepseek && typeof config.deepseek.apiKey === 'string' && config.deepseek.apiKey.length > 0
+    ? '***' : '';
+  c.minimax = c.minimax || {};
+  c.minimax.apiKey = config.minimax && typeof config.minimax.apiKey === 'string' && config.minimax.apiKey.length > 0
+    ? '***' : '';
   return c;
 }
 saveConfig();
@@ -323,10 +374,12 @@ function newMicSim(gainPercent) {
   return {
     tick() {
       phase += rand(0.25, 0.6);
+      // Calibrated to the measured real-world range: room floor ~0.002-0.01,
+      // normal speech median ~0.036, loud syllable ~0.09.
       const speech = Math.abs(Math.sin(phase * 1.7)) * (0.35 + 0.4 * Math.abs(Math.sin(phase * 0.31)));
-      const noise = rand(0.01, 0.04);
-      const rms = clamp((speech * 0.55 + noise) * gain * 0.8);
-      const peak = clamp(rms * rand(1.6, 2.4) + rand(0.01, 0.05) * gain);
+      const noise = rand(0.002, 0.008);
+      const rms = clamp((speech * 0.10 + noise) * gain);
+      const peak = clamp(rms * rand(1.6, 2.4) + rand(0.004, 0.02) * gain);
       return {
         rms: Math.round(rms * 1000) / 1000,
         peak: Math.round(peak * 1000) / 1000,
@@ -395,16 +448,22 @@ function handle(socket, msg) {
       config = deepMerge(config, msg.patch || {});
       saveConfig();
       const applied = changed.filter((path) => HOT_PATHS.includes(path));
+      // apiKey/modelDir/other non-hot paths need a daemon restart.
       const restartRequired = changed.filter((path) => !HOT_PATHS.includes(path));
-      log('config.set:', JSON.stringify(msg.patch), 'applied=', applied.join(','), 'restart=', restartRequired.join(','));
-      return send(socket, {
+      const uiChanged = changed.filter((path) => path.startsWith('ui.'));
+      log('config.set:', JSON.stringify(redactPatch(msg.patch)), 'applied=', applied.join(','), 'restart=', restartRequired.join(','));
+      const reply = {
         type: 'config',
         id: msg.id,
         ok: true,
         applied,
         restartRequired,
         config: publicConfig(),
-      });
+      };
+      // Send the reply by hand so the ui frame only reaches this client after it.
+      send(socket, reply);
+      if (uiChanged.length > 0) broadcast(uiSnapshot());
+      return true;
     }
 
     // ---- §3.1 microphone test --------------------------------------------
@@ -509,7 +568,28 @@ function handle(socket, msg) {
           wakeTestStats.falseAlarms = falseAlarms;
         }
       }, 100);
+      // Demo determinism: non-noise self-tests get one real hit early, so the
+      // guided wizard can be walked end-to-end without random misses.
+      const forcedHit = noise ? null : setTimeout(() => {
+        if (!timers.has('wake')) return;
+        const score = 0.9 + rand(0, 0.05);
+        send(socket, { type: 'wake.score', id: msg.id, score, keyword: '费加罗' });
+        broadcast({
+          type: 'wake.hit',
+          id: msg.id,
+          score,
+          latencyMs: 180 + Math.round(rand(0, 120)),
+          keyword: '费加罗',
+          falseAlarm: false,
+          t: Date.now() - started,
+        });
+        hits += 1;
+        wakeTestStats.hits = hits;
+        wakeTestStats.maxScore = Math.max(wakeTestStats.maxScore, score);
+      }, 1200 + rand(0, 600));
+      if (timers.has('wake') && timers.get('wake')) timers.get('wake').forcedHit = forcedHit;
       const timeout = setTimeout(() => {
+        if (forcedHit) clearTimeout(forcedHit);
         clearTest('wake');
         if (!noise && hits === 0) misses = 1;
         send(socket, {
@@ -623,6 +703,7 @@ function diagnostics() {
       available: true,
       state: 'idle',
       capturing: false,
+      modelDir: config.asr.modelDir ?? null,
       sensitivity: config.asr.sensitivity,
       wakeCooldownMs: config.asr.wakeCooldownMs,
       inputGainPercent: config.asr.inputGainPercent,
@@ -707,6 +788,11 @@ function diagnostics() {
       { at: new Date(fakeErrorTimes[0]).toISOString(), message: 'TTS 连接超时一次，已自动重试（fake）' },
       { at: new Date(fakeErrorTimes[1]).toISOString(), message: 'KWS 模型热加载完成（fake）' },
     ],
+    ui: uiSnapshot(),
+    sfx: {
+      enabled: config.sfx.enabled !== false,
+      volume: Number(config.sfx.volume),
+    },
     interaction: {
       followUpWindowMs: Number(config.interaction.followUpWindowMs) || 0,
       followUpMinRms: Number(config.interaction.followUpMinRms),

@@ -9,6 +9,7 @@ Rectangle {
     property string placeholder: ""
     property int inputWidth: 220
     property bool readOnly: false
+    property bool password: false
 
     signal accepted()
 
@@ -31,6 +32,8 @@ Rectangle {
         font.family: Theme.fontSans
         font.pixelSize: Theme.fs
         readOnly: root.readOnly
+        echoMode: root.password ? TextInput.Password : TextInput.Normal
+        passwordCharacter: "•"
         clip: true
         selectByMouse: true
         onAccepted: root.accepted()
