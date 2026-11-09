@@ -130,8 +130,8 @@ PanelWindow {
             id: orb
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: parent.top
-            anchors.topMargin: 0
-            diameter: 150
+            anchors.topMargin: -orb.haloPadding + 4
+            diameter: 128
             state: FigaroIpc.state
             level: FigaroIpc.level
 
@@ -156,7 +156,7 @@ PanelWindow {
             id: pill
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: orb.bottom
-            anchors.topMargin: 8
+            anchors.topMargin: -orb.haloPadding + 8
             width: Math.min(capText.contentWidth + 28, 520)
             height: capText.implicitHeight + 12
             radius: height / 2
