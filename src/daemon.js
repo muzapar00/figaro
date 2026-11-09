@@ -15,7 +15,7 @@ import { createAgent } from './agent/index.js';
 import { createWakeAck, DEFAULT_PHRASES } from './agent/wake-ack.js';
 import { createSettingsService, SETTINGS_MESSAGE_TYPES } from './agent/settings.js';
 
-export const STATES = Object.freeze(['idle', 'waking', 'listening', 'finalizing', 'thinking', 'speaking']);
+export const STATES = Object.freeze(['idle', 'waking', 'listening', 'finalizing', 'thinking', 'speaking', 'waiting']);
 
 const ASR_MODULE = new URL('./voice/asr/index.js', import.meta.url).href;
 const TTS_MODULE = new URL('./voice/tts/index.js', import.meta.url).href;
@@ -159,6 +159,11 @@ export function createDaemon(options = {}) {
   const wakeGiveUpMs = Number.isFinite(Number(config.asr?.wakeGiveUpMs)) && Number(config.asr.wakeGiveUpMs) > 0
     ? Number(config.asr.wakeGiveUpMs)
     : DEFAULT_WAKE_GIVE_UP_MS;
+  // After a spoken reply the assistant stays on screen for this long, waiting
+  // for a follow-up. Only a voice clearly above the microphone's noise floor
+  // re-opens the conversation; quiet speech and background noise are ignored.
+  const followUpMinRms = Math.max(0.01, Number(config.interaction?.followUpMinRms ?? 0.10) || 0.10);
+  const followUpMinMs = Math.max(100, Number(config.interaction?.followUpMinMs ?? 250) || 250);
   const followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
     ? Number(config.interaction.followUpWindowMs)
     : 0;
@@ -201,6 +206,9 @@ export function createDaemon(options = {}) {
   let giveUpAt = 0; // absolute deadline for the current listening window
   let followUpTimer = null; // optional "keep listening after a reply" window
   let followUpActive = false;
+  let followUpLoudMs = 0;
+  let followUpLastAt = 0;
+  let waitingTimer = null;
   // True while a wake is taking over the state machine: suppresses the transient
   // idle state that TTS.stop() would otherwise emit between speaking and waking.
   let wakeFlowPending = false;
@@ -448,6 +456,25 @@ export function createDaemon(options = {}) {
     }
   }
 
+  function clearWaitingTimer() {
+    if (waitingTimer) {
+      clearTimeout(waitingTimer);
+      waitingTimer = null;
+    }
+  }
+
+  /** Waiting window: if no loud voice arrives, leave quietly. */
+  function armWaitingTimer() {
+    clearWaitingTimer();
+    waitingTimer = setTimeout(() => {
+      waitingTimer = null;
+      if (state !== 'waiting') return;
+      log.info(`waiting: no follow-up within ${followUpWindowMs}ms -> idle`);
+      settleTurn('follow-up-timeout');
+    }, followUpWindowMs);
+    waitingTimer.unref?.();
+  }
+
   function armGiveUpTimer(ms, reason = 'wake') {
     clearGiveUpTimer();
     const budget = Math.max(50, Number(ms) || DEFAULT_WAKE_GIVE_UP_MS);
@@ -487,6 +514,7 @@ export function createDaemon(options = {}) {
     wakeFlowPending = false;
     clearGiveUpTimer();
     clearFollowUpTimer();
+    clearWaitingTimer();
     followUpActive = false;
     giveUpAt = 0;
     if (ackActive) {
@@ -528,11 +556,29 @@ export function createDaemon(options = {}) {
       settleTurn('reply-done');
       return;
     }
+    // The reply is over: retract the text so the pill collapses back into a
+    // ball, then stay on screen without recording. Recording only starts once a
+    // real voice crosses the loudness gate, which keeps quiet speech and room
+    // noise from being transcribed as a command.
+    lastAsrPartial = '';
+    emit({ type: 'partial', text: '' });
     followUpActive = true;
+    followUpLoudMs = 0;
+    followUpLastAt = Date.now();
+    setState('waiting');
+    armWaitingTimer();
+    log.info(`waiting ${followUpWindowMs}ms for a follow-up (loudness gate rms>=${followUpMinRms}, ${followUpMinMs}ms)`);
+  }
+
+  /** A loud enough voice during `waiting` continues the conversation directly. */
+  function continueFromFollowUp(level) {
+    if (!followUpActive) return;
+    followUpActive = false;
+    clearGiveUpTimer();
+    log.info(`follow-up accepted (rms ${level.toFixed(3)}) -> listening`);
     setState('listening');
     beginCaptureNow();
-    armGiveUpTimer(followUpWindowMs, 'follow-up');
-    log.info(`follow-up window open for ${followUpWindowMs}ms (no wake word needed)`);
+    armGiveUpTimer(wakeGiveUpMs, 'follow-up');
   }
 
   // ---------------------------------------------------------------- ASR callbacks
@@ -545,6 +591,13 @@ export function createDaemon(options = {}) {
   function handleAsrLevel(value) {
     lastMicRms = clamp01(value);
     emit({ type: 'level', value: lastMicRms });
+    if (!followUpActive || state !== 'waiting') return;
+    const now = Date.now();
+    const dt = now - followUpLastAt;
+    followUpLastAt = now;
+    if (lastMicRms >= followUpMinRms) followUpLoudMs += Math.min(dt, 200);
+    else followUpLoudMs = Math.max(0, followUpLoudMs - dt * 2);
+    if (followUpLoudMs >= followUpMinMs) continueFromFollowUp(lastMicRms);
   }
 
   function handleAsrPartial(text) {

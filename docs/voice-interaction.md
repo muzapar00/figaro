@@ -56,11 +56,20 @@ idle ──wake──► waking(ack) ──► listening ──speechEnd──�
 | 播放自然结束 | `flush()` resolve | 回 idle（可选 follow-up 窗口，见下） |
 | 服务重启 | systemd restart | 客户端重连；状态回 idle |
 
-## 可选：连续对话（默认关闭）
+## 回答问题后的等待窗口（waiting）
 
-`interaction.followUpWindowMs`（默认 0 = 关）。设置 >0 时，回复播放结束后的这么多毫秒内
-**不需要唤醒词**，用户直接说话就进入 listening；超时无语音则回 idle。
-（Siri 的"接着问"行为；默认关是因为桌面环境里 TV/音乐容易造成误采。）
+`interaction.followUpWindowMs`（用户要求设为 **7000**，0 = 关闭）。
+
+回复播完后**不再立刻消失**：状态进入 `waiting`，字幕先收回（胶囊塌回球），球以倾听的蓝色
+安静停留在屏幕顶部。这段时间：
+
+- **不录音、不转写**（避免把环境音当指令）；
+- 只监测麦克风电平：超过 `followUpMinRms`（默认 0.10）并持续 `followUpMinMs`（默认 250ms）
+  的真人才算"继续说话"，此时**不播 ack**、直接进入 listening；
+- 唤醒词在这个窗口里仍然有效（走正常 ack 流程）；
+- 窗口内没有达到门槛的声音 → 7 秒后静默回 idle，球沿进入的同一路径上收消失。
+
+小声说话（约 <0.05）、键盘声、音乐背景（约 0.01–0.03）都低于门槛，不会触发。
 
 ## 打断的"硬"要求
 

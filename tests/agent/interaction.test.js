@@ -177,6 +177,8 @@ async function startInteractionDaemon(t, overrides = {}) {
     interaction: {
       cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
       followUpWindowMs: overrides.followUpWindowMs ?? 0,
+      followUpMinRms: overrides.followUpMinRms ?? 0.10,
+      followUpMinMs: overrides.followUpMinMs ?? 250,
     },
   };
   const asr = overrides.asr ?? makeFakeAsr();
@@ -424,8 +426,12 @@ test('checklist 7: every cancel/error path ends idle, mic unmuted, wake word wor
 
 // ---------------------------------------------------------------- checklist 8
 
-test('checklist 8: followUpWindowMs lets the next sentence in without a wake word, then expires silently', async (t) => {
-  const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, { followUpWindowMs: 300 });
+test('checklist 8: after a reply the assistant waits, ignores a quiet room, and only continues on a loud voice', async (t) => {
+  const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, {
+    followUpWindowMs: 700,
+    followUpMinRms: 0.10,
+    followUpMinMs: 120,
+  });
   client.send({ type: 'wake' });
   await waitFor(() => lastState(messages) === 'waking', { label: 'waking' });
   const playback = ack.playbacks.at(-1);
@@ -436,14 +442,37 @@ test('checklist 8: followUpWindowMs lets the next sentence in without a wake wor
   const firstFrom = messages.length;
   deliverFinal(asr, '第一句');
   await waitFor(() => messages.slice(firstFrom).some((message) => message.type === 'reply'), { label: 'first reply' });
-  await waitFor(() => lastState(messages) === 'listening', { label: 'follow-up listening after reply' });
   await waitFor(() => agent.record.texts.length === 1, { label: 'first turn' });
-  const ackPlays = ack.record.plays;
-  assert.equal(ackPlays, 1, 'follow-up does not replay the ack');
 
+  // The reply is over: the assistant stays on screen in a dedicated waiting
+  // state, with the caption retracted, and replays no acknowledgement.
+  await waitFor(() => lastState(messages) === 'waiting', { label: 'waiting after reply' });
+  assert.equal(ack.record.plays, 1, 'the follow-up window does not replay the ack');
+  const cleared = messages.slice(firstFrom).some((message) => message.type === 'partial' && message.text === '');
+  assert.ok(cleared, 'the caption is cleared so the pill retracts into a ball');
+
+  // A quiet room must not open the conversation again.
+  for (let i = 0; i < 12; i++) {
+    asr.record.cbs.onLevel(0.03);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(lastState(messages), 'waiting', 'quiet background noise is ignored');
+
+  // A loud voice does, without a wake word. Levels arrive at ~20 Hz in
+  // production, so the test paces them the same way: the gate measures how long
+  // the voice stays loud, not how many samples arrived.
+  for (let i = 0; i < 10; i++) {
+    asr.record.cbs.onLevel(0.25);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await waitFor(() => lastState(messages) === 'listening', { label: 'loud voice continues the conversation' });
   deliverFinal(asr, '第二句');
   await waitFor(() => agent.record.texts.length === 2, { label: 'second turn without wake word' });
   assert.deepEqual(agent.record.texts, ['第一句', '第二句']);
+
+  // Then it waits again and finally leaves silently.
+  await waitFor(() => lastState(messages) === 'waiting', { label: 'waiting again' });
   await waitFor(() => lastState(messages) === 'idle', { label: 'follow-up window expires', timeoutMs: 3000 });
 });
 
@@ -473,7 +502,7 @@ test('asr finalizing hook moves listening -> finalizing before the transcript', 
 });
 
 test('all new states are part of the exported state machine', () => {
-  for (const state of ['idle', 'waking', 'listening', 'finalizing', 'thinking', 'speaking']) {
+  for (const state of ['idle', 'waking', 'listening', 'finalizing', 'thinking', 'speaking', 'waiting']) {
     assert.ok(STATES.includes(state), `${state} is in STATES`);
   }
 });

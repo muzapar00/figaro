@@ -50,8 +50,8 @@ Singleton {
     readonly property int crossfadeMs: 180
     readonly property int exitMs: 170
     // Text must never bounce; it is being read.
-    readonly property int textSlideMs: 220
-    readonly property int textFadeMs: 160
+    readonly property int textSlideMs: 120
+    readonly property int textFadeMs: 90
     // Acknowledge/cancel feedback: short enough to feel like a reflex.
     readonly property int popMs: 130
 
@@ -81,6 +81,9 @@ Singleton {
 
     function colorFor(state) {
         if (state === "listening") return style.listenColor;
+        // The waiting window means "still here, ready for you": reuse the
+        // listening blue so the state reads without a new colour.
+        if (state === "waiting") return style.listenColor;
         if (state === "thinking") return style.thinkColor;
         if (state === "speaking") return style.speakColor;
         return "#6b5cf0";

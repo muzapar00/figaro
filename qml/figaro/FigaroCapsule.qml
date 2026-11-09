@@ -181,13 +181,9 @@ Item {
         // Text only starts after the pill has opened: it can never be drawn on
         // top of the ball, because both its position and its opacity follow the
         // same progress value.
-        opacity: Math.max(0, Math.min(1, (shell.p - 0.45) / 0.4))
+        opacity: Math.max(0, Math.min(1, (shell.p - 0.30) / 0.35))
         horizontalAlignment: Text.AlignLeft
         Behavior on opacity { NumberAnimation { duration: FigaroStyle.textFadeMs; easing.type: Easing.OutCubic } }
-        Behavior on y { NumberAnimation { duration: FigaroStyle.textSlideMs; easing.type: Easing.OutCubic } }
-        // A 3 px rise while fading in: enough to feel intentional, small enough
-        // that it never moves text the eye is already reading.
-        transform: Translate { y: (1 - Math.min(1, shell.morphProgress)) * 3 }
     }
 
     // Click target: the ball, or the whole pill once it exists. Exposed so the

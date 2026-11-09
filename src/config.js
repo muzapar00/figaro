@@ -94,8 +94,12 @@ export const DEFAULTS = {
   interaction: {
     // Saying any of these instead of a question cancels the turn.
     cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
-    // 0 disables "keep listening after a reply" (Siri's follow-up window).
+    // After a spoken reply the assistant stays on screen this long, waiting for
+    // a follow-up. 0 disables the window. Only a voice above followUpMinRms for
+    // followUpMinMs re-opens the conversation, so room noise cannot do it.
     followUpWindowMs: 0,
+    followUpMinRms: 0.10,
+    followUpMinMs: 250,
   },
   ui: {
     socket: null, // resolved => $XDG_RUNTIME_DIR/figaro/sock

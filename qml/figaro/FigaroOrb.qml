@@ -26,6 +26,9 @@ Item {
     readonly property bool listening: state === "listening"
     readonly property bool thinking: state === "thinking"
     readonly property bool speaking: state === "speaking"
+    // Waiting after a reply: still on screen, still listening for a loud voice,
+    // but deliberately still, so it does not look busy.
+    readonly property bool waiting: state === "waiting"
 
     // Spring state for the audio envelope.
     property real env: 0
@@ -73,6 +76,10 @@ Item {
         const th = orb.thinkMix;
         const sp = orb.speakMix;
         const sum = Math.max(0.001, l + th + sp);
+        if (orb.waiting) {
+            const wc = FigaroStyle.listenColor;
+            return { r: wc.r, g: wc.g, b: wc.b };
+        }
         return {
             r: (0.28 * l + 0.56 * th + 0.86 * sp) / sum,
             g: (0.52 * l + 0.34 * th + 0.34 * sp) / sum,
@@ -275,7 +282,7 @@ Item {
 
             // Spring-damper envelope: this is what makes the ball bounce
             // instead of simply following the meter.
-            const target = orb.state === "idle" ? 0 : Math.min(1, orb.level);
+            const target = (orb.state === "idle" || orb.waiting) ? 0 : Math.min(1, orb.level);
             const stiffness = FigaroStyle.springStiffness;
             const damping = FigaroStyle.springDamping;
             const accel = stiffness * (target - orb.env) - damping * orb.envVel;
