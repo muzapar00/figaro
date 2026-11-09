@@ -250,8 +250,9 @@ test('system prompt keeps the dsh identity and tool guidance, rewritten for voic
   assert.match(prompt, /Use the glob tool — not shell find/);
   assert.match(prompt, /Use the grep tool — not shell grep or rg/);
   assert.match(prompt, /untrusted data/);
-  // Voice rewrite: spoken style, no markdown, short by default.
-  assert.match(prompt, /1-3 sentences/);
+  // Voice rewrite: spoken style, no markdown, and deliberately one short
+  // sentence by default (the user asked for terse replies).
+  assert.match(prompt, /Default to ONE sentence/);
   assert.match(prompt, /Never use markdown/);
   assert.match(prompt, /Do not claim to have done something you have not done/);
   // Runtime context is fresh per call.
