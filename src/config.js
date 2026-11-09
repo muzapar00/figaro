@@ -87,7 +87,12 @@ export const DEFAULTS = {
     // knows they were heard. Cached at daemon start to keep it under ~300 ms.
     ack: {
       enabled: true,
-      phrases: ['我在', '在的', '请指示'],
+      // Short spoken acknowledgements, picked at random (never the same twice in
+      // a row). All are punctuation-free: the TTS would turn "？" into an odd
+      // rising pause.
+      phrases: ['我在', '在的', '你好', '嘿', '有何贵干', '来了', '听着呢', '请讲', '久等了', '你说'],
+      avoidRepeat: true,
+      synthConcurrency: 3,
       timeoutMs: 800,
     },
     // start speaking after this many sentences are buffered (1 => lowest latency)

@@ -19,8 +19,24 @@
 // starts immediately instead.
 import { performance } from 'node:perf_hooks';
 
-export const DEFAULT_PHRASES = ['我在', '在的', '请指示'];
+// Short, natural spoken acknowledgements. Deliberately without punctuation:
+// the TTS reads marks as pauses and "有何贵干？" gains an unnatural question
+// intonation, so the bare words sound better.
+export const DEFAULT_PHRASES = Object.freeze([
+  '我在',
+  '在的',
+  '你好',
+  '嘿',
+  '有何贵干',
+  '来了',
+  '听着呢',
+  '请讲',
+  '久等了',
+  '你说',
+]);
 export const DEFAULT_TIMEOUT_MS = 800;
+export const DEFAULT_SYNTH_CONCURRENCY = 3;
+export const MAX_SYNTH_CONCURRENCY = 5;
 const DEFAULT_SAMPLE_RATE = 32000;
 const MAX_PHRASE_CHARS = 24;
 const MIN_PCM_BYTES = 320; // shorter than ~5ms of 32k s16 mono => bad synthesis
@@ -47,6 +63,15 @@ export function createWakeAck(options = {}) {
   const timeoutMs = Number.isFinite(Number(ackCfg.timeoutMs)) && Number(ackCfg.timeoutMs) > 0
     ? Number(ackCfg.timeoutMs)
     : DEFAULT_TIMEOUT_MS;
+  // Avoid playing the same phrase twice in a row (the user heard "在的" twice and
+  // thought only one phrase existed).
+  const avoidRepeat = ackCfg.avoidRepeat !== false;
+  const synthConcurrency = Math.min(
+    MAX_SYNTH_CONCURRENCY,
+    Math.max(1, Number.isFinite(Number(ackCfg.synthConcurrency))
+      ? Math.round(Number(ackCfg.synthConcurrency))
+      : DEFAULT_SYNTH_CONCURRENCY),
+  );
   const sampleRate = Number.isFinite(Number(config.minimax?.sampleRate))
     ? Number(config.minimax.sampleRate)
     : DEFAULT_SAMPLE_RATE;
@@ -67,11 +92,15 @@ export function createWakeAck(options = {}) {
     lastPhrase: null,
     lastFirstWriteMs: null,
     lastPlayDurationMs: null,
+    avoidRepeat,
+    synthConcurrency,
+    phraseMs: {}, // phrase -> synthesis wall time (ms), for latency diagnostics
     disabledReason: enabled ? null : 'tts disabled',
   };
   let preparePromise = null;
   let closed = false;
   let active = null; // {phrase, startedAt, settled, resolveDone, timer}
+  let lastPickedPhrase = null;
 
   function fail(reason) {
     stats.ready = false;
@@ -100,21 +129,35 @@ export function createWakeAck(options = {}) {
       }
       const startedAt = performance.now();
       let failures = 0;
-      for (const phrase of phrases) {
-        try {
-          const result = await tts.synthesize(phrase);
-          const pcm = result?.pcm;
-          if (!Buffer.isBuffer(pcm) || pcm.length < MIN_PCM_BYTES) {
-            throw new Error(`synthesis returned no usable PCM for "${phrase}"`);
+      // Finite concurrency: 10 short phrases at 3 at a time turns a ~2s serial
+      // warm-up into ~2.5s for ten phrases (a single phrase costs ~0.6-0.7s of
+      // MiniMax round-trip). Failures are per phrase: one bad phrase must not
+      // disable the whole ack.
+      let nextIndex = 0;
+      const worker = async () => {
+        while (!closed) {
+          const index = nextIndex;
+          nextIndex += 1;
+          if (index >= phrases.length) return;
+          const phrase = phrases[index];
+          const phraseStartedAt = performance.now();
+          try {
+            const result = await tts.synthesize(phrase);
+            const pcm = result?.pcm;
+            if (!Buffer.isBuffer(pcm) || pcm.length < MIN_PCM_BYTES) {
+              throw new Error(`synthesis returned no usable PCM for "${phrase}"`);
+            }
+            cache.set(phrase, { pcm, durationMs: result.durationMs ?? (pcm.length / (sampleRate * 2)) * 1000 });
+            stats.bytes += pcm.length;
+            stats.phraseMs[phrase] = Math.round(performance.now() - phraseStartedAt);
+          } catch (err) {
+            failures += 1;
+            stats.errors.push(String(err?.message || err));
+            log.warn(`wake-ack: phrase "${phrase}" failed: ${err?.message || err}`);
           }
-          cache.set(phrase, { pcm, durationMs: result.durationMs ?? (pcm.length / (sampleRate * 2)) * 1000 });
-          stats.bytes += pcm.length;
-        } catch (err) {
-          failures += 1;
-          stats.errors.push(String(err?.message || err));
-          log.warn(`wake-ack: phrase "${phrase}" failed: ${err?.message || err}`);
         }
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(synthConcurrency, phrases.length) }, () => worker()));
       const ttsStats = tts.stats ?? {};
       stats.phrases = cache.size;
       stats.synthMs = Math.round(performance.now() - startedAt);
@@ -138,7 +181,15 @@ export function createWakeAck(options = {}) {
   function pickPhrase() {
     const keys = [...cache.keys()];
     if (keys.length === 0) return null;
-    return keys[Math.min(keys.length - 1, Math.floor(random() * keys.length))];
+    // Never play the same phrase twice in a row when we have alternatives.
+    const candidates = avoidRepeat && keys.length > 1 && lastPickedPhrase !== null
+      ? keys.filter((key) => key !== lastPickedPhrase)
+      : keys;
+    const pool = candidates.length > 0 ? candidates : keys;
+    const index = Math.min(pool.length - 1, Math.max(0, Math.floor(random() * pool.length)));
+    const phrase = pool[index];
+    lastPickedPhrase = phrase;
+    return phrase;
   }
 
   function finishActive(info, stateOverride) {
@@ -278,7 +329,13 @@ export function createWakeAck(options = {}) {
       return active !== null;
     },
     get stats() {
-      return { ...stats, errors: [...stats.errors], cachedPhrases: [...cache.keys()] };
+      return {
+        ...stats,
+        errors: [...stats.errors],
+        cachedPhrases: [...cache.keys()],
+        phraseMs: { ...stats.phraseMs },
+        lastPickedPhrase,
+      };
     },
   };
 }

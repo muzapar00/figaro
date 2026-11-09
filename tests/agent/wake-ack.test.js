@@ -44,7 +44,7 @@ test('prepare() pre-synthesizes the configured phrases and reports voice identit
   const ack = createWakeAck({ config: makeConfig(), logger: silentLogger, getTts: () => tts });
   assert.equal(ack.enabled, true);
   assert.equal(await ack.prepare(), true);
-  assert.deepEqual(calls.synthesize, ['我在', '在的']);
+  assert.deepEqual([...calls.synthesize].sort(), ['在的', '我在'].sort());
   assert.equal(ack.ready, true);
   const stats = ack.stats;
   assert.equal(stats.phrases, 2);
@@ -52,6 +52,8 @@ test('prepare() pre-synthesizes the configured phrases and reports voice identit
   assert.equal(stats.voiceId, 'male-qn-jingying');
   assert.deepEqual(stats.cachedPhrases, ['我在', '在的']);
   assert.ok(stats.synthMs >= 0);
+  assert.ok(stats.phraseMs['我在'] >= 0, 'per-phrase synthesis timing is recorded');
+  assert.ok(stats.phraseMs['在的'] >= 0);
 });
 
 test('play() uses the TTS module player and resolves when playback ends', async () => {
@@ -174,14 +176,120 @@ test('playPcm throwing synchronously is reported, not thrown', async () => {
   assert.match(done.error, /player missing/);
 });
 
-test('default phrases are the user-facing three when config omits them', () => {
-  assert.deepEqual(DEFAULT_PHRASES, ['我在', '在的', '请指示']);
+test('default phrases are a varied spoken set of at least eight, without punctuation', () => {
+  assert.ok(DEFAULT_PHRASES.length >= 8, `expected >=8 default phrases, got ${DEFAULT_PHRASES.length}`);
+  assert.ok(new Set(DEFAULT_PHRASES).size === DEFAULT_PHRASES.length, 'no duplicate phrases');
+  for (const phrase of DEFAULT_PHRASES) {
+    assert.equal(phrase, phrase.trim());
+    assert.ok(phrase.length >= 1 && phrase.length <= 8, `"${phrase}" should be short`);
+    assert.doesNotMatch(phrase, /[，。！？、,.!?；;：:…]/, `"${phrase}" should not need punctuation for TTS`);
+  }
+  // The phrases the user explicitly asked for are in there.
+  for (const phrase of ['我在', '你好', '嘿', '有何贵干']) assert.ok(DEFAULT_PHRASES.includes(phrase));
+
   const { tts } = makeTts();
   const ack = createWakeAck({
     config: { minimax: {}, tts: { enabled: true } },
     logger: silentLogger,
     getTts: () => tts,
   });
-  assert.deepEqual(ack.phrases, DEFAULT_PHRASES);
-  assert.equal(ack.timeoutMs, 800);
+  assert.deepEqual(ack.phrases, [...DEFAULT_PHRASES]);
+  assert.equal(ack.timeoutMs, 800, 'default timeout stays 800ms');
+  assert.equal(ack.stats.avoidRepeat, true, 'avoiding consecutive repeats is on by default');
+  assert.equal(ack.stats.synthConcurrency, 3);
+});
+
+test('avoidRepeat: never plays the same phrase twice in a row', async () => {
+  const { tts } = makeTts();
+  const phrases = ['我在', '在的', '你好'];
+  const ack = createWakeAck({
+    config: makeConfig({ tts: { enabled: true, ack: { enabled: true, phrases, timeoutMs: 800, avoidRepeat: true } } }),
+    logger: silentLogger,
+    getTts: () => tts,
+    random: () => 0, // always take the first candidate -> would repeat without the filter
+  });
+  await ack.prepare();
+  const played = [];
+  for (let i = 0; i < 9; i += 1) {
+    const playback = ack.play();
+    played.push(playback.phrase);
+    await playback.done;
+  }
+  for (let i = 1; i < played.length; i += 1) {
+    assert.notEqual(played[i], played[i - 1], `consecutive repeat at #${i}: ${played.join(' ')}`);
+  }
+  assert.ok(new Set(played).size >= 2, 'all phrases get used across repeats');
+  assert.equal(ack.stats.lastPickedPhrase, played.at(-1));
+});
+
+test('avoidRepeat: false allows consecutive picks (old behaviour, config opt-out)', async () => {
+  const { tts } = makeTts();
+  const phrases = ['我在', '在的', '你好'];
+  const ack = createWakeAck({
+    config: makeConfig({ tts: { enabled: true, ack: { enabled: true, phrases, timeoutMs: 800, avoidRepeat: false } } }),
+    logger: silentLogger,
+    getTts: () => tts,
+    random: () => 0,
+  });
+  await ack.prepare();
+  const played = [];
+  for (let i = 0; i < 5; i += 1) {
+    const playback = ack.play();
+    played.push(playback.phrase);
+    await playback.done;
+  }
+  assert.deepEqual(played, ['我在', '我在', '我在', '我在', '我在']);
+});
+
+test('prepare() uses finite concurrency instead of synthesizing serially', async () => {
+  const phrases = Array.from({ length: 9 }, (_, index) => `短语${index}`);
+  const delayMs = 60;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const { tts } = makeTts({
+    synthesizeImpl: async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      inFlight -= 1;
+      return { pcm: Buffer.alloc(640, 1), sampleRate: 32000, durationMs: 20 };
+    },
+  });
+  const ack = createWakeAck({
+    config: makeConfig({ tts: { enabled: true, ack: { enabled: true, phrases, timeoutMs: 800 } } }),
+    logger: silentLogger,
+    getTts: () => tts,
+  });
+  const startedAt = Date.now();
+  assert.equal(await ack.prepare(), true);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(ack.stats.phrases, 9);
+  assert.equal(maxInFlight, 3, 'synthesis runs 3 at a time');
+  assert.ok(maxInFlight > 1, 'synthesis is not serial');
+  // 9 phrases at concurrency 3 = 3 waves * 60ms (+ overhead); serial would be 540ms.
+  assert.ok(elapsed < 9 * delayMs * 0.7, `expected <${Math.round(9 * delayMs * 0.7)}ms, got ${elapsed}ms`);
+  assert.equal(Object.keys(ack.stats.phraseMs).length, 9, 'every phrase has a timing entry');
+});
+
+test('tts.ack.synthConcurrency clamps and can force serial synthesis', async () => {
+  const phrases = Array.from({ length: 4 }, (_, index) => `句${index}`);
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const { tts } = makeTts({
+    synthesizeImpl: async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight -= 1;
+      return { pcm: Buffer.alloc(640, 1), sampleRate: 32000, durationMs: 20 };
+    },
+  });
+  const ack = createWakeAck({
+    config: makeConfig({ tts: { enabled: true, ack: { enabled: true, phrases, timeoutMs: 800, synthConcurrency: 1 } } }),
+    logger: silentLogger,
+    getTts: () => tts,
+  });
+  await ack.prepare();
+  assert.equal(maxInFlight, 1);
+  assert.equal(ack.stats.synthConcurrency, 1);
 });
