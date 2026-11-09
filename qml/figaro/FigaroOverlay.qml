@@ -72,7 +72,7 @@ PanelWindow {
                 // A short beat so the ball is registered before it withdraws;
                 // without it the collapse and the exit read as one blurred move.
                 settleBeat.start();
-            } else if (Date.now() - win.hideRequestedAt > 600) {
+            } else if (Date.now() - win.hideRequestedAt > 1400) {
                 // Safety: never keep the window around if the retraction stalls.
                 hideTimer.stop();
                 win.shown = false;
@@ -84,7 +84,7 @@ PanelWindow {
 
     Timer {
         id: settleBeat
-        interval: 90
+        interval: 110
         onTriggered: win.shown = false
     }
 

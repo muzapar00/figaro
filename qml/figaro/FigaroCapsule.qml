@@ -42,8 +42,8 @@ Item {
             // Opening is leisurely and elastic; retracting is quicker so it never
             // gets cut off by the window leaving. Both are still springs, so the
             // pill collapses into the ball as one continuous motion.
-            spring: shell.reduce ? 6.0 : (morph ? 3.2 : 4.4)
-            damping: shell.reduce ? 1.0 : (morph ? 0.46 : 0.80)
+            spring: shell.reduce ? 6.0 : (morph ? 3.2 : 2.35)
+            damping: shell.reduce ? 1.0 : (morph ? 0.46 : 0.62)
             mass: 1.0
             epsilon: 0.001
         }
@@ -52,7 +52,8 @@ Item {
     // True once the pill has (almost) become the ball again. The window waits
     // for this before it starts to leave, which is what makes "pill -> ball ->
     // gone" a sequence instead of two overlapping animations.
-    readonly property bool collapsed: morphProgress < 0.02
+    readonly property bool collapsed: morphProgress < 0.03
+
 
     readonly property real ballDiameter: 128
     readonly property real ballScale: 1.0 - (1.0 - 0.62) * Math.max(0, Math.min(1, morphProgress))
