@@ -17,6 +17,7 @@ async function transcribe(entry) {
   const events = recorder();
   const config = makeConfig({ asr: { hotkey: '' } });
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     source: arraySource(pcm),

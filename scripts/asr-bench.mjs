@@ -106,6 +106,7 @@ function realtimeSource(pcm) {
 async function withModule(pcm, { sourceFactory, waitFor = 'final', timeoutMs = 20000, beginCapture = false, realParec = false } = {}) {
   const config = loadConfig();
   config.asr.hotkey = '';
+  config.asr.wakeCaptureFallbackMs = 0; // measure the ASR pipeline itself (no daemon ack)
   const events = [];
   let srcStart = 0;
   let asrRef = null;
@@ -191,18 +192,21 @@ console.log(`  total    ${mb(Object.values(summary.models).reduce((a, b) => a + 
 
 // 0) startup + memory (measured first: fresh process, single ASR instance)
 {
-  const pcm = concat([silence(300), fixture('cmd-time'), silence(1500)]);
   const rssBefore = process.memoryUsage().rss / 1e6;
-  const r = await withModule(pcm, { beginCapture: true, timeoutMs: 15000 });
+  const rIdle = await withModule(silence(2500), { waitFor: 'none', timeoutMs: 1200 });
+  const idleRss = process.memoryUsage().rss / 1e6;
+  const r = await withModule(concat([silence(400), fixture('cmd-time'), silence(2000)]), { beginCapture: true, timeoutMs: 15000 });
   summary.startup = {
-    startMs: r.startMs,
+    startMs: rIdle.startMs,
     rssBeforeMb: Number(rssBefore.toFixed(0)),
-    rssAfterMb: Number(r.rssMb.toFixed(0)),
-    modelInfo: r.modelInfo,
+    idleRssMb: Number(idleRss.toFixed(0)),
+    afterCaptureRssMb: Number((process.memoryUsage().rss / 1e6).toFixed(0)),
+    modelInfo: rIdle.modelInfo,
   };
   console.log('\n== 启动与内存 ==');
-  console.log(`  模型加载+启动 ${r.startMs} ms，RSS ${summary.startup.rssBeforeMb} MB -> ${summary.startup.rssAfterMb} MB`);
-  console.log(`  KWS=${r.modelInfo.kws?.epoch} streaming=${r.modelInfo.streaming} offline=${r.modelInfo.offline} vad=${r.modelInfo.vad} keywords=${r.modelInfo.keywords.length}`);
+  console.log(`  模型加载+启动 ${rIdle.startMs} ms`);
+  console.log(`  RSS: 启动前 ${summary.startup.rssBeforeMb} MB -> 常驻监听(未唤醒过) ${summary.startup.idleRssMb} MB -> 首次唤醒加载离线模型后 ${summary.startup.afterCaptureRssMb} MB`);
+  console.log(`  KWS=${rIdle.modelInfo.kws?.epoch} threads=${JSON.stringify(rIdle.modelInfo.threads)} streaming=${rIdle.modelInfo.streaming} offline=${rIdle.modelInfo.offline} vad=${rIdle.modelInfo.vad} keywords=${rIdle.modelInfo.keywords.length}`);
 }
 
 // 1) wake word: realtime paced, measure detection time from playback start
@@ -291,7 +295,7 @@ const extResults = [];
 for (const file of falseAudio) {
   if (!fs.existsSync(file)) { console.log(`  (skip missing ${file})`); continue; }
   const pcm = loadAudio(file);
-  const fast = ({ onPcm }) => {
+  const fast = (audio) => ({ onPcm }) => {
     let cancelled = false;
     let timer = null;
     let offset = 0;
@@ -299,11 +303,11 @@ for (const file of falseAudio) {
     return {
       async start() {
         const pump = () => {
-          if (cancelled || offset >= pcm.length) return;
-          const end = Math.min(offset + chunk, pcm.length);
-          onPcm(pcm.subarray(offset, end));
+          if (cancelled || offset >= audio.length) return;
+          const end = Math.min(offset + chunk, audio.length);
+          onPcm(audio.subarray(offset, end));
           offset = end;
-          if (offset < pcm.length) timer = setImmediate(pump);
+          if (offset < audio.length) timer = setImmediate(pump);
         };
         pump();
       },

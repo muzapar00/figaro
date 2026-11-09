@@ -4,7 +4,7 @@
 #   ./scripts/fetch-models.sh              # download what is missing (auto mirror)
 #   ./scripts/fetch-models.sh --check      # verify installed models, no network
 #   ./scripts/fetch-models.sh --force      # re-download everything
-#   ./scripts/fetch-models.sh --only=kws   # one artifact: kws | asr | vad
+#   ./scripts/fetch-models.sh --only=kws   # one artifact: kws | asr | sensevoice | vad
 #   FIGARO_MIRROR=modelscope|github|hf|auto ./scripts/fetch-models.sh
 #
 # Models land in <repo>/models (git-ignored) exactly where config.asr points:
@@ -85,6 +85,11 @@ artifact_complete() {
       file_ok "${dir}/tokens.txt" 1000 || return 1
       compgen_ok "${dir}" "model*.onnx" 10000000 || return 1
       return 0 ;;
+    asr-sensevoice)
+      dir="${MODELS_DIR}/asr-offline-sensevoice"
+      file_ok "${dir}/tokens.txt" 1000 || return 1
+      compgen_ok "${dir}" "model*.onnx" 10000000 || return 1
+      return 0 ;;
     vad)
       file_ok "${MODELS_DIR}/vad/silero_vad.onnx" 100000 || return 1
       return 0 ;;
@@ -98,6 +103,7 @@ artifact_report() {
     kws) dir="${MODELS_DIR}/kws" ;;
     asr-stream) dir="${MODELS_DIR}/asr-stream" ;;
     asr-offline) dir="${MODELS_DIR}/asr-offline" ;;
+    asr-sensevoice) dir="${MODELS_DIR}/asr-offline-sensevoice" ;;
     vad) dir="${MODELS_DIR}/vad" ;;
   esac
   if artifact_complete "$name"; then
@@ -274,7 +280,28 @@ fetch_asr_offline() {
     || die "离线 ASR 模型缺少 model.int8.onnx / tokens.txt"
   artifact_complete asr-offline || die "asr-offline 模型文件不完整"
   write_stamp asr-offline github "paraformer-zh-int8"
+  printf 'kind=paraformer\n' >> "${dir}/.figaro-model"
   log "asr-offline 安装完成（paraformer zh int8）"
+}
+
+# Optional: SenseVoice-small int8 (better punctuation/readability in some cases,
+# measured slower and slightly less accurate on real accented human speech than
+# paraformer-zh-2023-09-14 — see src/voice/asr/README.md "准确率").
+fetch_asr_sensevoice() {
+  local dir="${MODELS_DIR}/asr-offline-sensevoice"
+  mkdir -p "${dir}"
+  if artifact_complete asr-sensevoice && [[ ${FORCE} -eq 0 ]]; then log "asr-sensevoice 已就绪，跳过"; return 0; fi
+  local urls=(
+    "$(gh_release 'asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2')"
+  )
+  fetch_tarball "sensevoice.tar.bz2" "${urls[@]}" || die "无法下载 SenseVoice 模型"
+  extract_dir "${TARBALL}" "${CACHE_DIR}/sensevoice-extract" || die "解压 SenseVoice 失败"
+  cp -f "${SRC_DIR}/model.int8.onnx" "${SRC_DIR}/tokens.txt" "${dir}/" \
+    || die "SenseVoice 模型缺少 model.int8.onnx / tokens.txt"
+  artifact_complete asr-sensevoice || die "asr-sensevoice 不完整"
+  write_stamp asr-sensevoice github "sense-voice-zh-en-ja-ko-yue-2024-07-17-int8"
+  printf 'kind=sense-voice\n' >> "${dir}/.figaro-model"
+  log "asr-sensevoice 安装完成"
 }
 
 fetch_vad() {
@@ -307,9 +334,10 @@ log "模型目录: ${MODELS_DIR}（mirror=${MIRROR}）"
 case "${ONLY}" in
   kws) fetch_kws ;;
   asr) fetch_asr_stream; fetch_asr_offline ;;
+  sensevoice) fetch_asr_sensevoice ;;
   vad) fetch_vad ;;
   "") fetch_kws; fetch_asr_stream; fetch_asr_offline; fetch_vad ;;
-  *) die "--only 只支持 kws|asr|vad" ;;
+  *) die "--only 只支持 kws|asr|sensevoice|vad" ;;
 esac
 
 artifact_report kws || true

@@ -118,8 +118,17 @@ F5 走 XDG Desktop Portal 的 `org.freedesktop.portal.GlobalShortcuts` v2。
 | `silenceStopMs` | 900 | 说话结束后静音这么久 → 自动 `endCapture()` |
 | `maxCaptureMs` | 15000 | 单次采集上限，兜底 |
 | `minCaptureMs` | 350 | 更短的采集按空处理（F5 轻点一下不会误发） |
-| `hotkey` | `F5` | 空字符串 = 禁用 F5，只剩语音唤醒 |
+| `hotkey` | 见 `config.js` | 全局快捷键串（如 `CTRL+ALT+F5`、`F5`；空字符串 = 禁用），portal 格式由 `normalizeTrigger()` 规范化 |
 | `longPressMs` | 260 | 按住超过该值才算长按（短按忽略） |
+| `wakeCaptureFallbackMs` | 0 | >0 时唤醒后**等 daemon 调 `beginCapture()`**（daemon 先播「我在」）；超时兜底自己开始采集。daemon 当前配 1500 ms |
+
+补充（F5/快捷键）：
+- `normalizeTrigger()` 把 `ctrl+alt+f5` / `Ctrl+Alt+F5` / `Control+Alt+F5` 统一成
+  `CTRL+ALT+F5`（顺序固定 CTRL+ALT+SHIFT+LOGO+KEY，`Meta/Super/Win→LOGO`）；
+- 用户取消授权对话框时，模块不会一次失败就永久降级：**30 s 后重试，最多 2 次**，
+  每次日志都提示"需要用户在弹窗点确定"；成功绑定后无需重启 daemon（`ShortcutsChanged`
+  + 10 s `ListShortcuts` 轮询兜底）。
+- 测试/嵌入时可传 `micGain:false` 避免自动校正动到系统混音器。
 
 `onLevel` 每 50 ms 音频推一次 RMS（0..1，约 20 Hz）；`onPartial` 在采集期间
 随流式识别结果更新（约 10 Hz，去重后）。
@@ -147,6 +156,45 @@ KWS 模型是拼音建模单元的小 zipformer，关键词文件格式为
 「费加罗」是中文拼音唤醒词；配置里的 `figaro` 英文写法**无法**被该 KWS 模型
 编码（已跳过并记日志），中文发音的「费加罗」不受影响。
 
+## CPU 与内存（重要）
+
+**坑：onnxruntime 的线程池在「持续推理但间隙很短」时自旋空转。** 常驻 KWS 每
+100 ms 解一次，如果 `numThreads=2`，两个 ORT worker 线程会在两次 decode 之间
+spin-wait，实测空闲 CPU **212% of one core**（daemon 里那 200% 就是这么来的）。
+同一份代码 `numThreads=1` 时空闲只有 **2.7%**。所以本模块把**所有** ORT
+session 默认设为 1 线程（单线程也够快：流式 RTF≈0.012，离线 paraformer
+71–105 ms/句，KWS RTF≈0.01）。仅在明确知道后果时用环境变量覆盖：
+
+```bash
+FIGARO_ASR_KWS_THREADS=1      # 默认 1（>1 会空闲自旋！）
+FIGARO_ASR_STREAM_THREADS=1   # 默认 1
+FIGARO_ASR_OFFLINE_THREADS=1  # 默认 1（2 => 41-60ms/句，但会多 2 个线程）
+```
+
+**内存：离线模型 233 MB 懒加载。** 启动只加载 KWS(10MB)+streaming(25MB)+VAD；
+首次 `beginCapture()` 时在 worker 线程上异步加载离线模型（`OfflineRecognizer.createAsync`，
+约 0.58 s，与用户说话重叠，不阻塞 daemon 事件循环），`endCapture()` 里 await。
+所以「只听唤醒词、还没唤醒过」时很轻：
+
+| 状态 | CPU（空闲） | 线程 | RSS |
+|---|---|---|---|
+| 常驻监听、未唤醒过 | **3–7%** | 7 | **~166 MB** |
+| 首次唤醒并转写过一句后 | **~0.1%** | 11 | ~570–630 MB（233MB 模型 + ORT arena 常驻） |
+| 模型加载+启动耗时 | — | — | 约 0.6 s |
+
+（daemon 侧实测：重启后 `top` 平均 9.7%、RSS ~600 MB，之前是 **200%+**。）
+
+（实测环境：/usr/bin/node v22.22.1，真实 parec 麦克风，30s/20s 采样，
+`/proc/self/stat` 计算；唤醒采集期间 CPU 会短暂升高，属正常。）
+
+唤醒后 233MB 模型会一直常驻：sherpa-onnx-node 没有显式释放 session 的 API，
+依赖 GC 释放 native 内存不可靠，因此不做「每轮卸载」。若想进一步省内存，
+可在 `config` 里把 `offlineModelDir` 指向更小的模型（如 streaming-only 方案），
+模块会自动只用流式结果做 final。
+
+运行时基准是 **`/usr/bin/node` v22.22.1**（本机 daemon 统一用这个）；v24 上
+也在同一套测试/bench 里验证过，行为一致。
+
 ## 降级矩阵
 
 | 情况 | 行为 |
@@ -161,6 +209,86 @@ KWS 模型是拼音建模单元的小 zipformer，关键词文件格式为
 | 用户取消 portal 授权 | 同上（`hotkeyState.state='denied'`） |
 | 用户长时间不说话 | 采集在 `max(silenceStopMs,1500)` 后自动结束，`onFinal('')` |
 | 音频流中断 >1.5 s | 自动结束采集，回到监听（不会卡死） |
+
+## 麦克风增益自动校正 + 电平看门狗（`mic-gain.js`）
+
+本机 ALC897 的 `Capture` 混音器增益会跨会话保留，可能停在 63/63（+30 dB）。
+此时麦克风输入严重过载/削波，KWS 听不出唤醒词（实测：增益 63 时环境 RMS 一度
+到 5651，接近满量程；降到 45 后用户确认唤醒正常）。
+
+`createAsr.start()` 后自动做一次校正（后台执行，不阻塞 start，不阻塞音频循环）：
+
+1. `amixer -c 0 sget Capture` 读当前增益；
+2. 用 300–500 ms 真实输入测 RMS/峰值（`peak > 0.9` 或 `RMS > 0.25` 视为过载；
+   `RMS < 0.002` 视为几乎没有信号）；
+3. 过载 → 按 45 → 38 → 30 → 24 逐档下调并复测（每次日志一行
+   `[mic] capture gain 63->45 (RMS 5651->300)`）；几乎无信号 → 上调一档
+   （上限 63、最多两步，且下限 20 不会把麦克风关掉）；
+4. 幂等：已经在正常范围就只记一行 `[mic] capture gain ok at 45 (RMS …)`。
+
+> 注：没有采用「RMS<0.005 就上调」的字面规则——安静房间在 45% 增益下
+> RMS≈0.0026，会被误判成"太安静"从而不断上调、再次引入削波。因此上调阈值
+> 取 0.002（接近数字静音），下调是主要方向。
+
+运行期每 ~5 s 汇总一次电平（`observe()`）：
+
+- 持续削波（>50% 采样过载）→ `onError({code:'MIC_CLIPPING'})` 一次（5 分钟冷却），
+  并**自动下调一档增益**自愈；
+- 连续 60 s 几乎无输入 → `onError({code:'MIC_SILENT'})` 一次；
+- 两者都不会刷屏，也不影响语音链路。
+
+没有任何 mixer / amixer 缺失时只 warn 一次并跳过，ASR 照常工作（单测覆盖）。
+
+## 准确率（实测，2026-11）
+
+评测集：
+- **干净 TTS 通道**：`models/bench-audio`，44 句中文命令/问题（MiniMax `speech-02-turbo`
+  16k 单声道，有真值），由 `scripts/gen-asr-bench-audio.mjs` 生成（gitignored）。
+- **噪声通道**：把真实麦克风噪声（45% 增益下录的 10 s 环境/音乐声，RMS 3488）
+  按 20/10/5 dB SNR 混进上面的句子。
+- **真人语音**：sherpa-onnx 官方 16 句真人录音（含川渝/天津/河南口音），
+  真值取自官方文档，`scripts/asr-human-bench.mjs`。
+
+### 1) 模型 × 通道（归一化 CER，越低越好）
+
+| 模型 | clean | SNR20 | SNR10 | SNR5 | 尾截断 200ms |
+|---|---|---|---|---|---|
+| paraformer-zh-2023-09-14 int8（现役） | 1.5% | 1.3% | 1.2% | 2.7% | 1.2% |
+| SenseVoice-small int8 | 1.2% | 1.2% | 1.4% | 2.5% | 1.0% |
+| paraformer-zh-int8-2025-10-07（川渝微调） | 2.3% | — | 3.1% | 4.4% | — |
+
+### 2) 真人语音（16 句，含口音，最贴近真实用户）
+
+| 模型 | CER | 中位延迟 |
+|---|---|---|
+| paraformer-zh-2023-09-14 int8（现役） | **6.47%** | 420 ms |
+| SenseVoice-small int8 | 9.56% | 378 ms |
+| paraformer-zh-int8-2025-10-07（川渝微调） | 6.09% | 351 ms |
+
+> 2025 川渝模型在「它自己的官方测试集」上略好（6.09% vs 6.47%），但在 TTS
+> 干净通道明显更差（2.3% vs 1.8%，存在测试集偏置风险），因此**不切换**。
+
+### 3) 消融实验（都基于 paraformer 现役）
+
+| 改动 | 效果 | 结论 |
+|---|---|---|
+| 解码前去掉首尾静音 | clean 1.79→1.79，SNR10 1.53→2.30，SNR5 3.58→4.35 | **不做**（会切掉弱音尾） |
+| GTCRN 降噪后再识别 | SNR10 1.53→3.58，SNR5 3.58→6.39，SNR0 4.35→8.70 | **不做**（拟人化损伤语音，CER 翻倍） |
+| 尾截断 200 ms | 1.5→1.2（几乎无感） | `silenceStopMs=900` 足够，**不调大**（调大只会增加延迟） |
+| 流式 partial | RTF≈0.012，首 partial 0.5–0.8 s | 保留，不影响 final |
+| 热词/上下文偏置 | paraformer/SenseVoice 在 sherpa-onnx 里**不支持** hotwords | 不启用；若将来需要，换 transducer 系模型 |
+| 标点 | 现役 paraformer 无标点；SenseVoice 自带标点/ITN | 见下 |
+
+### 4) 选定方案
+
+- **final 继续用 paraformer-zh-2023-09-14 int8**（尺寸 243 MB，单线程 71–105 ms/句）。
+  实人+噪声综合最稳，且没有切换风险。
+- SenseVoice-small int8 作为**可选**（`./scripts/fetch-models.sh --only=sensevoice`）：
+  TTS 干净通道略好、自带标点与 ITN，但真人带口音明显更差，默认不启用。
+- 唤醒词不需要专门训练：KWS zipformer 3.3M + 两字前缀实测 8/8；
+  识别准确率此前最大的问题不是模型，而是**麦克风增益 63 导致削波**（见上一节）。
+- 不换更大模型（FireRedASR 等 1–2 GB、CPU RTF 高）在“桌面语音助手 + 噪声通道”
+  场景收益不抵成本。
 
 ## 测试与工具
 

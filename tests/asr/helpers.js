@@ -88,7 +88,9 @@ export function concat(parts) {
 export function makeConfig(overrides = {}) {
   const config = loadConfig();
   const asr = { ...DEFAULTS.asr, ...(config.asr ?? {}) };
-  config.asr = { ...asr, hotkey: '', ...(overrides.asr ?? {}) };
+  // Tests never touch the user's portal/mixer and use the immediate-capture
+  // behaviour (wakeCaptureFallbackMs is a daemon-side ack option).
+  config.asr = { ...asr, hotkey: '', wakeCaptureFallbackMs: 0, ...(overrides.asr ?? {}) };
   return config;
 }
 

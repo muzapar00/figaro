@@ -32,11 +32,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createKws, locateKwsModel } from './kws.js';
-import { createStreamingAsr, createOfflineAsr, locateStreamingModel, locateOfflineModel } from './recognizers.js';
+import { createStreamingAsr, createOfflineAsrAsync, locateStreamingModel, locateOfflineModel } from './recognizers.js';
 import { createVad } from './vad.js';
 import { createCapture } from './capture.js';
 import { createHotkey } from './hotkey.js';
 import { createParecSource } from './sources.js';
+import { createMicGainController } from './mic-gain.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -95,6 +96,7 @@ export function createAsr(opts) {
     onLog = () => {},
     source,
     hotkey: hotkeyOption,
+    micGain: micGainOption,
   } = opts ?? {};
   if (!config) throw new TypeError('createAsr: config is required');
   const asrCfg = config.asr ?? {};
@@ -107,6 +109,8 @@ export function createAsr(opts) {
   let vad = null;
   let capture = null;
   let hotkeyInst = null;
+  let micGain = null;
+  const probeWaiters = [];
   let offlineLoadPromise = null;
   let offlineLoadError = null;
   let mic = null;
@@ -116,6 +120,7 @@ export function createAsr(opts) {
   let levelCount = 0;
   let lastAudioAt = 0;
   let tickTimer = null;
+  let wakeFallbackTimer = null;
   let finalizePromise = null;
   let hotkeyStarted = false;
 
@@ -193,10 +198,82 @@ export function createAsr(opts) {
     }, TICK_MS);
   }
 
+  /** Resolve with {rms, peak} once `ms` of audio has been observed. */
+  function measureLevel(ms) {
+    return new Promise((resolve, reject) => {
+      const waiter = { need: Math.max(1, Math.round(ms)), n: 0, sumSq: 0, peak: 0, resolve, reject };
+      waiter.timer = setTimeout(() => {
+        const idx = probeWaiters.indexOf(waiter);
+        if (idx >= 0) probeWaiters.splice(idx, 1);
+        reject(new Error('timeout waiting for microphone level'));
+      }, Math.max(1500, ms * 4));
+      probeWaiters.push(waiter);
+    });
+  }
+
+  function feedProbes(samples) {
+    if (!probeWaiters.length) return;
+    let sumSq = 0;
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const v = samples[i];
+      sumSq += v * v;
+      const a = Math.abs(v);
+      if (a > peak) peak = a;
+    }
+    for (const waiter of [...probeWaiters]) {
+      waiter.n += samples.length;
+      waiter.sumSq += sumSq;
+      if (peak > waiter.peak) waiter.peak = peak;
+      if (waiter.n >= waiter.need) {
+        clearTimeout(waiter.timer);
+        const idx = probeWaiters.indexOf(waiter);
+        if (idx >= 0) probeWaiters.splice(idx, 1);
+        waiter.resolve({ rms: Math.sqrt(waiter.sumSq / waiter.n), peak: waiter.peak });
+      }
+    }
+  }
+
+  function chunkLevel(samples) {
+    let sumSq = 0;
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const v = samples[i];
+      sumSq += v * v;
+      const a = Math.abs(v);
+      if (a > peak) peak = a;
+    }
+    return { rms: Math.sqrt(sumSq / samples.length), peak };
+  }
+
+  async function calibrateMicGain() {
+    if (!micGain || !micGain.available) return;
+    try {
+      const res = await micGain.calibrate((ms) => measureLevel(ms));
+      if (res?.adjusted) log(`[mic] 自动增益校正完成（${res.from}->${res.to}，${res.adjustments} 次调整）`);
+    } catch (err) {
+      log(`[mic] 自动增益校正跳过：${asError(err).message}`);
+    }
+  }
+
+  function monitorMicLevel(samples) {
+    if (!micGain) return;
+    const { rms, peak } = chunkLevel(samples);
+    const warning = micGain.observe(rms, peak);
+    if (warning) {
+      const err = new Error(warning.message);
+      err.code = warning.code;
+      emitError(err);
+      if (warning.code === 'MIC_CLIPPING') void micGain.correctClipping().catch(() => {});
+    }
+  }
+
   function handlePcm(samples) {
     if (!samples || samples.length === 0) return;
     if (state === 'stopped' || state === 'failed' || state === 'idle' || state === 'starting') return;
     lastAudioAt = Date.now();
+    feedProbes(samples);
+    monitorMicLevel(samples);
     emitLevel(samples);
     pushPreRoll(samples);
     if (state === 'listening') {
@@ -222,11 +299,27 @@ export function createAsr(opts) {
     if (state !== 'listening') return;
     log(`唤醒（${origin}）`);
     safe(onWake);
-    // If the daemon does not call beginCapture() synchronously from onWake (or
-    // there is no daemon at all, e.g. F5 handler), start capture ourselves.
-    queueMicrotask(() => {
-      if (state === 'listening') beginCapture();
-    });
+    // If the daemon does not call beginCapture() itself (or there is no daemon
+    // at all, e.g. F5 handler), start capture ourselves.
+    //
+    // config.asr.wakeCaptureFallbackMs > 0 lets the daemon play a short ack
+    // ("我在") before capture starts; the daemon then calls beginCapture() when
+    // the ack finished. The timer is only a fallback so a lost ack never leaves
+    // Figaro deaf.
+    const fallbackMs = Number(asrCfg.wakeCaptureFallbackMs ?? 0);
+    if (wakeFallbackTimer) { clearTimeout(wakeFallbackTimer); wakeFallbackTimer = null; }
+    if (fallbackMs > 0) {
+      log(`onWake 后等待 daemon 开始采集（兜底 ${fallbackMs}ms）`);
+      wakeFallbackTimer = setTimeout(() => {
+        wakeFallbackTimer = null;
+        if (state === 'listening') beginCapture();
+      }, fallbackMs);
+      wakeFallbackTimer.unref?.();
+    } else {
+      queueMicrotask(() => {
+        if (state === 'listening') beginCapture();
+      });
+    }
   }
 
   function handleMicFatal(err) {
@@ -238,6 +331,7 @@ export function createAsr(opts) {
 
   function beginCapture() {
     if (state !== 'listening' || !capture) return;
+    if (wakeFallbackTimer) { clearTimeout(wakeFallbackTimer); wakeFallbackTimer = null; }
     state = 'capturing';
     lastAudioAt = Date.now();
     capture.begin(preRollPcm());
@@ -293,6 +387,7 @@ export function createAsr(opts) {
     if (state === 'stopped') return;
     state = 'stopped';
     stopTick();
+    if (wakeFallbackTimer) { clearTimeout(wakeFallbackTimer); wakeFallbackTimer = null; }
     if (finalizePromise) { try { await finalizePromise; } catch { /* ignore */ } }
     if (hotkeyInst) {
       try { await hotkeyInst.stop(); } catch { /* ignore */ }
@@ -303,12 +398,17 @@ export function createAsr(opts) {
       try { await mic.stop(); } catch { /* ignore */ }
       mic = null;
     }
+    for (const waiter of probeWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('asr stopped'));
+    }
     if (capture) { try { capture.reset(); } catch { /* ignore */ } capture = null; }
     if (kws) { try { kws.free(); } catch { /* ignore */ } kws = null; }
     if (vad) { try { vad.free(); } catch { /* ignore */ } vad = null; }
     streaming = null;
     offline = null;
     offlineLoadPromise = null;
+    if (micGain) { try { micGain.reset(); } catch { /* ignore */ } }
     clearPreRoll();
   }
 
@@ -323,19 +423,20 @@ export function createAsr(opts) {
     if (offlineLoadPromise) return offlineLoadPromise;
     const dirs = models();
     if (!locateOfflineModel(dirs.offline)) return Promise.resolve(null);
-    offlineLoadPromise = new Promise((resolve) => {
-      setImmediate(() => {
-        try {
-          offline = createOfflineAsr({ dir: dirs.offline, numThreads: OFFLINE_THREADS });
-          log(`离线转写模型已加载（lazy, ${offline.kind}, ${OFFLINE_THREADS} 线程）`);
-        } catch (err) {
-          offlineLoadError = asError(err);
-          emitError(new Error(`离线转写模型加载失败（将退化为流式结果）：${offlineLoadError.message}`, { cause: err }));
-          offline = null;
-        }
-        resolve(offline);
+    // createOfflineAsrAsync() builds the native session on a worker thread, so the
+    // daemon event loop (IPC, TTS, mic pumping) is not blocked for ~0.6 s.
+    offlineLoadPromise = createOfflineAsrAsync({ dir: dirs.offline, numThreads: OFFLINE_THREADS })
+      .then((asr) => {
+        offline = asr;
+        if (asr) log(`离线转写模型已加载（lazy, ${asr.kind}, ${OFFLINE_THREADS} 线程）`);
+        return asr;
+      })
+      .catch((err) => {
+        offlineLoadError = asError(err);
+        emitError(new Error(`离线转写模型加载失败（将退化为流式结果）：${offlineLoadError.message}`, { cause: err }));
+        offline = null;
+        return null;
       });
-    });
     return offlineLoadPromise;
   }
 
@@ -412,6 +513,14 @@ export function createAsr(opts) {
         throw e;
       }
 
+      // Microphone gain auto calibration (non-fatal).
+      if (micGainOption !== false) {
+        micGain = micGainOption && typeof micGainOption === 'object'
+          ? micGainOption
+          : createMicGainController({ onLog: log });
+        micGain.reset();
+      }
+
       // F5 long-press (non-fatal if the portal is unavailable).
       const hotkeyConfigured = String(asrCfg.hotkey ?? '').trim() !== '';
       const hotkeyWanted = hotkeyOption !== false && (hotkeyConfigured || (hotkeyOption && typeof hotkeyOption === 'object'));
@@ -460,6 +569,9 @@ export function createAsr(opts) {
       lastAudioAt = Date.now();
       state = 'listening';
       log('ASR 常驻监听已启动');
+      // Run calibration in the background (300-500 ms of audio is enough); it
+      // never blocks start() or the audio loop.
+      void calibrateMicGain();
     },
 
     async stop() {
@@ -489,6 +601,10 @@ export function createAsr(opts) {
         offline: offline?.kind ?? null,
         vad: vad?.kind ?? null,
       };
+    },
+    get micGainInfo() {
+      if (!micGain) return null;
+      return { available: micGain.available, ...(micGain.gain ? { gain: micGain.gain.gain, percent: micGain.gain.percent } : {}) };
     },
     get hotkeyState() {
       return hotkeyInst ? { state: hotkeyInst.state, bound: hotkeyInst.bound, started: hotkeyStarted, session: hotkeyInst.sessionPath } : null;

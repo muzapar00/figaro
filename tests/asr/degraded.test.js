@@ -14,6 +14,7 @@ test('missing wake-word model: start() rejects cleanly, onError fires, stop() is
   const config = makeConfig({ asr: { hotkey: '', kwsModelDir: 'models/does-not-exist-kws' } });
   const errors = [];
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     source: createErrorSource(new Error('should not be reached')),
@@ -40,6 +41,7 @@ test('missing transcription models (KWS present): start() rejects cleanly', asyn
   });
   const errors = [];
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     source: createErrorSource(new Error('should not be reached')),
@@ -57,6 +59,7 @@ test('microphone that cannot start: start() rejects with ASR_MIC_UNAVAILABLE', a
   const config = makeConfig({ asr: { hotkey: '' } });
   const errors = [];
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     source: createErrorSource(new Error('no /dev/snd and no pulse server')),
@@ -79,6 +82,7 @@ test('missing parec binary: real parec source fails through onError, no crash', 
   const config = makeConfig({ asr: { hotkey: '' } });
   const errors = [];
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     onError: (err) => errors.push(err),
@@ -100,6 +104,7 @@ test('microphone dying mid-stream flips the module to failed and reports onError
   const config = makeConfig({ asr: { hotkey: '' } });
   const errors = [];
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     onError: (err) => errors.push(err),
@@ -127,6 +132,7 @@ test('portal unavailable: voice path still starts, F5 reports a non-fatal error'
   const errors = [];
   const events = recorder();
   const asr = createAsr({
+    micGain: false,
     config,
     source: arraySource(silence(800)),
     onError: (err) => { errors.push(err); events.push({ type: 'error', message: err.message }); },
@@ -149,6 +155,7 @@ test('hotkey disabled by config: module runs wake-word-only', async (t) => {
   if (!modelsAvailable()) { skipMessage(t); return; }
   const config = makeConfig({ asr: { hotkey: '' } });
   const asr = createAsr({
+    micGain: false,
     config,
     source: arraySource(silence(300)),
     onError: () => {},

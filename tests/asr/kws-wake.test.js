@@ -14,6 +14,7 @@ function startModule(pcm, overrides = {}) {
   const events = recorder();
   const config = makeConfig({ asr: { hotkey: '', ...(overrides.asr ?? {}) } });
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     source: arraySource(pcm),
@@ -85,6 +86,7 @@ test('onLevel is emitted at 20 Hz with sane RMS values while audio flows', async
   const config = makeConfig({ asr: { hotkey: '' } });
   const levels = [];
   const asr = createAsr({
+    micGain: false,
     config,
     hotkey: false,
     source: arraySource(pcm),

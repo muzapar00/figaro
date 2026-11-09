@@ -150,8 +150,38 @@ function parseShortcutList(rawResults) {
   });
 }
 
+const MOD_ORDER = ['CTRL', 'ALT', 'SHIFT', 'LOGO'];
+const MOD_ALIASES = new Map([
+  ['ctrl', 'CTRL'], ['control', 'CTRL'],
+  ['alt', 'ALT'], ['option', 'ALT'],
+  ['shift', 'SHIFT'],
+  ['meta', 'LOGO'], ['super', 'LOGO'], ['win', 'LOGO'], ['logo', 'LOGO'], ['cmd', 'LOGO'],
+]);
+
+/**
+ * Normalise a shortcut string to the XDG shortcuts / GTK accelerator format the
+ * portal expects: `CTRL+ALT+SHIFT+LOGO+KEY`, fixed modifier order, upper-case
+ * key names. '' means "disabled"/"let the user pick".
+ *
+ * @param {string} raw e.g. "ctrl+alt+f5", "Control+Alt+F5", "F5"
+ * @returns {string} e.g. "CTRL+ALT+F5"
+ */
+export function normalizeTrigger(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return '';
+  const mods = new Set();
+  let key = '';
+  for (const part of text.split('+').map((p) => p.trim()).filter(Boolean)) {
+    const mod = MOD_ALIASES.get(part.toLowerCase());
+    if (mod) { mods.add(mod); continue; }
+    key = part.length === 1 ? part.toUpperCase() : part.toUpperCase();
+  }
+  if (!key) return '';
+  return [...MOD_ORDER.filter((m) => mods.has(m)), key].join('+');
+}
+
 function triggerFor(hotkey) {
-  return String(hotkey ?? '').trim();
+  return normalizeTrigger(hotkey);
 }
 
 /**
@@ -181,6 +211,8 @@ export function createHotkey(opts) {
     bindTimeoutMs = 0,
     recheckIntervalMs = 10000,
     maxBindRetries = 2,
+    maxCancelRetries = 2,
+    cancelRetryDelayMs = 30000,
     longPressMs: longPressOverride,
   } = opts;
   const asrCfg = config?.asr ?? {};
@@ -195,6 +227,7 @@ export function createHotkey(opts) {
   let recheckTimer = null;
   let retryTimer = null;
   let bindRetries = 0;
+  let cancelRetries = 0;
   let recheckInFlight = false;
   let seq = 0;
 
@@ -339,6 +372,8 @@ export function createHotkey(opts) {
     if (stopped) return;
 
     setState('awaiting-user');
+    const normalized = triggerFor(hotkey);
+    if (normalized !== String(hotkey).trim()) onLog(`[hotkey] trigger normalized: ${JSON.stringify(String(hotkey).trim())} -> ${JSON.stringify(normalized)}`);
     let requestPath;
     try {
       const reply = await conn.call({
@@ -364,7 +399,7 @@ export function createHotkey(opts) {
       startRecheck();
       return;
     }
-    onLog(`已请求绑定 ${triggerFor(hotkey) || '(用户自选按键)'}：若桌面弹出「Figaro 想要绑定快捷键」对话框，请点「允许/确定」（只需一次）`);
+    onLog(`已请求绑定 ${triggerFor(hotkey) || '(用户自选按键)'}：需要用户在桌面弹窗「Figaro 想要绑定快捷键」里点「允许/确定」（只需一次）`);
     startRecheck(); // recovery path: notice approval / manual binding even if response is missed
     const response = await waitResponse(requestPath, bindTimeoutMs);
     if (!response) {
@@ -373,8 +408,26 @@ export function createHotkey(opts) {
     }
     const [code, rawResults] = response;
     if (code !== 0) {
+      // The user may simply have been away / closed the dialog: keep the
+      // shortcut request alive a couple more times instead of degrading forever.
+      cancelRetries += 1;
+      if (cancelRetries <= maxCancelRetries) {
+        onLog(
+          `portal 授权被取消（需要用户在弹窗点「确定」）。${Math.round(cancelRetryDelayMs / 1000)}s 后重试 ${cancelRetries}/${maxCancelRetries}`,
+        );
+        startRecheck();
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          void createSessionAndBind();
+        }, cancelRetryDelayMs);
+        retryTimer.unref?.();
+        setState('denied');
+        return;
+      }
       fail(
-        '用户取消了 portal 快捷键授权（语音唤醒仍可用）。之后可在系统设置→快捷键 里给 Figaro 绑定，或重启费加罗重试',
+        'portal 快捷键授权多次被取消（需要用户在弹窗点「确定」；语音唤醒仍可用）。' +
+        '之后可在系统设置→快捷键 里给 Figaro 手动绑定，或重启费加罗重试',
         { code: 'HOTKEY_CANCELLED' },
       );
       startRecheck();

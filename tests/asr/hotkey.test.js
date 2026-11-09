@@ -15,6 +15,7 @@ import {
   desktopEntryPath,
   APP_ID,
   SHORTCUT_ID,
+  normalizeTrigger,
 } from '../../src/voice/asr/hotkey.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -62,6 +63,19 @@ test('long press: duplicate Activated (key auto-repeat) is ignored', async () =>
   await sleep(80);
   d.release();
   assert.equal(wakeCount, 1);
+});
+
+test('normalizeTrigger produces the portal/GTK accelerator format', () => {
+  assert.equal(normalizeTrigger('Ctrl+Alt+F5'), 'CTRL+ALT+F5');
+  assert.equal(normalizeTrigger('ctrl+alt+f5'), 'CTRL+ALT+F5');
+  assert.equal(normalizeTrigger('CTRL+ALT+F5'), 'CTRL+ALT+F5');
+  assert.equal(normalizeTrigger('Control+Alt+F5'), 'CTRL+ALT+F5');
+  assert.equal(normalizeTrigger('alt+ctrl+f5'), 'CTRL+ALT+F5', 'modifier order is canonical');
+  assert.equal(normalizeTrigger('shift+meta+a'), 'SHIFT+LOGO+A');
+  assert.equal(normalizeTrigger('F5'), 'F5');
+  assert.equal(normalizeTrigger(''), '');
+  assert.equal(normalizeTrigger('alt'), '', 'modifier without a key is not a trigger');
+  assert.equal(normalizeTrigger('Super+Alt+F12'), 'ALT+LOGO+F12');
 });
 
 test('ensureDesktopEntry writes a valid portal app-id .desktop file', () => {
@@ -262,8 +276,10 @@ test('hotkey module: recovers when the binding appears after start (no restart n
   }
 });
 
-test('hotkey module: user cancel is reported as a non-fatal error', async () => {
+test('hotkey module: bind cancel retries twice (dialog needs a user click) then degrades', async () => {
   const handlers = [];
+  const calls = [];
+  let bindAttempts = 0;
   const conn = {
     uniqueName: ':1.5',
     closed: false,
@@ -277,37 +293,54 @@ test('hotkey module: user cancel is reported as a non-fatal error', async () => 
     },
     async addMatch() {},
     async call(opts) {
+      calls.push(opts.member);
       if (opts.member === 'Register') return [];
-      if (opts.member === 'CreateSession' || opts.member === 'BindShortcuts') {
-        const reqPath = `/req/${opts.member}`;
-        setImmediate(() => {
-          for (const h of [...handlers]) {
-            if (h.iface !== 'org.freedesktop.portal.Request' || h.member !== 'Response') continue;
-            h.fn({ path: reqPath, args: [1, []] }); // 1 = cancelled
-          }
-        });
+      if (opts.member === 'ListShortcuts') {
+        const reqPath = `/req/list${calls.length}`;
+        setImmediate(() => emit(reqPath, [0, [['shortcuts', { signature: 'a(sa{sv})', value: [] }]]]));
+        return [reqPath];
+      }
+      if (opts.member === 'CreateSession') {
+        const reqPath = `/req/create${calls.length}`;
+        setImmediate(() => emit(reqPath, [0, [['session_handle', { signature: 's', value: `/session/${calls.length}` }]]]));
+        return [reqPath];
+      }
+      if (opts.member === 'BindShortcuts') {
+        bindAttempts += 1;
+        const reqPath = `/req/bind${bindAttempts}`;
+        setImmediate(() => emit(reqPath, [1, []])); // user clicked "cancel"
         return [reqPath];
       }
       return [];
     },
     close() { this.closed = true; },
   };
+  function emit(path, args) {
+    for (const h of [...handlers]) {
+      if (h.iface === 'org.freedesktop.portal.Request' && h.member === 'Response') h.fn({ path, args });
+    }
+  }
+  const logs = [];
   const errors = [];
   const hotkey = createHotkey({
-    config: { asr: { hotkey: 'F5', longPressMs: 30 } },
+    config: { asr: { hotkey: 'CTRL+ALT+F5', longPressMs: 30 } },
     onWake: () => {},
     onError: (err) => errors.push(err.message),
-    onLog: () => {},
+    onLog: (m) => logs.push(m),
     connectFn: async () => conn,
     bindTimeoutMs: 500,
+    cancelRetryDelayMs: 40,
+    maxCancelRetries: 2,
   });
   try {
     await hotkey.start();
     const t0 = Date.now();
-    while (hotkey.state !== 'unavailable' && Date.now() - t0 < 2000) await sleep(10);
+    while (hotkey.state !== 'unavailable' && Date.now() - t0 < 4000) await sleep(10);
+    assert.equal(bindAttempts, 3, 'initial attempt + 2 retries');
     assert.equal(hotkey.state, 'unavailable');
+    assert.match(logs.join('\n'), /已请求绑定 CTRL\+ALT\+F5/);
+    assert.match(logs.join('\n'), /需要用户.*点「确定」/);
     assert.ok(errors.length >= 1);
-    assert.match(errors.join('\n'), /会话|创建|拒绝|cancel/i);
   } finally {
     await hotkey.stop();
   }
