@@ -59,7 +59,7 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 | `16-real-daemon-applied-bargein.png` | 真 daemon（task-8） | 对真 daemon 写 `asr.bargeIn.enabled/minRms/echoFactor/minMs`（用户当前值）→ 四个控件全部绿色「已生效」，底部显示 daemon 当前生效值（enabled=true · minRms=0.090 · echoFactor=2.5 · minMs=500） |
 | `17-real-daemon-applied-followup.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.followUpMinRms/followUpMinMs`（0.012/180）→ 绿色「已生效」；等待窗口 Segmented 停在 7 秒（7000ms） |
 | `18-real-daemon-applied-phrases.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.dismissPhrases`（恢复默认 9 条）与 `followUpWindowMs` → 全部绿色「已生效」，chips 与 daemon 回读一致 |
-| `real-daemon-hot-apply.log` | 真 daemon（task-8） | 写配置期间的 daemon 日志：`interaction settings reloaded (followUp 7000ms, gate 0.012/180ms, 9 dismiss phrases)` ×4，证明运行时重读；bargeIn 走 ASR `applyRuntimeConfig({bargeIn})`（无日志行，以 config.set 返回 applied 为准） |
+| ~~`real-daemon-hot-apply.log`~~（本地生成，不入库） | 真 daemon（task-8） | 写配置期间的 daemon 日志：`interaction settings reloaded (followUp 7000ms, gate 0.012/180ms, 9 dismiss phrases)` ×4，证明运行时重读；bargeIn 走 ASR `applyRuntimeConfig({bargeIn})`（无日志行，以 config.set 返回 applied 为准） |
 | `19-real-daemon-applied.png` | 真 daemon（task-8） | 唤醒页热字段 `asr.wakeCooldownMs`（写同值 2500）显示「已生效」。全部 9 次真机写入后 `~/.config/figaro/config.json` 的 md5 与写入前一致（`ac550ed1…`），证明按用户当前值写入、其它配置未被改动 |
 
 | `20-appearance.png` | 外观（task-12） | 尺寸滑块（0.5–2.0）+ 三种形状卡片 + 动画开关；三颗交通灯默认已从 12px 调到 16px |
@@ -75,16 +75,16 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 | `35-real-model-restart.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 `asr.modelDir`：显示「已写入 · 需重启 daemon」 |
 | `36-real-sfx-unconfirmed.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 sfx：daemon 未报告归类 → 显示「已写入 · 未报告生效」（缺口证据） |
 | `37-prod-appearance-applied.png` | 生产 daemon（task-12） | 生产 daemon 上写同值 ui.*：四个字段全部「已生效」并收到 ui 广播 |
-| `real-daemon-task12.log` | 真 daemon（task-12） | 生产 daemon 的 ui/sfx 状态 + 临时真 daemon 实例上 9 个字段的 applied/restartRequired 原始应答 |
-| `wizard-result.log` | 引导向导（task-12） | shoot.sh 走完 5 步后的 wizard 快照（step=5, allPassed=true, results 全 pass） |
+| ~~`real-daemon-task12.log`~~（本地生成，不入库） | 真 daemon（task-12） | 生产 daemon 的 ui/sfx 状态 + 临时真 daemon 实例上 9 个字段的 applied/restartRequired 原始应答 |
+| ~~`wizard-result.log`~~（本地生成，不入库） | 引导向导（task-12） | shoot.sh 走完 5 步后的 wizard 快照（step=5, allPassed=true, results 全 pass） |
 
 ## 数据/日志
 
 | 文件 | 说明 |
 |---|---|
-| `status.json` | shoot.sh 收尾时的 GUI 全量状态快照（唤醒分数样本数、命中、环境音行数、麦克风样本、TTS ms、ASR partial/结果/正确率、导出路径，以及 task-8 的 interaction 快照 / `fieldStatus` 每字段写回状态 / `daemonDiagnostics` 回读） |
-| `diagnostics-export.json` | GUI「导出诊断报告」实际写出的文件副本（来自 `~/figaro-diagnostics-<ts>.json`） |
-| `ambient-export.csv` | GUI「导出 CSV」实际写出的环境音误唤醒表格副本（来自 `~/figaro-ambient-<ts>.csv`） |
+| ~~`status.json`~~（本地生成，不入库） | shoot.sh 收尾时的 GUI 全量状态快照（唤醒分数样本数、命中、环境音行数、麦克风样本、TTS ms、ASR partial/结果/正确率、导出路径，以及 task-8 的 interaction 快照 / `fieldStatus` 每字段写回状态 / `daemonDiagnostics` 回读） |
+| ~~`diagnostics-export.json`~~（本地生成，不入库） | GUI「导出诊断报告」实际写出的文件副本（来自 `~/figaro-diagnostics-<ts>.json`） |
+| ~~`ambient-export.csv`~~（本地生成，不入库） | GUI「导出 CSV」实际写出的环境音误唤醒表格副本（来自 `~/figaro-ambient-<ts>.csv`） |
 | `protocol-smoke.log` | 假 daemon 的 §3+§3.1 线协议冒烟：16/16 通过 |
 | `gui-startup.log` | `settings/ctl.sh restart` 的启动日志：含 `Configuration Loaded`，**0 条 QML ERROR/TypeError** |
 | `legacy-daemon.log` | 旧 daemon 日志：可见它忽略了 config.get/diagnostics/test.* 消息（GUI 据此降级） |

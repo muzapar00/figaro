@@ -14,5 +14,6 @@
   "dependencies": {
     "sherpa-onnx-node": "^1.12.0",
     "ws": "^8.18.0"
-  }
+  },
+  "license": "GPL-3.0-or-later"
 }

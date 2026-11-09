@@ -16,6 +16,7 @@
 //   node settings/test/fake-daemon.mjs --duration=600000   # auto-exit after 10 min
 //   FIGARO_SOCKET=... node settings/test/fake-daemon.mjs   # GUI will use the same env
 import fs from 'node:fs';
+import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
@@ -30,7 +31,7 @@ function argValue(name) {
 }
 
 const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`;
-const home = process.env.HOME || '/home/mzpr00';
+const home = process.env.HOME || os.homedir();
 const verbose = process.argv.includes('--verbose');
 const durationMs = Number(argValue('duration') || 0);
 

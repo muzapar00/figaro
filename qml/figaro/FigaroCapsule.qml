@@ -168,9 +168,12 @@ Item {
         width: shell.capsuleW
         height: shell.capsuleH
         radius: height / 2
-        // The compositor owns the glass finish and its tint; keep this
-        // transparent so nothing fights the refraction.
-        color: "transparent"
+        // With KOS glass the compositor owns the finish and the tint, so the
+        // client paints nothing. Without it (plain Plasma, another compositor,
+        // a machine with no KOS plugin) this is the pill's only background.
+        color: glassLoader.status === Loader.Ready
+            ? "transparent"
+            : Qt.rgba(0.05, 0.06, 0.12, 0.78)
         // KWin draws the rim; keep only a faint state-tinted inner edge so the
         // assistant still reads blue / violet / magenta through the glass.
         border.width: shell.morphProgress > 0.05 ? 1 : 0

@@ -6,3 +6,8 @@ config/config.json
 tmp/
 tests/tts/out/
 tests/asr/fixtures/generated/
+
+# settings self-test artefacts that contain local paths/logs: regenerate with shoot.sh
+settings/test/out/*.log
+settings/test/out/*.json
+settings/test/out/*.csv

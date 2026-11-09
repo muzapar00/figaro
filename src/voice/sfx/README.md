@@ -61,7 +61,7 @@ Logging: one line on creation, e.g.
 
 ```
 [sfx] playing to alsa_output.pci-0000_01_00.1.hdmi-stereo
-[sfx] loaded 5 sounds from /home/mzpr00/Projects/figaro/assets/sfx/
+[sfx] loaded 5 sounds from ~/Projects/figaro/assets/sfx/
 ```
 
 Pass `logger: <daemon logger>` to route those lines through the daemon's logger,

@@ -22,7 +22,8 @@ Singleton {
     readonly property string socketPath: Quickshell.env("FIGARO_SOCKET")
         || ((Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/figaro/sock")
     readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
-    readonly property string homeDir: Quickshell.env("HOME") || "/home/mzpr00"
+    // Fallback only; $HOME is always set in a graphical session. Never a real user name.
+    readonly property string homeDir: Quickshell.env("HOME") || "/tmp"
     readonly property string configPath: homeDir + "/.config/figaro/config.json"
     readonly property bool usingTestSocket: socketPath.indexOf("figaro-settings-test") >= 0
         || socketPath.indexOf("/tmp/") === 0
