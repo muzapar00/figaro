@@ -375,3 +375,108 @@ test('an explicit cancel is not undone by the empty final of the interrupted cap
   assert.equal(asr.record.begin, 1, 'empty final after cancel must not re-arm capture');
   assert.equal(states(messages).at(-1), 'idle');
 });
+
+test('TTS playback pauses wake-word listening and restores it afterwards (echo suppression)', async (t) => {
+  const record = { muted: false, muteCalls: [], ttsCallbacks: null };
+  const asrFactory = (callbacks) => {
+    record.cbs = callbacks;
+    return {
+      async start() {},
+      async stop() {},
+      beginCapture() {},
+      endCapture() {},
+      get capturing() {
+        return false;
+      },
+      setMuted(value) {
+        record.muted = Boolean(value);
+        record.muteCalls.push(Boolean(value));
+      },
+      get muted() {
+        return record.muted;
+      },
+    };
+  };
+  const ttsFactory = (callbacks) => {
+    record.ttsCallbacks = callbacks;
+    return {
+      async speak() {},
+      async flush() {},
+      stop() {
+        callbacks.onState?.('idle');
+      },
+      get speaking() {
+        return false;
+      },
+      stats: {},
+    };
+  };
+  const texts = [];
+  const { daemon, client, messages } = await startTestDaemon(t, {
+    asrFactory,
+    ttsFactory,
+    ackFactory: () => makeFakeAck({ mode: 'manual' }).ack,
+    agentFactory: makeFakeAgent(texts),
+  });
+  await waitFor(() => daemon.voice.asr && record.ttsCallbacks !== null, { label: 'voice modules' });
+
+  record.ttsCallbacks.onState('speaking');
+  await waitFor(() => record.muted === true, { label: 'muted during TTS' });
+  assert.deepEqual(record.muteCalls, [true]);
+
+  record.ttsCallbacks.onState('idle');
+  await waitFor(() => record.muted === false, { label: 'unmuted after TTS' });
+  assert.deepEqual(record.muteCalls, [true, false]);
+
+  client.send({ type: 'ping' });
+  const pong = await waitFor(() => messages.find((m) => m.type === 'pong'), { label: 'pong' });
+  assert.equal(pong.wakeMuted, false);
+  void texts;
+});
+
+test('echo suppression falls back to pauseListening()/resumeListening()', async (t) => {
+  const record = { paused: false, ttsCallbacks: null };
+  const asrFactory = (callbacks) => {
+    record.cbs = callbacks;
+    return {
+      async start() {},
+      async stop() {},
+      beginCapture() {},
+      endCapture() {},
+      get capturing() {
+        return false;
+      },
+      pauseListening() {
+        record.paused = true;
+      },
+      resumeListening() {
+        record.paused = false;
+      },
+    };
+  };
+  const ttsFactory = (callbacks) => {
+    record.ttsCallbacks = callbacks;
+    return {
+      async speak() {},
+      async flush() {},
+      stop() {
+        callbacks.onState?.('idle');
+      },
+      get speaking() {
+        return false;
+      },
+      stats: {},
+    };
+  };
+  const { daemon } = await startTestDaemon(t, {
+    asrFactory,
+    ttsFactory,
+    ackFactory: () => makeFakeAck({ mode: 'manual' }).ack,
+    agentFactory: makeFakeAgent([]),
+  });
+  await waitFor(() => daemon.voice.asr && record.ttsCallbacks !== null, { label: 'voice modules' });
+  record.ttsCallbacks.onState('speaking');
+  await waitFor(() => record.paused === true, { label: 'paused' });
+  record.ttsCallbacks.onState('idle');
+  await waitFor(() => record.paused === false, { label: 'resumed' });
+});

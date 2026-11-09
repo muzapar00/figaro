@@ -586,6 +586,7 @@ export function createSettingsService(options = {}) {
         inputGainPercent: asr?.inputGainPercent !== undefined ? asr.inputGainPercent : (config.asr?.inputGainPercent ?? null),
         hotkey: config.asr?.hotkey ?? '',
         hotkeyState: typeof asr?.hotkeyState === 'object' && asr.hotkeyState !== null ? asr.hotkeyState : null,
+        muted: typeof asr?.muted === 'boolean' ? asr.muted : null,
         modelInfo: asrInfo,
         lastFinalMs: finiteNumber(asr?.lastFinalMs, null),
       },

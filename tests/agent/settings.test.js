@@ -56,6 +56,9 @@ function makeFakeAsr() {
       get hotkeyState() {
         return { state: 'bound', bound: true };
       },
+      get muted() {
+        return false;
+      },
       get lastFinalMs() {
         return 123;
       },
@@ -500,6 +503,7 @@ test('diagnostics aggregates config path, voice health, mic and recent errors', 
   assert.ok(reply.uptimeMs >= 0);
   assert.equal(reply.asr.available, true);
   assert.equal(reply.asr.sensitivity, 'low');
+  assert.equal(reply.asr.muted, false);
   assert.equal(reply.tts.available, true);
   assert.equal(reply.tts.model, 'speech-2.6-turbo');
   assert.equal(reply.ack.enabled, true);

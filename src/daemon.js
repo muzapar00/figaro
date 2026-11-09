@@ -176,6 +176,8 @@ export function createDaemon(options = {}) {
   let lastMicRms = 0;
   let lastMicPeak = 0;
   let lastCancelAt = 0; // suppresses echo re-listen after an explicit cancel
+  let wakeMuted = false; // wake-word listening paused while TTS/ack audio plays
+  let wakeMuteSupported = null; // null = not probed yet
   const recentErrors = []; // ring buffer for diagnostics.recentErrors
 
   const emit = (message) => {
@@ -216,6 +218,7 @@ export function createDaemon(options = {}) {
       model: config.deepseek?.model ?? null,
       voice: { asr: Boolean(voice.asr), tts: Boolean(voice.tts) },
       asrCapturing: Boolean(voice.asr?.capturing),
+      wakeMuted: Boolean(wakeMuted),
       // Effective settings summary (docs/ipc.md §3.1); lets a GUI confirm that a
       // config.set actually landed without a separate config.get.
       config: {
@@ -348,7 +351,51 @@ export function createDaemon(options = {}) {
     pushRecentError(message);
     log.warn(message);
     emit({ type: 'error', message });
-    if (area === 'tts') ttsSpeaking = false;
+    if (area === 'tts') {
+      ttsSpeaking = false;
+      // A broken TTS stream must not leave the wake-word spotter muted forever.
+      setWakeMuted(false);
+    }
+  }
+
+  // ------------------------------------------------------- echo suppression
+
+  /**
+   * Pause the ASR wake-word spotter while Figaro itself is speaking, so the
+   * speaker→microphone feedback cannot wake us (that was the root cause of the
+   * "被自己 TTS 反复唤醒" reports). Capture/levels/self-tests keep working.
+   * Falls back to pauseListening()/resumeListening() and silently does nothing
+   * when the ASR module has no such hook.
+   */
+  function setWakeMuted(mute) {
+    const asr = voice.asr;
+    if (!asr) return;
+    const desired = Boolean(mute);
+    if (wakeMuted === desired) return;
+    let applied = false;
+    try {
+      if (typeof asr.setMuted === 'function') {
+        asr.setMuted(desired);
+        applied = true;
+      } else if (desired && typeof asr.pauseListening === 'function') {
+        asr.pauseListening();
+        applied = true;
+      } else if (!desired && typeof asr.resumeListening === 'function') {
+        asr.resumeListening();
+        applied = true;
+      }
+    } catch (err) {
+      log.warn(`wake mute(${desired}) failed: ${err?.message || err}`);
+    }
+    if (applied) {
+      wakeMuted = desired;
+      log.info(`wake-word listening ${desired ? 'paused (TTS playing)' : 'resumed'}`);
+      return;
+    }
+    if (wakeMuteSupported !== false) {
+      wakeMuteSupported = false;
+      log.info('ASR module has no wake mute hook (setMuted/pauseListening); skipping echo suppression');
+    }
   }
 
   // ---------------------------------------------------------------- ASR callbacks
@@ -610,6 +657,7 @@ export function createDaemon(options = {}) {
       }
     }
     ttsSpeaking = false;
+    setWakeMuted(false);
     if (state === 'thinking' || state === 'speaking' || state === 'listening') setState('idle');
     if (turn) log.info(`turn cancelled (${reason})`);
   }
@@ -764,6 +812,8 @@ export function createDaemon(options = {}) {
             onVadStart: handleAsrVadStart,
             onError: handleAsrError,
           });
+          wakeMuted = false;
+          wakeMuteSupported = null;
           const started = voice.asr?.start?.();
           if (started && typeof started.then === 'function') {
             started.catch((err) => {
@@ -793,6 +843,8 @@ export function createDaemon(options = {}) {
         onLevel: (value) => emit({ type: 'level', value: clamp01(value) }),
         onState: (next) => {
           ttsSpeaking = next === 'speaking';
+          // Echo suppression: never listen for the wake word while audio plays.
+          setWakeMuted(next === 'speaking');
           if (next === 'idle' && current === null && state === 'speaking' && !ackActive) setState('idle');
         },
         onError: (err) => handleVoiceError('tts', err),
@@ -824,6 +876,7 @@ export function createDaemon(options = {}) {
   /** Recreate the TTS module after a config.set (voice/sink/model change). */
   async function recreateTts() {
     if (!ttsEnabled) return false;
+    setWakeMuted(false);
     const old = voice.tts;
     voice.tts = null;
     try {
@@ -1238,6 +1291,7 @@ export function createDaemon(options = {}) {
     } catch (err) {
       log.warn('tts.stop() failed:', err?.message || err);
     }
+    setWakeMuted(false);
     try {
       settings?.close?.();
     } catch {
