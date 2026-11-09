@@ -685,8 +685,19 @@ export function createSettingsService(options = {}) {
       sinks = null;
     }
 
+    const maskKey = (value) => {
+      const key = typeof value === 'string' ? value.trim() : '';
+      if (key.length === 0) return null;
+      // Never expose more than the last four characters, and only as a hint.
+      return key.length <= 8 ? '已配置' : `…${key.slice(-4)}`;
+    };
+
     return withId(id, {
       type: 'diagnostics',
+      keys: {
+        deepseek: { configured: Boolean(config.deepseek?.apiKey), hint: maskKey(config.deepseek?.apiKey) },
+        minimax: { configured: Boolean(config.minimax?.apiKey), hint: maskKey(config.minimax?.apiKey) },
+      },
       configPath,
       version: context.getVersion?.() ?? null,
       uptimeMs: context.getUptimeMs?.() ?? 0,

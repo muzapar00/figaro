@@ -1393,6 +1393,25 @@ export function createDaemon(options = {}) {
   }
 
   /** Rebuild the wake-ack cache (voice/phrase config changed). */
+  /** Rebuild the UI-sound module after sfx.* changed (cheap: no network). */
+  async function recreateSfx() {
+    voice.sfx = null;
+    if (config.sfx?.enabled === false) {
+      log.info('[sfx] disabled by config');
+      return true;
+    }
+    try {
+      const factory = options.sfxFactory ?? (await loadVoiceFactory('sfx', SFX_MODULE, 'createSfx'));
+      if (!factory) return false;
+      voice.sfx = factory({ config, logger: log });
+      log.info(`[sfx] reloaded (${voice.sfx.names().join(', ')})`);
+      return true;
+    } catch (err) {
+      log.warn(`[sfx] reload failed: ${err?.message || err}`);
+      return false;
+    }
+  }
+
   async function recreateAck() {
     const old = ack;
     ack = null;
@@ -1558,6 +1577,16 @@ export function createDaemon(options = {}) {
       emit(uiSnapshot());
       applied.push(...uiChanged);
       log.info(`ui settings reloaded (${JSON.stringify(uiSnapshot())})`);
+    }
+
+    const sfxPaths = changedPaths.filter((path) => path.startsWith('sfx.'));
+    if (sfxPaths.length > 0) {
+      const ok = await recreateSfx();
+      if (ok) applied.push(...sfxPaths);
+      else {
+        errors.push('音效模块重建失败，设置将在重启后生效');
+        restartRequired.push(...sfxPaths);
+      }
     }
 
     const keyPaths = changedPaths.filter((path) => path === 'deepseek.apiKey');
