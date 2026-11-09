@@ -19,6 +19,7 @@ export const STATES = Object.freeze(['idle', 'waking', 'listening', 'finalizing'
 
 const ASR_MODULE = new URL('./voice/asr/index.js', import.meta.url).href;
 const TTS_MODULE = new URL('./voice/tts/index.js', import.meta.url).href;
+const SFX_MODULE = new URL('./voice/sfx/index.js', import.meta.url).href;
 const PARTIAL_MIN_INTERVAL_MS = 40;
 const MAX_SPEECH_CHUNK_CHARS = 220;
 const VOICE_RETRY_COOLDOWN_MS = 15_000;
@@ -416,7 +417,24 @@ export function createDaemon(options = {}) {
     if (rest.length > 0) speakSentence(rest, turn);
   }
 
+  /**
+   * Play one UI sound. Fire and forget: a sound must never delay or break the
+   * state machine, and it never runs while TTS audio is the thing being heard
+   * (answer-done fires after the audio has actually finished).
+   */
+  function playSfx(event) {
+    const sfx = voice.sfx;
+    if (!sfx) return;
+    try {
+      const result = sfx.play(event);
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch {
+      /* a broken sound must never break a turn */
+    }
+  }
+
   function handleVoiceError(area, err) {
+    playSfx('error');
     const message = `${area === 'tts' ? '语音合成' : '语音识别'}出错：${err?.message || err}`;
     lastError = message;
     pushRecentError(message);
@@ -617,6 +635,7 @@ export function createDaemon(options = {}) {
 
   /** Cancel everything now: abort the LLM, stop audio/capture/ack, go idle. */
   function cancelTurn(reason) {
+    playSfx('dismiss');
     cancelCurrent(reason);
     stopCaptureForBargeIn();
     pendingAckFinal = '';
@@ -832,6 +851,7 @@ export function createDaemon(options = {}) {
 
   /** ASR module reports the capture finished (VAD end) and finalizing is running. */
   function handleAsrFinalizing() {
+    playSfx('listenEnd');
     if (state === 'listening' || state === 'waking') setState('finalizing');
   }
 
@@ -901,6 +921,8 @@ export function createDaemon(options = {}) {
     clearFollowUpTimer();
     clearGiveUpTimer();
 
+    // Wake accepted: the soft start sound sits in the ack's lead-in silence.
+    playSfx('listenStart');
     const playback = ack && ack.enabled && ack.ready && voice.tts ? ack.play() : null;
     if (!playback) {
       log.info('wake: no ack available, starting capture immediately');
@@ -1163,6 +1185,7 @@ export function createDaemon(options = {}) {
       // If a wake/cancel already took over during playback, it owns the state
       // machine now; do not stomp its state from this (finished) turn.
       if (turn.cancelled || state !== 'speaking') return;
+      playSfx('answerDone');
       if (turn.dismissAfterReply || dismissRequested) {
         dismissRequested = false;
         settleTurn('dismissed-after-reply');
@@ -1171,9 +1194,11 @@ export function createDaemon(options = {}) {
       if (followUpWindowMs > 0 && turn.fromVoice) startFollowUpWindow();
       else settleTurn('reply-done');
     } else if (turn.dismissAfterReply || dismissRequested) {
+      playSfx('answerDone');
       dismissRequested = false;
       settleTurn('dismissed-after-reply');
     } else if (followUpWindowMs > 0 && turn.fromVoice) {
+      playSfx('answerDone');
       startFollowUpWindow();
     } else {
       settleTurn('reply-done');
@@ -1273,6 +1298,24 @@ export function createDaemon(options = {}) {
         }
       }
     }
+    // UI sounds: tiny module, loaded with the voice so a missing voice never
+    // delays the text path. Tests inject their own factory (see below).
+    // `node --test` sets NODE_TEST_CONTEXT: spawning pw-cat during unit tests is
+    // pointless noise, so tests get a silent module unless they inject a factory.
+    const testRun = Boolean(process.env.NODE_TEST_CONTEXT);
+    if (!voice.sfx && config.sfx?.enabled !== false && !(testRun && !options.sfxFactory)) {
+      try {
+        const factory = options.sfxFactory ?? (await loadVoiceFactory('sfx', SFX_MODULE, 'createSfx'));
+        if (factory) {
+          voice.sfx = factory({ config, logger: log });
+          log.info(`[sfx] ${voice.sfx.available ? 'ready' : 'unavailable'} (${voice.sfx.names().join(', ')})`);
+        }
+      } catch (err) {
+        log.warn(`[sfx] not available: ${err?.message || err}`);
+        voice.sfx = null;
+      }
+    }
+
     if (ttsEnabled && !voice.tts) {
       const factory = options.ttsFactory ?? await loadVoiceFactory('tts', TTS_MODULE, 'createTts');
       if (factory) createTtsInstance(factory);

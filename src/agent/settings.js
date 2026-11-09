@@ -53,6 +53,8 @@ export const ALLOWED_CONFIG_PATHS = Object.freeze([
   'ui.shape',
   'ui.motion',
   'ui.windowButtonSize',
+  'sfx.enabled',
+  'sfx.volume',
   'asr.modelDir',
   'deepseek.apiKey',
   'minimax.apiKey',

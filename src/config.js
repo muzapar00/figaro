@@ -140,6 +140,13 @@ export const DEFAULTS = {
     // extra system prompt lines appended to the dsh-derived prompt
     name: '费加罗',
   },
+  sfx: {
+    // Short, quiet UI sounds played next to (never over) the voice. They are
+    // one-shots on the same sink as the TTS, so they never interrupt speech.
+    enabled: true,
+    volume: 0.35,
+    events: { listenStart: true, listenEnd: true, answerDone: true, dismiss: true, error: true },
+  },
 };
 
 function isPlainObject(v) {
