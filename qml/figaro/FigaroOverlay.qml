@@ -25,7 +25,7 @@ PanelWindow {
     // narrow as the widest pill and pushed to the centre with a left margin.
     // A full-width transparent surface costs several times more to composite on
     // the software renderer (measured: 72% of a core vs ~20%).
-    implicitWidth: 960
+    implicitWidth: 820
     margins {
         top: 6
         left: Math.round((win.screen ? win.screen.width - win.implicitWidth : 0) / 2)

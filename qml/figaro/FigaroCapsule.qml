@@ -50,11 +50,11 @@ Item {
     readonly property real ballScale: 1.0 - (1.0 - 0.62) * Math.max(0, Math.min(1, morphProgress))
     readonly property real ballBox: ballDiameter * ballScale
 
-    // The ball never moves: it is the anchor the pill grows out of. The pill's
-    // left edge is placed so that at progress 0 the pill *is* the ball's circle,
-    // and at progress 1 the ball sits inside its left end. This is what stops
-    // the ball and the glass from drifting apart mid-transition.
-    readonly property real ballCX: width / 2
+    // The pill expands symmetrically around the screen centre, and the ball's
+    // position inside it is derived from the same progress value. Nothing here
+    // uses an independent spring, so the ball and the glass cannot drift apart:
+    // at progress 0 the pill *is* the ball's circle centred on screen, and as it
+    // opens the ball is pushed into the left end.
     readonly property real ballCY: height / 2
 
     readonly property real padH: 14
@@ -79,8 +79,9 @@ Item {
 
     readonly property real capsuleW: ballDiameter + (targetCapsuleW - ballDiameter) * p
     readonly property real capsuleH: ballDiameter + (targetCapsuleH - ballDiameter) * p
-    readonly property real capsuleX: ballCX - padH * p - ballBox / 2
+    readonly property real capsuleX: (width - capsuleW) / 2
     readonly property real capsuleY: ballCY - capsuleH / 2
+    readonly property real ballCX: capsuleX + padH * p + ballBox / 2
 
     readonly property color tint: FigaroStyle.colorFor(visualState)
 
@@ -104,7 +105,7 @@ Item {
     readonly property real jellyScaleX: 1 + jelly * 0.035
     readonly property real jellyScaleY: 1 - jelly * 0.045
 
-    implicitWidth: 960
+    implicitWidth: 820
     implicitHeight: 320
 
     // Declare the pill's shape to KWin's glass effect: this is the same
