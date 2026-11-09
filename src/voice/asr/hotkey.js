@@ -7,20 +7,21 @@
 // permission-free way to receive a global shortcut.
 //
 // Semantics: holding the shortcut key is "push to talk".
-//   Activated  -> start long-press timer
+//   Activated (press)            -> start long-press timer
 //   Deactivated before longPressMs -> short tap, ignored
-//   still held at longPressMs -> onWake() (+ the ASR module starts capturing)
-//   Deactivated after a successful long press -> onEnd() (endCapture)
+//   still held at longPressMs    -> onWake() (+ the ASR module starts capturing)
+//   Deactivated after a long press -> onEnd() (endCapture)
 //
-// The portal requires an application id; for unsandboxed apps this is provided
-// by org.freedesktop.host.portal.Registry.Register() and requires a
-// `<app-id>.desktop` file to exist in the XDG applications dirs. We create
-// ~/.local/share/applications/figaro.desktop automatically if it is missing
-// (see ensureDesktopEntry()).
+// The portal requires an application id; for unsandboxed apps it comes from
+// org.freedesktop.host.portal.Registry.Register() plus a `<app-id>.desktop`
+// file in the XDG applications dirs. We create
+// ~/.local/share/applications/figaro.desktop if it is missing.
 //
-// First use shows a KDE confirmation dialog ("Figaro 想要绑定快捷键 F5") which
-// the user must accept once. Until then the module reports state
-// 'awaiting-user' and everything else (wake word, F5 retry on next start) works.
+// First use shows a KDE dialog ("Figaro 想要绑定快捷键 F5") which the user must
+// accept once; KDE persists the result in ~/.config/kglobalshortcutsrc. Until
+// then everything else works and the module keeps trying to notice a binding
+// appearing later (ShortcutsChanged signal + periodic ListShortcuts), so the
+// user does NOT have to restart Figaro after clicking "allow".
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -138,12 +139,19 @@ function dictToObject(pairs) {
   return out;
 }
 
+/** Extract [{id, description, trigger}] from a Response payload's results. */
+function parseShortcutList(rawResults) {
+  const results = dictToObject(rawResults);
+  const list = Array.isArray(results.shortcuts) ? results.shortcuts : [];
+  return list.map((entry) => {
+    const id = Array.isArray(entry) ? entry[0] : entry?.id;
+    const props = Array.isArray(entry) ? dictToObject(entry[1]) : {};
+    return { id, description: props.description ?? '', trigger: props.trigger_description ?? '' };
+  });
+}
+
 function triggerFor(hotkey) {
-  // Portal expects the XDG shortcuts spec format; a plain key is valid.
-  const raw = String(hotkey ?? '').trim();
-  if (!raw) return '';
-  if (raw.includes('+') || /^[A-Z0-9]+$/.test(raw) === false) return raw;
-  return raw;
+  return String(hotkey ?? '').trim();
 }
 
 /**
@@ -157,7 +165,9 @@ function triggerFor(hotkey) {
  * @param {(msg: string) => void} [opts.onLog] verbose progress log
  * @param {(state: string) => void} [opts.onState] state changes for tests/UI
  * @param {Function} [opts.connectFn] injected D-Bus connector (tests)
- * @param {number} [opts.bindTimeoutMs] how long to wait for the user's dialog (default 0 = forever)
+ * @param {number} [opts.bindTimeoutMs] 0 = wait forever for the user's dialog
+ * @param {number} [opts.recheckIntervalMs] ListShortcuts poll while not bound (default 10000)
+ * @param {number} [opts.maxBindRetries] transient D-Bus bind failures to retry (default 2)
  */
 export function createHotkey(opts) {
   const {
@@ -169,6 +179,8 @@ export function createHotkey(opts) {
     onState = () => {},
     connectFn = connect,
     bindTimeoutMs = 0,
+    recheckIntervalMs = 10000,
+    maxBindRetries = 2,
     longPressMs: longPressOverride,
   } = opts;
   const asrCfg = config?.asr ?? {};
@@ -180,7 +192,11 @@ export function createHotkey(opts) {
   let state = 'idle';
   let stopped = false;
   let unsubscribers = [];
-  let bindTimer = null;
+  let recheckTimer = null;
+  let retryTimer = null;
+  let bindRetries = 0;
+  let recheckInFlight = false;
+  let seq = 0;
 
   const detector = createLongPressDetector({
     longPressMs,
@@ -203,31 +219,200 @@ export function createHotkey(opts) {
     try { onState(next, detail); } catch { /* ignore */ }
   }
 
-  function fail(message, extra) {
+  function fail(message, extra, { recoverable = false } = {}) {
     const err = new Error(message);
     if (extra) Object.assign(err, extra);
     setState('unavailable');
     try { onError(err); } catch { /* ignore */ }
+    if (recoverable) startRecheck();
   }
 
-  function waitResponse(path, timeoutMs) {
+  function waitResponse(requestPath, timeoutMs) {
     return new Promise((resolve) => {
-      if (stopped) { resolve(null); return; }
+      if (stopped || !conn) { resolve(null); return; }
       let timer = null;
       const off = conn.onSignal({ interface: REQUEST_IFACE, member: 'Response' }, (sig) => {
-        if (sig.path !== path) return;
+        if (sig.path !== requestPath) return;
         cleanup();
         resolve(sig.args);
       });
       const cleanup = () => {
         if (timer) clearTimeout(timer);
         timer = null;
-        off();
+        try { off(); } catch { /* ignore */ }
       };
       if (timeoutMs > 0) {
         timer = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
       }
     });
+  }
+
+  function startRecheck() {
+    if (stopped || recheckTimer) return;
+    recheckTimer = setInterval(() => { void refreshBinding(); }, recheckIntervalMs);
+    recheckTimer.unref?.();
+  }
+
+  function stopRecheck() {
+    if (recheckTimer) { clearInterval(recheckTimer); recheckTimer = null; }
+  }
+
+  /**
+   * Ask the portal which shortcuts are active for this session. Used both as a
+   * recovery path (user clicked allow after we started / bound manually in
+   * System Settings) and as a periodic sanity check.
+   */
+  async function refreshBinding() {
+    if (stopped || !conn || !sessionPath || recheckInFlight) return false;
+    recheckInFlight = true;
+    try {
+      const token = `list${process.pid}${++seq}`;
+      const reply = await conn.call({
+        destination: PORTAL_DEST,
+        path: PORTAL_PATH,
+        interface: GS_IFACE,
+        member: 'ListShortcuts',
+        signature: 'oa{sv}',
+        body: [sessionPath, { handle_token: variant('s', token) }],
+        timeoutMs: 8000,
+      });
+      const response = await waitResponse(reply[0], 8000);
+      if (!response) return false;
+      const [code, rawResults] = response;
+      if (code !== 0) return false;
+      const shortcuts = parseShortcutList(rawResults);
+      const mine = shortcuts.find((s) => s.id === SHORTCUT_ID);
+      if (!mine) return false;
+      if (!mine.trigger) {
+        onLog('portal: figaro-talk 已注册但还没分配按键（等待用户确认或系统设置绑定）');
+        return false;
+      }
+      if (state !== 'bound') {
+        setState('bound');
+        stopRecheck();
+        onLog(`F5 长按已可用（ListShortcuts: "${mine.trigger}"）——无需重启费加罗`);
+      }
+      return true;
+    } catch (err) {
+      onLog(`ListShortcuts 失败: ${err.message}`);
+      return false;
+    } finally {
+      recheckInFlight = false;
+    }
+  }
+
+  async function createSessionAndBind() {
+    if (stopped || !conn) return;
+    if (state === 'bound') return;
+    const token = `figaro${process.pid}${++seq}`;
+    let session;
+    try {
+      const reply = await conn.call({
+        destination: PORTAL_DEST,
+        path: PORTAL_PATH,
+        interface: GS_IFACE,
+        member: 'CreateSession',
+        signature: 'a{sv}',
+        body: [{ handle_token: variant('s', token), session_handle_token: variant('s', token) }],
+        timeoutMs: 15000,
+      });
+      const response = await waitResponse(reply[0], 15000);
+      if (!response) {
+        fail('portal CreateSession 超时（xdg-desktop-portal 未响应），F5 长按暂不可用', { code: 'HOTKEY_SESSION_TIMEOUT' }, { recoverable: true });
+        return;
+      }
+      const [code, rawResults] = response;
+      if (code !== 0) {
+        fail(`portal CreateSession 被拒绝 (code=${code})，F5 长按暂不可用`, { code: 'HOTKEY_SESSION_DENIED' }, { recoverable: true });
+        return;
+      }
+      session = dictToObject(rawResults).session_handle;
+      if (!session) {
+        fail('portal CreateSession 未返回 session handle，F5 长按暂不可用', { code: 'HOTKEY_SESSION_EMPTY' }, { recoverable: true });
+        return;
+      }
+      sessionPath = session;
+    } catch (err) {
+      retryBind(`无法创建 GlobalShortcuts 会话：${err.message}`, 'HOTKEY_SESSION');
+      return;
+    }
+    if (stopped) return;
+
+    setState('awaiting-user');
+    let requestPath;
+    try {
+      const reply = await conn.call({
+        destination: PORTAL_DEST,
+        path: PORTAL_PATH,
+        interface: GS_IFACE,
+        member: 'BindShortcuts',
+        signature: 'oa(sa{sv})sa{sv}',
+        body: [
+          sessionPath,
+          [[SHORTCUT_ID, {
+            description: variant('s', '费加罗：按住说话 / 唤醒'),
+            preferred_trigger: variant('s', triggerFor(hotkey)),
+          }]],
+          '',
+          { handle_token: variant('s', `bind${process.pid}${seq}`) },
+        ],
+        timeoutMs: 15000,
+      });
+      requestPath = reply[0];
+    } catch (err) {
+      retryBind(`portal BindShortcuts 调用失败：${err.message}`, 'HOTKEY_BIND');
+      startRecheck();
+      return;
+    }
+    onLog(`已请求绑定 ${triggerFor(hotkey) || '(用户自选按键)'}：若桌面弹出「Figaro 想要绑定快捷键」对话框，请点「允许/确定」（只需一次）`);
+    startRecheck(); // recovery path: notice approval / manual binding even if response is missed
+    const response = await waitResponse(requestPath, bindTimeoutMs);
+    if (!response) {
+      onLog('等待用户在 portal 对话框中确认快捷键（确认前 F5 不可用；确认后会自动生效，无需重启）');
+      return;
+    }
+    const [code, rawResults] = response;
+    if (code !== 0) {
+      fail(
+        '用户取消了 portal 快捷键授权（语音唤醒仍可用）。之后可在系统设置→快捷键 里给 Figaro 绑定，或重启费加罗重试',
+        { code: 'HOTKEY_CANCELLED' },
+      );
+      startRecheck();
+      return;
+    }
+    const shortcuts = parseShortcutList(rawResults);
+    const mine = shortcuts.find((s) => s.id === SHORTCUT_ID);
+    if (mine) {
+      setState('bound');
+      stopRecheck();
+      onLog(`F5 长按已绑定（用户确认）。快捷键: ${mine.trigger || triggerFor(hotkey) || '见系统设置'}`);
+      return;
+    }
+    // Portal said success but did not return the shortcut; keep polling in case
+    // the binding materialises (e.g. another dialog completes later).
+    setState('denied');
+    onLog('portal 返回成功但未包含 figaro-talk，继续轮询绑定状态…');
+    startRecheck();
+  }
+
+  function retryBind(message, code) {
+    if (stopped) return;
+    bindRetries += 1;
+    if (bindRetries > maxBindRetries) {
+      fail(`${message}（已重试 ${maxBindRetries} 次，F5 长按不可用；语音唤醒仍可用）`, { code }, { recoverable: true });
+      return;
+    }
+    const delay = 8000;
+    const err = new Error(`${message}；${Math.round(delay / 1000)}s 后重试（${bindRetries}/${maxBindRetries}）`);
+    err.code = code;
+    setState('unavailable');
+    try { onError(err); } catch { /* ignore */ }
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void createSessionAndBind();
+    }, delay);
+    retryTimer.unref?.();
   }
 
   async function setup() {
@@ -256,7 +441,8 @@ export function createHotkey(opts) {
       detector.release();
     }));
     unsubscribers.push(c.onSignal({ interface: GS_IFACE, member: 'ShortcutsChanged' }, () => {
-      onLog('portal: ShortcutsChanged (用户修改了快捷键配置)');
+      onLog('portal: ShortcutsChanged（快捷键配置有变化），重新检查绑定…');
+      void refreshBinding();
     }));
 
     try {
@@ -280,114 +466,10 @@ export function createHotkey(opts) {
         body: [APP_ID, {}],
       });
     } catch (err) {
-      // Older portals lack the registry; try anyway, the error below explains it.
       onLog(`host app registry unavailable (${err.message}); continuing`);
     }
     if (stopped) return;
-
-    // Create a GlobalShortcuts session.
-    const token = `figaro${process.pid}`;
-    let session;
-    try {
-      const reply = await c.call({
-        destination: PORTAL_DEST,
-        path: PORTAL_PATH,
-        interface: GS_IFACE,
-        member: 'CreateSession',
-        signature: 'a{sv}',
-        body: [{ handle_token: variant('s', token), session_handle_token: variant('s', token) }],
-        timeoutMs: 15000,
-      });
-      const reqPath = reply[0];
-      const response = await waitResponse(reqPath, 15000);
-      if (!response) {
-        fail('portal CreateSession 超时（xdg-desktop-portal 未响应）', { code: 'HOTKEY_SESSION_TIMEOUT' });
-        return;
-      }
-      const [code, rawResults] = response;
-      if (code !== 0) {
-        fail(`portal CreateSession 被拒绝 (code=${code})`, { code: 'HOTKEY_SESSION_DENIED' });
-        return;
-      }
-      session = dictToObject(rawResults).session_handle;
-      if (!session) {
-        fail('portal CreateSession 未返回 session handle', { code: 'HOTKEY_SESSION_EMPTY' });
-        return;
-      }
-      sessionPath = session;
-    } catch (err) {
-      fail(
-        `无法创建 GlobalShortcuts 会话，F5 长按不可用：${err.message}`,
-        { code: 'HOTKEY_SESSION', hint: '确认 xdg-desktop-portal 与 org.freedesktop.portal.GlobalShortcuts v2 可用；否则请用语音唤醒「费加罗」' },
-      );
-      return;
-    }
-
-    // Bind the shortcut. This is where KDE shows the confirmation dialog.
-    setState('awaiting-user');
-    const wantTrigger = triggerFor(hotkey);
-    let requestPath;
-    try {
-      const reply = await c.call({
-        destination: PORTAL_DEST,
-        path: PORTAL_PATH,
-        interface: GS_IFACE,
-        member: 'BindShortcuts',
-        signature: 'oa(sa{sv})sa{sv}',
-        body: [
-          sessionPath,
-          [[SHORTCUT_ID, {
-            description: variant('s', '费加罗：按住说话 / 唤醒'),
-            preferred_trigger: variant('s', wantTrigger),
-          }]],
-          '',
-          { handle_token: variant('s', `bind${process.pid}`) },
-        ],
-        timeoutMs: 15000,
-      });
-      requestPath = reply[0];
-    } catch (err) {
-      fail(
-        `portal BindShortcuts 失败，F5 长按不可用：${err.message}`,
-        { code: 'HOTKEY_BIND', hint: '如果提示 app id：确认 ~/.local/share/applications/figaro.desktop 存在' },
-      );
-      return;
-    }
-    onLog(
-      `已请求绑定 ${wantTrigger || '(用户自选按键)'}：若桌面弹出「费加罗 想要绑定快捷键」对话框，请点击「允许/确定」（只需一次）`,
-    );
-    const response = await waitResponse(requestPath, bindTimeoutMs);
-    if (!response) {
-      // No dialog result yet (bindTimeoutMs === 0 means forever). Keep waiting in
-      // the background: the shortcut may still be approved later.
-      onLog('等待用户确认快捷键绑定中（F5 长按在确认前不可用）');
-      return;
-    }
-    const [code, rawResults] = response;
-    if (code === 0) {
-      const results = dictToObject(rawResults);
-      const list = Array.isArray(results.shortcuts) ? results.shortcuts : [];
-      const bound = list.some((entry) => {
-        const id = Array.isArray(entry) ? entry[0] : entry?.id;
-        if (id !== SHORTCUT_ID) return false;
-        const props = Array.isArray(entry) ? dictToObject(entry[1]) : {};
-        const trigger = props.trigger_description ?? '';
-        if (!trigger) onLog('portal 返回的快捷键描述为空（可能已注册但未分配按键，见 ~/.config/kglobalshortcutsrc）');
-        return true;
-      });
-      setState(bound ? 'bound' : 'denied');
-      if (bound) {
-        const props = dictToObject(list.find((e) => (Array.isArray(e) ? e[0] : e?.id) === SHORTCUT_ID)?.[1]);
-        onLog(`F5 长按已绑定（用户确认）。快捷键: ${props.trigger_description || wantTrigger || '见系统设置'}`);
-      } else {
-        fail(
-          '用户在 portal 对话框中未绑定「figaro-talk」快捷键，F5 长按不可用',
-          { code: 'HOTKEY_NOT_BOUND', hint: '重新启动费加罗可在下次弹出授权对话框；或语音唤醒「费加罗」' },
-        );
-      }
-    } else {
-      fail('用户取消了 portal 快捷键授权对话框，F5 长按不可用（语音唤醒仍可用）', { code: 'HOTKEY_CANCELLED' });
-    }
+    await createSessionAndBind();
   }
 
   return {
@@ -400,6 +482,10 @@ export function createHotkey(opts) {
     get sessionPath() {
       return sessionPath;
     },
+    /** Re-read the binding from the portal (also done automatically). */
+    async refresh() {
+      return refreshBinding();
+    },
     async start() {
       if (!hotkey) {
         setState('disabled');
@@ -408,17 +494,18 @@ export function createHotkey(opts) {
       }
       if (stopped) return;
       // Never reject: the daemon must start even if the portal is unavailable.
-      setup().catch((err) => fail(`F5 长按初始化异常：${err.message}`, { code: 'HOTKEY_SETUP' }));
-      // Give setup a brief chance to report obvious failures, but do not block on
+      setup().catch((err) => fail(`F5 长按初始化异常：${err.message}`, { code: 'HOTKEY_SETUP' }, { recoverable: true }));
+      // Give setup a brief chance to report obvious failures, but never block on
       // the user dialog.
       await new Promise((resolve) => setTimeout(resolve, 30));
     },
     async stop() {
       stopped = true;
       detector.cancel();
+      stopRecheck();
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       for (const off of unsubscribers) { try { off(); } catch { /* ignore */ } }
       unsubscribers = [];
-      if (bindTimer) { clearTimeout(bindTimer); bindTimer = null; }
       if (conn) {
         try { conn.close(); } catch { /* ignore */ }
         conn = null;

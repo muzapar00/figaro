@@ -86,16 +86,29 @@ test('ensureDesktopEntry writes a valid portal app-id .desktop file', () => {
   }
 });
 
-function fakePortal() {
+function fakePortal({ bindShortcuts } = {}) {
   const handlers = [];
   const calls = [];
-  const state = { responseEmitted: { create: false, bind: false } };
+  const state = {
+    // what BindShortcuts returns; tests may mutate this before ShortcutsChanged
+    shortcuts: bindShortcuts ?? [
+      { id: SHORTCUT_ID, description: '按住说话', trigger: 'F5' },
+    ],
+  };
+  const toVariantList = (list) => [['shortcuts', {
+    signature: 'a(sa{sv})',
+    value: list.map((s) => [s.id, [
+      ['description', { signature: 's', value: s.description }],
+      ['trigger_description', { signature: 's', value: s.trigger }],
+    ]]),
+  }]];
   const emit = (iface, member, sigPath, args) => {
     for (const h of [...handlers]) {
       if (h.interface !== iface || h.member !== member) continue;
       h.fn({ path: sigPath, sender: ':1.1', args });
     }
   };
+  let seq = 0;
   const conn = {
     uniqueName: ':1.4242',
     closed: false,
@@ -110,9 +123,10 @@ function fakePortal() {
     async addMatch() {},
     async call(opts) {
       calls.push(opts.member);
+      seq += 1;
       if (opts.member === 'Register') return [];
       if (opts.member === 'CreateSession') {
-        const reqPath = '/org/freedesktop/portal/desktop/request/1_4242/figaro1';
+        const reqPath = `/org/freedesktop/portal/desktop/request/1_4242/figaro${seq}`;
         setImmediate(() => emit('org.freedesktop.portal.Request', 'Response', reqPath, [
           0,
           [['session_handle', { signature: 's', value: '/org/freedesktop/portal/desktop/session/1_4242/figaro1' }]],
@@ -120,19 +134,30 @@ function fakePortal() {
         return [reqPath];
       }
       if (opts.member === 'BindShortcuts') {
-        const reqPath = '/org/freedesktop/portal/desktop/request/1_4242/bind1';
+        const reqPath = `/org/freedesktop/portal/desktop/request/1_4242/bind${seq}`;
         assert.equal(opts.signature, 'oa(sa{sv})sa{sv}');
-        setImmediate(() => emit('org.freedesktop.portal.Request', 'Response', reqPath, [
-          0,
-          [['shortcuts', { signature: 'a(sa{sv})', value: [[SHORTCUT_ID, [['description', { signature: 's', value: 'x' }]]]] }]],
-        ]));
+        setImmediate(() => emit('org.freedesktop.portal.Request', 'Response', reqPath, [0, toVariantList(state.shortcuts)]));
+        return [reqPath];
+      }
+      if (opts.member === 'ListShortcuts') {
+        assert.equal(opts.signature, 'oa{sv}');
+        const reqPath = `/org/freedesktop/portal/desktop/request/1_4242/list${seq}`;
+        setImmediate(() => emit('org.freedesktop.portal.Request', 'Response', reqPath, [0, toVariantList(state.shortcuts)]));
         return [reqPath];
       }
       throw new Error(`unexpected portal call: ${opts.member}`);
     },
     close() { this.closed = true; },
   };
-  return { conn, emit, calls, state };
+  return {
+    conn,
+    emit,
+    calls,
+    state,
+    emitShortcutsChanged(sessionPath) {
+      emit('org.freedesktop.portal.GlobalShortcuts', 'ShortcutsChanged', sessionPath, [sessionPath, []]);
+    },
+  };
 }
 
 test('hotkey module: binds via portal and turns Activated/Deactivated into wake/end', async () => {
@@ -196,6 +221,42 @@ test('hotkey module: signals from another session/shortcut are ignored', async (
     emit('org.freedesktop.portal.GlobalShortcuts', 'Activated', hotkey.sessionPath, [hotkey.sessionPath, 'other-shortcut', 2, []]);
     await sleep(80);
     assert.deepEqual(events, []);
+  } finally {
+    await hotkey.stop();
+  }
+});
+
+test('hotkey module: recovers when the binding appears after start (no restart needed)', async () => {
+  // Portal returns an empty shortcut list at startup (user not approved yet),
+  // then the user clicks allow / binds in System Settings: ShortcutsChanged +
+  // ListShortcuts must flip the module to 'bound'.
+  const fake = fakePortal({ bindShortcuts: [] });
+  const events = [];
+  const hotkey = createHotkey({
+    config: { asr: { hotkey: 'F5', longPressMs: 30 } },
+    onWake: () => events.push('wake'),
+    onError: (err) => events.push(`error:${err.message}`),
+    onLog: () => {},
+    onState: (state) => events.push(`state:${state}`),
+    connectFn: async () => fake.conn,
+    recheckIntervalMs: 60000, // only the signal triggers the refresh in this test
+    bindTimeoutMs: 2000,
+  });
+  try {
+    await hotkey.start();
+    await sleep(100);
+    assert.equal(hotkey.state, 'denied', 'startup: bound but no shortcut yet');
+    // user approves later
+    fake.state.shortcuts = [{ id: SHORTCUT_ID, description: '按住说话', trigger: 'F5' }];
+    fake.emitShortcutsChanged(hotkey.sessionPath);
+    const t0 = Date.now();
+    while (hotkey.state !== 'bound' && Date.now() - t0 < 2000) await sleep(10);
+    assert.equal(hotkey.state, 'bound', 'binding must be picked up without restarting');
+    assert.ok(fake.calls.includes('ListShortcuts'));
+    // and the long press now works
+    fake.emit('org.freedesktop.portal.GlobalShortcuts', 'Activated', hotkey.sessionPath, [hotkey.sessionPath, SHORTCUT_ID, 1, []]);
+    await sleep(80);
+    assert.deepEqual(events.filter((e) => e === 'wake'), ['wake']);
   } finally {
     await hotkey.stop();
   }

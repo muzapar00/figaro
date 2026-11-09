@@ -45,6 +45,22 @@ const LEVEL_WINDOW_SAMPLES = Math.round(SAMPLE_RATE * 0.05); // 50 ms => 20 Hz
 const PRE_ROLL_MS = 1500;
 const TICK_MS = 250;
 
+// onnxruntime thread counts. Keep every session single-threaded:
+//  - measured idle CPU with KWS numThreads=2 was ~212% of one core (!) because
+//    ORT worker threads spin-wait between decodes of the always-on stream;
+//    numThreads=1 -> ~2.7% (see README "CPU 与内存").
+//  - single-thread decode is still fast: paraformer = 71-105 ms/sentence.
+// Override with env vars only if you know what you are doing.
+function intEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+const KWS_THREADS = intEnv('FIGARO_ASR_KWS_THREADS', 1);
+const STREAM_THREADS = intEnv('FIGARO_ASR_STREAM_THREADS', 1);
+const OFFLINE_THREADS = intEnv('FIGARO_ASR_OFFLINE_THREADS', 1);
+
 function asError(err) {
   return err instanceof Error ? err : new Error(String(err));
 }
@@ -91,6 +107,8 @@ export function createAsr(opts) {
   let vad = null;
   let capture = null;
   let hotkeyInst = null;
+  let offlineLoadPromise = null;
+  let offlineLoadError = null;
   let mic = null;
   let preRoll = [];
   let preRollSamples = 0;
@@ -225,6 +243,9 @@ export function createAsr(opts) {
     capture.begin(preRollPcm());
     startTick();
     log('beginCapture');
+    // Warm up the big offline model in the background while the user speaks so
+    // the first final transcript is not delayed (or only slightly).
+    void ensureOfflineModel();
   }
 
   function endCapture(why = 'manual') {
@@ -235,6 +256,7 @@ export function createAsr(opts) {
     finalizePromise = (async () => {
       let result;
       try {
+        await ensureOfflineModel();
         result = await cap.end(why);
       } catch (err) {
         emitError(new Error(`转写失败：${asError(err).message}`, { cause: err }));
@@ -254,7 +276,7 @@ export function createAsr(opts) {
     return createCapture({
       config,
       streaming,
-      offline,
+      offline: () => offline,
       vad,
       wakeWords: asrCfg.wakeWords ?? [],
       onPartial: (text) => safe(onPartial, text),
@@ -286,7 +308,35 @@ export function createAsr(opts) {
     if (vad) { try { vad.free(); } catch { /* ignore */ } vad = null; }
     streaming = null;
     offline = null;
+    offlineLoadPromise = null;
     clearPreRoll();
+  }
+
+  /**
+   * Lazily load the big offline model (233 MB int8, ~0.6 s) on first wake, while
+   * the user is speaking. It stays resident afterwards (sherpa-onnx has no
+   * explicit session-free API); idle CPU is unaffected because all sessions are
+   * single-threaded and only decode on demand.
+   */
+  function ensureOfflineModel() {
+    if (offline) return Promise.resolve(offline);
+    if (offlineLoadPromise) return offlineLoadPromise;
+    const dirs = models();
+    if (!locateOfflineModel(dirs.offline)) return Promise.resolve(null);
+    offlineLoadPromise = new Promise((resolve) => {
+      setImmediate(() => {
+        try {
+          offline = createOfflineAsr({ dir: dirs.offline, numThreads: OFFLINE_THREADS });
+          log(`离线转写模型已加载（lazy, ${offline.kind}, ${OFFLINE_THREADS} 线程）`);
+        } catch (err) {
+          offlineLoadError = asError(err);
+          emitError(new Error(`离线转写模型加载失败（将退化为流式结果）：${offlineLoadError.message}`, { cause: err }));
+          offline = null;
+        }
+        resolve(offline);
+      });
+    });
+    return offlineLoadPromise;
   }
 
   const models = () => ({
@@ -338,16 +388,20 @@ export function createAsr(opts) {
         kws = createKws({
           modelDir: dirs.kws,
           wakeWords: asrCfg.wakeWords ?? [],
-          numThreads: 2,
+          numThreads: KWS_THREADS,
           onLog: log,
         });
-        streaming = hasStreaming ? createStreamingAsr({ dir: dirs.streaming, numThreads: 2 }) : null;
-        offline = hasOffline ? createOfflineAsr({ dir: dirs.offline, numThreads: 2 }) : null;
-        vad = createVad({ modelPath: dirs.vad });
+        streaming = hasStreaming
+          ? createStreamingAsr({ dir: dirs.streaming, numThreads: STREAM_THREADS })
+          : null;
+        // Offline model is loaded lazily on the first wake (see ensureOfflineModel).
+        offline = null;
+        offlineLoadPromise = null;
+        vad = createVad({ modelPath: dirs.vad, numThreads: 1 });
         capture = createCaptureFor();
         log(
-          `模型就绪: kws=${kws.modelFiles.epoch} streaming=${streaming ? 'yes' : 'no'} ` +
-          `offline=${offline ? offline.kind : 'no'} vad=${vad.kind} keywords=${kws.keywords.lines.length}`,
+          `模型就绪: kws=${kws.modelFiles.epoch}(${KWS_THREADS}线程) streaming=${streaming ? `yes(${STREAM_THREADS}线程)` : 'no'} ` +
+          `offline=lazy(${hasOffline ? OFFLINE_THREADS : '-'}线程) vad=${vad.kind} keywords=${kws.keywords.lines.length}`,
         );
       } catch (err) {
         state = 'failed';
@@ -422,6 +476,9 @@ export function createAsr(opts) {
     get modelInfo() {
       const dirs = models();
       return {
+        threads: { kws: KWS_THREADS, streaming: STREAM_THREADS, offline: OFFLINE_THREADS },
+        offlineLoaded: Boolean(offline),
+        offlineLoadError: offlineLoadError ? offlineLoadError.message : null,
         kwsDir: dirs.kws,
         streamingDir: dirs.streaming,
         offlineDir: dirs.offline,

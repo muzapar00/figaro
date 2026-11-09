@@ -31,7 +31,7 @@ export function createCapture(opts) {
   const {
     config,
     streaming = null,
-    offline = null,
+    offline = null, // recogniser object, null, or a () => recogniser lazy getter
     vad = null,
     wakeWords = [],
     onPartial = () => {},
@@ -39,6 +39,7 @@ export function createCapture(opts) {
     onAutoEnd = () => {},
     onError = () => {},
   } = opts;
+  const offlineRef = typeof offline === 'function' ? offline : () => offline;
   const asrCfg = config?.asr ?? {};
   const silenceStopMs = asrCfg.silenceStopMs ?? 900;
   const maxCaptureMs = asrCfg.maxCaptureMs ?? 15000;
@@ -217,11 +218,12 @@ export function createCapture(opts) {
       if (streaming) maybeEmitPartial(true);
 
       let text = '';
+      const offlineAsr = postMs < minCaptureMs ? null : offlineRef();
       if (postMs < minCaptureMs) {
         text = ''; // too short (e.g. a quick F5 tap): discard
-      } else if (offline) {
+      } else if (offlineAsr) {
         try {
-          text = await offline.transcribe(pcm);
+          text = await offlineAsr.transcribe(pcm);
         } catch (err) {
           onError(err instanceof Error ? err : new Error(String(err)));
           text = streamText;
