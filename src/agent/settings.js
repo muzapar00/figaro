@@ -1,0 +1,733 @@
+// Settings & self-test service for the daemon (docs/ipc.md §3.1, additive).
+//
+// The GUI (qs -c figaro-settings) and diagnostics scripts talk to the same unix
+// socket as the CLI/overlay. Everything here is defensive: missing ASR/TTS
+// modules, missing test hooks or a corrupt config file produce a structured
+// `error` reply instead of crashing the daemon.
+import fs from 'node:fs/promises';
+import { performance } from 'node:perf_hooks';
+import { CONFIG_PATH, CONFIG_DIR } from '../config.js';
+import { atomicWriteFile } from './tools/atomic-write.js';
+
+/** Message types routed here instead of the conversation state machine. */
+export const SETTINGS_MESSAGE_TYPES = Object.freeze([
+  'config.get',
+  'config.set',
+  'test.mic.start',
+  'test.mic.stop',
+  'test.asr.start',
+  'test.asr.stop',
+  'test.wake.arm',
+  'test.tts',
+  'service.restart',
+  'diagnostics',
+]);
+
+export const SECRET_PATHS = Object.freeze(['deepseek.apiKey', 'minimax.apiKey']);
+
+// Paths the GUI may write. Everything else is rejected so a UI bug cannot
+// rewrite the API keys, socket path or model endpoints.
+export const ALLOWED_CONFIG_PATHS = Object.freeze([
+  'asr.sensitivity',
+  'asr.wakeWords',
+  'asr.hotkey',
+  'asr.wakeCooldownMs',
+  'asr.inputGainPercent',
+  'asr.silenceStopMs',
+  'tts.sink',
+  'tts.model',
+  'tts.voiceId',
+  'tts.speed',
+  'tts.ack.enabled',
+  'tts.ack.phrases',
+  'tts.ack.timeoutMs',
+]);
+
+export const MIC_TEST_DEFAULT_MS = 4000;
+export const WAKE_TEST_DEFAULT_MS = 15000;
+const MIC_TEST_OVERHEAD_MS = 800;
+const WAKE_TEST_OVERHEAD_MS = 1200;
+const WAKE_SCORE_MIN_INTERVAL_MS = 100;
+const ASR_TEST_DEFAULT_MS = 8000;
+const ASR_TEST_OVERHEAD_MS = 3000;
+const MAX_RECENT_ERRORS = 20;
+const DEFAULT_TTS_TEST_TEXT = '你好，我是费加罗。';
+
+export function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function clone(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+/** Deep clone with the API keys replaced by "***". */
+export function sanitizeConfig(config) {
+  const copy = clone(config ?? {});
+  for (const secretPath of SECRET_PATHS) {
+    const parts = secretPath.split('.');
+    let node = copy;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      if (!isPlainObject(node[parts[i]])) node[parts[i]] = {};
+      node = node[parts[i]];
+    }
+    node[parts[parts.length - 1]] = '***';
+  }
+  return copy;
+}
+
+/** Flatten nested config patches to leaf paths: {a:{b:1}} -> ['a.b']. */
+export function flattenPatch(patch, prefix = '') {
+  const paths = [];
+  if (!isPlainObject(patch)) return paths;
+  for (const [key, value] of Object.entries(patch)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (isPlainObject(value) && Object.keys(value).length > 0) {
+      paths.push(...flattenPatch(value, path));
+    } else {
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+/** @returns {{allowed: string[], forbidden: string[]}} */
+export function validatePatchPaths(patch) {
+  const allowed = [];
+  const forbidden = [];
+  for (const path of flattenPatch(patch)) {
+    if (ALLOWED_CONFIG_PATHS.includes(path)) allowed.push(path);
+    else forbidden.push(path);
+  }
+  return { allowed, forbidden };
+}
+
+/** Deep merge plain objects; arrays and scalars replace. */
+export function deepMergeConfig(base, patch) {
+  if (!isPlainObject(patch)) return clone(patch);
+  const out = isPlainObject(base) ? { ...base } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (isPlainObject(value)) out[key] = deepMergeConfig(out[key], value);
+    else out[key] = clone(value);
+  }
+  return out;
+}
+
+/** Read the raw config.json ({} when absent; throws only on corrupt JSON). */
+export async function readConfigFile(configPath) {
+  let raw;
+  try {
+    raw = await fs.readFile(configPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isPlainObject(parsed)) throw new Error('config.json is not a JSON object');
+    return parsed;
+  } catch (err) {
+    const wrapped = new Error(`config.json is corrupt: ${err.message}`);
+    wrapped.code = 'CONFIG_CORRUPT';
+    throw wrapped;
+  }
+}
+
+/** Write config.json atomically with mode 600 (secrets live there). */
+export async function writeConfigFile(configPath, raw) {
+  await fs.mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 }).catch(() => {});
+  await atomicWriteFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  await fs.chmod(configPath, 0o600).catch(() => {});
+}
+
+function clamp01(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(1, Math.max(0, number));
+}
+
+function finiteNumber(value, fallback = null) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+/**
+ * @param {object} options
+ * @param {object} options.config effective config (loadConfig() result)
+ * @param {object} options.logger console-like {info,warn,error}
+ * @param {object} options.context daemon hooks:
+ *   getVoice() -> {asr, tts}
+ *   getAck() -> wake-ack controller | null
+ *   getEffectiveConfig() -> config
+ *   getUptimeMs() -> number
+ *   getVersion() -> string
+ *   getRecentErrors() -> Array<{at, message}>
+ *   getMicInfo() -> {rms, peak}   (daemon tracks the last level frames)
+ *   broadcast(msg)
+ *   reply(client, msg)
+ *   reloadConfig() -> Promise<object>  (re-read config.json into the daemon)
+ *   applyConfigPatch(patch, changedPaths) -> Promise<{applied, restartRequired, errors}>
+ *   requestRestart() -> void
+ *   getConfigPath() -> string
+ * @param {string} [options.configPath]
+ */
+export function createSettingsService(options = {}) {
+  const log = options.logger ?? { info() {}, warn() {}, error() {} };
+  const context = options.context ?? {};
+  const configPath = options.configPath ?? CONFIG_PATH;
+
+  let micTest = null;
+  let asrTest = null;
+  let wakeTest = null;
+  let closed = false;
+
+  function broadcast(message) {
+    try {
+      context.broadcast?.(message);
+    } catch (err) {
+      log.warn('settings broadcast failed:', err?.message || err);
+    }
+  }
+
+  function reply(client, message) {
+    try {
+      client?.send?.(message);
+    } catch {
+      /* client went away */
+    }
+  }
+
+  function sendError(client, id, code, message) {
+    log.warn(`settings ${code}: ${message}`);
+    reply(client, { type: 'error', ...(id !== undefined ? { id } : {}), code, message });
+  }
+
+  function voice() {
+    return context.getVoice?.() ?? { asr: null, tts: null };
+  }
+
+  function messageId(message) {
+    return message?.id;
+  }
+
+  function withId(id, payload) {
+    return id === undefined ? payload : { ...payload, id };
+  }
+
+  // ------------------------------------------------------------- config ----
+
+  async function handleConfigGet(message, client) {
+    const id = messageId(message);
+    let effective;
+    try {
+      effective = await context.reloadConfig?.() ?? context.getEffectiveConfig?.() ?? options.config;
+    } catch (err) {
+      return sendError(client, id, 'CONFIG_READ_FAILED', `读取配置失败：${err?.message || err}`);
+    }
+    reply(client, withId(id, { type: 'config', config: sanitizeConfig(effective) }));
+  }
+
+  async function handleConfigSet(message, client) {
+    const id = messageId(message);
+    if (!isPlainObject(message.patch)) {
+      return sendError(client, id, 'CONFIG_BAD_PATCH', 'config.set 需要 patch 是 JSON 对象');
+    }
+    const { allowed, forbidden } = validatePatchPaths(message.patch);
+    if (forbidden.length > 0) {
+      const current = context.getEffectiveConfig?.() ?? options.config;
+      reply(client, withId(id, {
+        type: 'config',
+        ok: false,
+        errors: forbidden.map((path) => `不允许修改：${path}`),
+        forbidden,
+        config: sanitizeConfig(current),
+      }));
+      return;
+    }
+    if (allowed.length === 0) {
+      const current = context.getEffectiveConfig?.() ?? options.config;
+      reply(client, withId(id, { type: 'config', ok: true, applied: [], restartRequired: [], config: sanitizeConfig(current) }));
+      return;
+    }
+
+    let raw;
+    try {
+      raw = await readConfigFile(configPath);
+    } catch (err) {
+      return sendError(client, id, err.code || 'CONFIG_READ_FAILED', `读取 config.json 失败：${err.message}`);
+    }
+    const merged = deepMergeConfig(raw, message.patch);
+    try {
+      await writeConfigFile(configPath, merged);
+    } catch (err) {
+      return sendError(client, id, 'CONFIG_WRITE_FAILED', `写入 config.json 失败：${err?.message || err}`);
+    }
+
+    let effective;
+    try {
+      effective = await context.reloadConfig?.() ?? context.getEffectiveConfig?.() ?? options.config;
+    } catch (err) {
+      log.warn('config reload failed:', err?.message || err);
+      effective = context.getEffectiveConfig?.() ?? options.config;
+    }
+
+    let applied = [];
+    let restartRequired = [];
+    let errors = [];
+    try {
+      const applyResult = await context.applyConfigPatch?.(message.patch, allowed);
+      applied = applyResult?.applied ?? [];
+      restartRequired = applyResult?.restartRequired ?? [];
+      errors = applyResult?.errors ?? [];
+    } catch (err) {
+      errors.push(`热应用失败：${err?.message || err}`);
+    }
+
+    reply(client, withId(id, {
+      type: 'config',
+      ok: true,
+      applied,
+      restartRequired,
+      ...(errors.length > 0 ? { errors } : {}),
+      config: sanitizeConfig(effective),
+    }));
+  }
+
+  // ----------------------------------------------------------- mic test ----
+
+  function endMicTest(reason = 'end') {
+    const test = micTest;
+    if (!test) return;
+    micTest = null;
+    if (test.timer) clearTimeout(test.timer);
+    broadcast(withId(test.id, { type: 'mic.end', reason }));
+  }
+
+  function handleMicStart(message, client) {
+    const id = messageId(message);
+    if (micTest) return sendError(client, id, 'TEST_BUSY', '麦克风测试已经在进行中');
+    const asr = voice().asr;
+    if (!asr) return sendError(client, id, 'unsupported', 'ASR 模块不可用，无法测试麦克风');
+    if (typeof asr.startMicTest !== 'function') {
+      return sendError(client, id, 'unsupported', 'ASR 模块尚未提供麦克风测试接口（startMicTest）');
+    }
+    const ms = Math.max(200, finiteNumber(message.ms, MIC_TEST_DEFAULT_MS));
+    const test = { id, timer: null };
+    micTest = test;
+    try {
+      asr.startMicTest({
+        ms,
+        onSample: (sample) => {
+          if (micTest !== test) return;
+          const rms = clamp01(sample?.rms);
+          const peak = clamp01(sample?.peak);
+          const level = sample?.level === undefined ? rms : clamp01(sample.level);
+          broadcast(withId(id, { type: 'mic', rms, peak, level }));
+        },
+        onEnd: () => endMicTest('end'),
+      });
+    } catch (err) {
+      micTest = null;
+      return sendError(client, id, 'TEST_FAILED', `启动麦克风测试失败：${err?.message || err}`);
+    }
+    test.timer = setTimeout(() => {
+      if (micTest !== test) return;
+      try {
+        asr.stopMicTest?.();
+      } catch {
+        /* ignore */
+      }
+      endMicTest('timeout');
+    }, ms + MIC_TEST_OVERHEAD_MS);
+    test.timer.unref?.();
+  }
+
+  function handleMicStop(message, client) {
+    const id = messageId(message);
+    if (!micTest) {
+      reply(client, withId(id, { type: 'mic.end', reason: 'not-running' }));
+      return;
+    }
+    const asr = voice().asr;
+    try {
+      asr?.stopMicTest?.();
+    } catch (err) {
+      log.warn('stopMicTest failed:', err?.message || err);
+    }
+    endMicTest('stopped');
+  }
+
+  // ----------------------------------------------------------- asr test ----
+
+  function finishAsrTest(id, payload, reason) {
+    const test = asrTest;
+    if (!test) return;
+    asrTest = null;
+    if (test.timer) clearTimeout(test.timer);
+    broadcast(withId(id, {
+      type: 'test.asr.result',
+      text: typeof payload?.text === 'string' ? payload.text : '',
+      streamingText: typeof payload?.streamingText === 'string' ? payload.streamingText : '',
+      ms: finiteNumber(payload?.ms, 0),
+      audioMs: finiteNumber(payload?.audioMs, 0),
+      ...(reason ? { reason } : {}),
+    }));
+  }
+
+  function handleAsrStart(message, client) {
+    const id = messageId(message);
+    if (asrTest) return sendError(client, id, 'TEST_BUSY', '转写测试已经在进行中');
+    const asr = voice().asr;
+    if (!asr) return sendError(client, id, 'unsupported', 'ASR 模块不可用，无法测试转写');
+    if (typeof asr.startAsrTest !== 'function') {
+      return sendError(client, id, 'unsupported', 'ASR 模块尚未提供转写测试接口（startAsrTest）');
+    }
+    const ms = Math.max(500, finiteNumber(message.ms, ASR_TEST_DEFAULT_MS));
+    const test = { id, timer: null };
+    asrTest = test;
+    try {
+      asr.startAsrTest({
+        ms,
+        onPartial: (text) => {
+          if (asrTest !== test) return;
+          broadcast({ type: 'partial', text: String(text ?? '') });
+        },
+        onResult: (payload) => finishAsrTest(id, payload, 'end'),
+        onError: (err) => {
+          if (asrTest !== test) return;
+          broadcast(withId(id, { type: 'error', code: 'ASR_TEST_FAILED', message: `转写测试失败：${err?.message || err}` }));
+          finishAsrTest(id, null, 'error');
+        },
+      });
+    } catch (err) {
+      asrTest = null;
+      return sendError(client, id, 'TEST_FAILED', `启动转写测试失败：${err?.message || err}`);
+    }
+    test.timer = setTimeout(() => {
+      if (asrTest !== test) return;
+      try {
+        asr.stopAsrTest?.();
+      } catch {
+        /* ignore */
+      }
+      finishAsrTest(id, null, 'timeout');
+    }, ms + ASR_TEST_OVERHEAD_MS);
+    test.timer.unref?.();
+  }
+
+  function handleAsrStop(message, client) {
+    const id = messageId(message);
+    if (!asrTest) {
+      reply(client, withId(id, { type: 'test.asr.result', text: '', streamingText: '', ms: 0, audioMs: 0, reason: 'not-running' }));
+      return;
+    }
+    try {
+      voice().asr?.stopAsrTest?.();
+    } catch (err) {
+      log.warn('stopAsrTest failed:', err?.message || err);
+    }
+  }
+
+  // ---------------------------------------------------------- wake test ----
+
+  function endWakeTest(reason = 'end', provided = null) {
+    const test = wakeTest;
+    if (!test) return;
+    wakeTest = null;
+    if (test.timer) clearTimeout(test.timer);
+    const hits = finiteNumber(provided?.hits, test.hits) ?? test.hits;
+    const misses = finiteNumber(provided?.misses, test.misses) ?? test.misses;
+    const falseAlarms = (finiteNumber(provided?.falseAlarms, 0) ?? 0) + test.falseAlarms;
+    broadcast(withId(test.id, { type: 'test.wake.end', hits, misses, falseAlarms, reason }));
+  }
+
+  function handleWakeArm(message, client) {
+    const id = messageId(message);
+    if (wakeTest) return sendError(client, id, 'TEST_BUSY', '唤醒测试窗口已经打开');
+    const asr = voice().asr;
+    if (!asr) return sendError(client, id, 'unsupported', 'ASR 模块不可用，无法测试唤醒');
+    if (typeof asr.armWakeTest !== 'function') {
+      return sendError(client, id, 'unsupported', 'ASR 模块尚未提供唤醒测试接口（armWakeTest）');
+    }
+    const ms = Math.max(1000, finiteNumber(message.ms, WAKE_TEST_DEFAULT_MS));
+    const test = { id, hits: 0, misses: 0, falseAlarms: 0, timer: null, lastScoreAt: 0 };
+    wakeTest = test;
+    try {
+      asr.armWakeTest({
+        ms,
+        onScore: (payload) => {
+          if (wakeTest !== test) return;
+          const now = Date.now();
+          if (now - test.lastScoreAt < WAKE_SCORE_MIN_INTERVAL_MS) return;
+          test.lastScoreAt = now;
+          broadcast(withId(id, {
+            type: 'wake.score',
+            score: clamp01(payload?.score),
+            keyword: typeof payload?.keyword === 'string' ? payload.keyword : '',
+          }));
+        },
+        onHit: (payload) => {
+          if (wakeTest !== test) return;
+          test.hits += 1;
+          broadcast(withId(id, {
+            type: 'wake.hit',
+            score: clamp01(payload?.score),
+            latencyMs: finiteNumber(payload?.latencyMs, 0) ?? 0,
+          }));
+        },
+        onEnd: (payload) => endWakeTest('end', payload),
+      });
+    } catch (err) {
+      wakeTest = null;
+      return sendError(client, id, 'TEST_FAILED', `启动唤醒测试失败：${err?.message || err}`);
+    }
+    test.timer = setTimeout(() => {
+      if (wakeTest !== test) return;
+      try {
+        asr.disarmWakeTest?.();
+      } catch {
+        /* ignore */
+      }
+      endWakeTest('timeout');
+    }, ms + WAKE_TEST_OVERHEAD_MS);
+    test.timer.unref?.();
+    // Answer with the test window parameters so the GUI can draw a countdown.
+    reply(client, withId(id, { type: 'ack', test: 'wake', ms }));
+  }
+
+  // ----------------------------------------------------------- tts test ----
+
+  async function handleTtsTest(message, client) {
+    const id = messageId(message);
+    const tts = voice().tts;
+    if (!tts) return sendError(client, id, 'unsupported', 'TTS 模块不可用，无法试听');
+    const text = typeof message.text === 'string' && message.text.trim().length > 0
+      ? message.text.trim()
+      : DEFAULT_TTS_TEST_TEXT;
+    const voiceId = typeof message.voiceId === 'string' && message.voiceId.trim().length > 0
+      ? message.voiceId.trim()
+      : undefined;
+
+    // The test tone is the only sound: stop any reply/ack that is playing.
+    try {
+      context.cancelSpeech?.();
+    } catch {
+      /* ignore */
+    }
+
+    const startedAt = performance.now();
+    let synth;
+    try {
+      synth = await tts.synthesize(text, voiceId ? { voiceId } : {});
+    } catch (err) {
+      broadcast(withId(id, { type: 'test.tts.result', id, ms: Math.round(performance.now() - startedAt), ok: false, error: String(err?.message || err) }));
+      return;
+    }
+    if (!synth || !Buffer.isBuffer(synth.pcm) || synth.pcm.length < 320) {
+      broadcast(withId(id, { type: 'test.tts.result', ms: Math.round(performance.now() - startedAt), ok: false, error: 'synthesis returned no audio' }));
+      return;
+    }
+    const writeAt = performance.now();
+    let playback;
+    try {
+      playback = tts.playPcm(synth.pcm, { rate: synth.sampleRate });
+    } catch (err) {
+      broadcast(withId(id, { type: 'test.tts.result', ms: Math.round(writeAt - startedAt), ok: false, error: String(err?.message || err) }));
+      return;
+    }
+    // "First audio" = synthesis + handing the PCM to the player. The device
+    // latency (~40 ms) is on top and is what the sink-monitor measurement shows.
+    const ms = Math.round(performance.now() - startedAt);
+    broadcast(withId(id, {
+      type: 'test.tts.result',
+      ms,
+      ok: true,
+      text,
+      ...(voiceId ? { voiceId } : {}),
+      sampleRate: synth.sampleRate ?? null,
+      synthMs: Math.round(writeAt - startedAt),
+      ttfbMs: synth.ttfbMs ?? null,
+      durationMs: synth.durationMs ?? null,
+    }));
+    Promise.resolve(playback).catch((err) => {
+      log.warn('test.tts playback failed:', err?.message || err);
+    });
+  }
+
+  // ---------------------------------------------------------- diagnostics ----
+
+  function collectDiagnostics(id) {
+    const { asr, tts } = voice();
+    const ack = context.getAck?.() ?? null;
+    const ackStats = ack?.stats ?? null;
+    const ttsStats = tts?.stats ?? null;
+    const asrInfo = typeof asr?.modelInfo === 'object' && asr.modelInfo !== null ? asr.modelInfo : null;
+    const asrMic = typeof asr?.micInfo === 'object' && asr.micInfo !== null ? asr.micInfo : null;
+    const gainInfo = typeof asr?.micGainInfo === 'object' && asr.micGainInfo !== null ? asr.micGainInfo : null;
+    const liveMic = context.getMicInfo?.() ?? {};
+    const gainPercent = finiteNumber(
+      asrMic?.gainPercent ?? asrMic?.percent ?? gainInfo?.percent ?? gainInfo?.gain?.percent,
+      null,
+    );
+    const config = context.getEffectiveConfig?.() ?? options.config ?? {};
+
+    return withId(id, {
+      type: 'diagnostics',
+      configPath,
+      version: context.getVersion?.() ?? null,
+      uptimeMs: context.getUptimeMs?.() ?? 0,
+      state: context.getState?.() ?? null,
+      asr: {
+        available: Boolean(asr),
+        state: typeof asr?.state === 'string' ? asr.state : null,
+        capturing: Boolean(asr?.capturing),
+        sensitivity: asr?.sensitivity ?? config.asr?.sensitivity ?? null,
+        wakeCooldownMs: finiteNumber(asr?.wakeCooldownMs, finiteNumber(config.asr?.wakeCooldownMs, null)),
+        inputGainPercent: asr?.inputGainPercent !== undefined ? asr.inputGainPercent : (config.asr?.inputGainPercent ?? null),
+        hotkey: config.asr?.hotkey ?? '',
+        hotkeyState: typeof asr?.hotkeyState === 'object' && asr.hotkeyState !== null ? asr.hotkeyState : null,
+        modelInfo: asrInfo,
+        lastFinalMs: finiteNumber(asr?.lastFinalMs, null),
+      },
+      tts: {
+        available: Boolean(tts),
+        model: ttsStats?.model ?? config.minimax?.model ?? null,
+        voiceId: ttsStats?.voiceId ?? config.minimax?.voiceId ?? null,
+        sink: ttsStats?.audioSink ?? config.tts?.sink ?? '',
+        sinkStatus: ttsStats?.sinkStatus ?? null,
+        speaking: Boolean(tts?.speaking),
+        connected: Boolean(ttsStats?.connected),
+      },
+      ack: ack
+        ? {
+            enabled: Boolean(ack.enabled),
+            ready: Boolean(ack.ready),
+            timeoutMs: ack.timeoutMs,
+            phrases: ack.phrases,
+            model: ackStats?.model ?? null,
+            voiceId: ackStats?.voiceId ?? null,
+            lastPhrase: ackStats?.lastPhrase ?? null,
+            lastPlayDurationMs: ackStats?.lastPlayDurationMs ?? null,
+            failures: ackStats?.failures ?? 0,
+            reason: ackStats?.disabledReason ?? null,
+          }
+        : { enabled: false, ready: false, reason: 'not initialised' },
+      mic: {
+        gainPercent,
+        rms: clamp01(liveMic?.rms ?? asrMic?.rms ?? 0),
+        peak: clamp01(liveMic?.peak ?? asrMic?.peak ?? 0),
+        fixed: Boolean(asrMic?.fixed),
+      },
+      latency: {
+        ttsFirstAudioMs: finiteNumber(ttsStats?.lastFirstAudioMs, null),
+        ttsRequestToFirstAudioMs: finiteNumber(ttsStats?.lastRequestToFirstAudioMs, null),
+        ttsLastSpeakingMs: finiteNumber(ttsStats?.lastSpeakingMs, null),
+        ackLastPlayDurationMs: finiteNumber(ackStats?.lastPlayDurationMs, null),
+        ackLastFirstWriteMs: finiteNumber(ackStats?.lastFirstWriteMs, null),
+        asrLastFinalMs: finiteNumber(asr?.lastFinalMs, null),
+      },
+      recentErrors: (context.getRecentErrors?.() ?? []).slice(-5),
+      tests: {
+        mic: Boolean(micTest),
+        asr: Boolean(asrTest),
+        wake: Boolean(wakeTest),
+      },
+    });
+  }
+
+  // ------------------------------------------------------------ dispatch ----
+
+  async function handle(message, client) {
+    const id = messageId(message);
+    switch (message.type) {
+      case 'config.get':
+        await handleConfigGet(message, client);
+        return;
+      case 'config.set':
+        await handleConfigSet(message, client);
+        return;
+      case 'test.mic.start':
+        handleMicStart(message, client);
+        return;
+      case 'test.mic.stop':
+        handleMicStop(message, client);
+        return;
+      case 'test.asr.start':
+        handleAsrStart(message, client);
+        return;
+      case 'test.asr.stop':
+        handleAsrStop(message, client);
+        return;
+      case 'test.wake.arm':
+        handleWakeArm(message, client);
+        return;
+      case 'test.tts':
+        await handleTtsTest(message, client);
+        return;
+      case 'service.restart': {
+        const via = context.describeRestart?.() ?? 'unknown';
+        reply(client, withId(id, { type: 'ack', action: 'restart', via }));
+        log.info(`service.restart requested (${via})`);
+        context.requestRestart?.();
+        return;
+      }
+      case 'diagnostics':
+        reply(client, collectDiagnostics(id));
+        return;
+      default:
+        sendError(client, id, 'unsupported', `未知设置消息：${message.type}`);
+    }
+  }
+
+  return {
+    handle,
+    /** True while the wake self-test window is open (real wakes must stay silent). */
+    isWakeTestActive: () => wakeTest !== null,
+    isAnyTestActive: () => micTest !== null || asrTest !== null || wakeTest !== null,
+    /** Called by the daemon when a real wake happens during a test; never acks. */
+    noteRealWake() {
+      if (wakeTest) {
+        wakeTest.falseAlarms += 1;
+        return true;
+      }
+      return false;
+    },
+    close() {
+      closed = true;
+      const asr = voice().asr;
+      try {
+        if (micTest) asr?.stopMicTest?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (asrTest) asr?.stopAsrTest?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (wakeTest) asr?.disarmWakeTest?.();
+      } catch {
+        /* ignore */
+      }
+      for (const test of [micTest, asrTest, wakeTest]) {
+        if (test?.timer) clearTimeout(test.timer);
+      }
+      micTest = null;
+      asrTest = null;
+      wakeTest = null;
+      void closed;
+    },
+    get micTestActive() {
+      return micTest !== null;
+    },
+    get asrTestActive() {
+      return asrTest !== null;
+    },
+    get wakeTestActive() {
+      return wakeTest !== null;
+    },
+  };
+}
+
+export { CONFIG_PATH, CONFIG_DIR, MAX_RECENT_ERRORS };

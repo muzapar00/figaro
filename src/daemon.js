@@ -10,9 +10,10 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import { createIpcServer } from './ipc.js';
-import { loadConfig } from './config.js';
+import { loadConfig, CONFIG_PATH } from './config.js';
 import { createAgent } from './agent/index.js';
 import { createWakeAck, DEFAULT_PHRASES } from './agent/wake-ack.js';
+import { createSettingsService, SETTINGS_MESSAGE_TYPES } from './agent/settings.js';
 
 export const STATES = Object.freeze(['idle', 'listening', 'thinking', 'speaking']);
 
@@ -26,6 +27,21 @@ const VOICE_RETRY_COOLDOWN_MS = 15_000;
 const WAKE_CAPTURE_FALLBACK_MS = 1_500;
 // How long after an ack finishes its echo may still be in a transcript (pre-roll).
 const ACK_ECHO_WINDOW_MS = 3_000;
+// Exit code used for `service.restart`: non-zero so systemd's Restart=on-failure
+// brings the daemon back after a GUI-triggered restart.
+const RESTART_EXIT_CODE = 75;
+// Paths of the settings API that can change without recreating the ASR module.
+const ASR_HOT_PATHS = Object.freeze(['asr.sensitivity', 'asr.wakeCooldownMs', 'asr.inputGainPercent']);
+// TTS settings fixed at module creation: changing them recreates the module.
+const TTS_RECREATE_PATHS = Object.freeze(['tts.model', 'tts.voiceId', 'tts.speed', 'tts.sink']);
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
+})();
 
 function makeLogger(logger) {
   if (logger) return logger;
@@ -112,16 +128,22 @@ function findSentenceEnd(text) {
  * @param {Function} [options.asrFactory] test seam replacing the src/voice/asr module factory
  * @param {Function} [options.ttsFactory] test seam replacing the src/voice/tts module factory
  * @param {Function} [options.ackFactory] test seam replacing the wake-ack controller
+ * @param {string} [options.configPath] config.json path used by config.set (default CONFIG_PATH)
+ * @param {Function} [options.reloadConfigFn] test seam: () => loadConfig()-shaped object
+ * @param {Function} [options.restartFn] test seam replacing the service.restart exit
  * @param {object} [options.logger] console-like {info,warn,error}
  */
 export function createDaemon(options = {}) {
   const config = options.config ?? loadConfig();
+  applyTtsAliases(config);
   const log = makeLogger(options.logger);
   const voiceEnabled = options.voice !== false;
   const asrEnabled = voiceEnabled && options.disableAsr !== true && config.asr?.enabled !== false;
   const ttsEnabled = voiceEnabled && options.disableTts !== true && config.tts?.enabled !== false;
   const agentFactory = options.agentFactory ?? createAgent;
   const ackFactory = options.ackFactory ?? createWakeAck;
+  const configPath = options.configPath ?? CONFIG_PATH;
+  const reloadConfigFn = options.reloadConfigFn ?? loadConfig;
   const wakeCaptureFallbackMs = Number.isFinite(Number(config.asr?.wakeCaptureFallbackMs))
     ? Math.max(0, Number(config.asr.wakeCaptureFallbackMs))
     : WAKE_CAPTURE_FALLBACK_MS;
@@ -150,6 +172,11 @@ export function createDaemon(options = {}) {
   let lastAckEndedAt = 0;
   let captureRetryCount = 0;
   let suppressFinalOnce = false;
+  let settings = null; // docs/ipc.md §3.1 settings & self-test service
+  let lastMicRms = 0;
+  let lastMicPeak = 0;
+  let lastCancelAt = 0; // suppresses echo re-listen after an explicit cancel
+  const recentErrors = []; // ring buffer for diagnostics.recentErrors
 
   const emit = (message) => {
     try {
@@ -168,8 +195,14 @@ export function createDaemon(options = {}) {
     emit({ type: 'state', state: next });
   }
 
+  function pushRecentError(message) {
+    recentErrors.push({ at: new Date().toISOString(), message: String(message) });
+    if (recentErrors.length > 20) recentErrors.splice(0, recentErrors.length - 20);
+  }
+
   function reportError(message, err) {
     lastError = String(message);
+    pushRecentError(message);
     if (err) log.warn(message, err?.message || err);
     emit({ type: 'error', message: String(message) });
   }
@@ -183,6 +216,23 @@ export function createDaemon(options = {}) {
       model: config.deepseek?.model ?? null,
       voice: { asr: Boolean(voice.asr), tts: Boolean(voice.tts) },
       asrCapturing: Boolean(voice.asr?.capturing),
+      // Effective settings summary (docs/ipc.md §3.1); lets a GUI confirm that a
+      // config.set actually landed without a separate config.get.
+      config: {
+        asr: {
+          sensitivity: config.asr?.sensitivity ?? null,
+          wakeCooldownMs: config.asr?.wakeCooldownMs ?? null,
+          inputGainPercent: config.asr?.inputGainPercent ?? null,
+          hotkey: config.asr?.hotkey ?? '',
+          silenceStopMs: config.asr?.silenceStopMs ?? null,
+        },
+        tts: {
+          model: config.minimax?.model ?? null,
+          voiceId: config.minimax?.voiceId ?? null,
+          sink: config.tts?.sink ?? '',
+          ackEnabled: config.tts?.ack?.enabled !== false,
+        },
+      },
       history: agent?.history?.length ?? 0,
       ack: ackHealth(),
       lastError,
@@ -295,6 +345,7 @@ export function createDaemon(options = {}) {
   function handleVoiceError(area, err) {
     const message = `${area === 'tts' ? '语音合成' : '语音识别'}出错：${err?.message || err}`;
     lastError = message;
+    pushRecentError(message);
     log.warn(message);
     emit({ type: 'error', message });
     if (area === 'tts') ttsSpeaking = false;
@@ -308,11 +359,14 @@ export function createDaemon(options = {}) {
   }
 
   function handleAsrLevel(value) {
-    emit({ type: 'level', value: clamp01(value) });
+    lastMicRms = clamp01(value);
+    emit({ type: 'level', value: lastMicRms });
   }
 
   function handleAsrPartial(text) {
     lastAsrPartial = String(text ?? '');
+    // Settings self-tests stream their own partials; never mix them into a turn.
+    if (settings?.isAnyTestActive()) return;
     // While the ack is audible the mic may pick it up; do not paint that echo
     // into the UI as if the user had said it.
     if (ackActive) return;
@@ -320,6 +374,10 @@ export function createDaemon(options = {}) {
   }
 
   function handleAsrFinal(rawText) {
+    if (settings?.isAnyTestActive()) {
+      log.info('wake: ignoring ASR final while a settings test is running');
+      return;
+    }
     if (suppressFinalOnce) {
       suppressFinalOnce = false;
       if (!ackActive) setState('idle');
@@ -335,6 +393,14 @@ export function createDaemon(options = {}) {
       // Nothing was captured, or only the ack echo. Right after a wake, give the
       // user one more listening window instead of going deaf immediately.
       if (ackActive) return;
+      // An explicit cancel must not be undone by the empty final of the capture
+      // it just interrupted.
+      if (lastCancelAt > 0 && Date.now() - lastCancelAt < 3_000) {
+        lastCancelAt = 0;
+        captureRetryCount = 0;
+        if (current === null) setState('idle');
+        return;
+      }
       const inWakeWindow = lastAckEndedAt > 0 && Date.now() - lastAckEndedAt < 4_000;
       if (inWakeWindow && captureRetryCount < 1 && voice.asr) {
         captureRetryCount += 1;
@@ -397,8 +463,16 @@ export function createDaemon(options = {}) {
    */
   function beginWakeFlow(origin) {
     if (!voice.asr) return;
+    if (settings?.isAnyTestActive()) {
+      const counted = settings.noteRealWake();
+      log.info(`wake (${origin}) ignored during a settings test${counted ? ' (counted as false alarm)' : ''}`);
+      return;
+    }
     log.info(`wake (${origin})`);
     cancelCurrent('wake interrupted it');
+    // The internal cancel above is not a user cancel: this wake starts a fresh
+    // listening window that is allowed to re-listen on an echo-only final.
+    lastCancelAt = 0;
     stopCaptureForBargeIn();
     pendingAckFinal = '';
     captureRetryCount = 0;
@@ -506,6 +580,7 @@ export function createDaemon(options = {}) {
   function cancelCurrent(reason) {
     const turn = current;
     current = null;
+    lastCancelAt = Date.now();
     if (turn?.controller) {
       try {
         turn.controller.abort();
@@ -705,25 +780,238 @@ export function createDaemon(options = {}) {
     }
     if (ttsEnabled && !voice.tts) {
       const factory = options.ttsFactory ?? await loadVoiceFactory('tts', TTS_MODULE, 'createTts');
-      if (factory) {
+      if (factory) createTtsInstance(factory);
+    }
+    void prepareAck();
+  }
+
+  /** Create the TTS module from a loaded factory (shared by initVoice and hot reload). */
+  function createTtsInstance(factory) {
+    try {
+      voice.tts = factory({
+        config,
+        onLevel: (value) => emit({ type: 'level', value: clamp01(value) }),
+        onState: (next) => {
+          ttsSpeaking = next === 'speaking';
+          if (next === 'idle' && current === null && state === 'speaking' && !ackActive) setState('idle');
+        },
+        onError: (err) => handleVoiceError('tts', err),
+      });
+      log.info('tts module loaded');
+      return true;
+    } catch (err) {
+      log.warn(`[tts] createTts() failed: ${err?.message || err}; running without it`);
+      voice.tts = null;
+      return false;
+    }
+  }
+
+  /** Build the wake-ack controller for the current config. */
+  function createAckController() {
+    if (!ttsEnabled) return null;
+    try {
+      const controller = ackFactory({ config, logger: log, getTts: () => voice.tts });
+      log.info(
+        `wake-ack: ${controller.enabled ? 'enabled' : 'disabled'} (phrases=${JSON.stringify(controller.phrases)}, timeout=${controller.timeoutMs}ms)`,
+      );
+      return controller;
+    } catch (err) {
+      log.warn('wake-ack: controller creation failed:', err?.message || err);
+      return null;
+    }
+  }
+
+  /** Recreate the TTS module after a config.set (voice/sink/model change). */
+  async function recreateTts() {
+    if (!ttsEnabled) return false;
+    const old = voice.tts;
+    voice.tts = null;
+    try {
+      old?.stop?.();
+    } catch {
+      /* ignore */
+    }
+    try {
+      old?.close?.();
+    } catch {
+      /* ignore */
+    }
+    const factory = options.ttsFactory ?? await loadVoiceFactory('tts', TTS_MODULE, 'createTts');
+    if (!factory) return false;
+    const ok = createTtsInstance(factory);
+    if (ok) {
+      // The ack cache was synthesized with the old voice/sink: rebuild it too.
+      await recreateAck();
+      log.info('tts hot-reloaded after config.set');
+    }
+    return ok;
+  }
+
+  /** Rebuild the wake-ack cache (voice/phrase config changed). */
+  async function recreateAck() {
+    const old = ack;
+    ack = null;
+    ackActive = null;
+    ackPrepared = false;
+    try {
+      old?.close?.();
+    } catch {
+      /* ignore */
+    }
+    ack = createAckController();
+    if (ack?.enabled) {
+      void prepareAck();
+      return true;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- settings hot-apply
+
+  /**
+   * docs/ipc.md §3.1 exposes the voice as `tts.model/voiceId/speed`, while the
+   * voice modules read `minimax.model/voiceId/speed`. Mirror the GUI-facing keys
+   * onto the module-facing ones so both a fresh daemon start and a config.set
+   * hot reload see a single value.
+   */
+  function applyTtsAliases(target) {
+    const tts = target?.tts;
+    if (!tts || typeof tts !== 'object') return target;
+    const minimax = { ...(target.minimax ?? {}) };
+    if (typeof tts.voiceId === 'string' && tts.voiceId.trim().length > 0) minimax.voiceId = tts.voiceId.trim();
+    if (typeof tts.model === 'string' && tts.model.trim().length > 0) minimax.model = tts.model.trim();
+    if (Number.isFinite(Number(tts.speed)) && Number(tts.speed) > 0) minimax.speed = Number(tts.speed);
+    target.minimax = minimax;
+    return target;
+  }
+
+  /** Re-read config.json through the config loader and swap it into the daemon. */
+  async function reloadConfigFromFile() {
+    const fresh = await reloadConfigFn();
+    for (const key of Object.keys(fresh)) config[key] = fresh[key];
+    applyTtsAliases(config);
+    return config;
+  }
+
+  /** Try to apply runtime-changeable ASR settings; anything else needs a restart. */
+  function applyAsrRuntime(changedPaths) {
+    const asr = voice.asr;
+    const applied = [];
+    const restartRequired = [];
+    const errors = [];
+    const runtime = {
+      sensitivity: config.asr?.sensitivity,
+      wakeCooldownMs: config.asr?.wakeCooldownMs,
+      inputGainPercent: config.asr?.inputGainPercent,
+    };
+    if (!asr) {
+      restartRequired.push(...changedPaths);
+      return { applied, restartRequired, errors: ['ASR 模块不可用，设置将在重启后生效'] };
+    }
+    if (typeof asr.applyRuntimeConfig === 'function') {
+      try {
+        const result = asr.applyRuntimeConfig(runtime) ?? {};
+        const asrRestart = Array.isArray(result.restartRequired) ? result.restartRequired.map(String) : [];
+        for (const path of changedPaths) {
+          const key = path.split('.').pop();
+          if (asrRestart.some((item) => item === path || item === key || item.endsWith(`.${key}`))) {
+            restartRequired.push(path);
+          } else {
+            applied.push(path);
+          }
+        }
+        if (Array.isArray(result.errors)) errors.push(...result.errors.map(String));
+      } catch (err) {
+        errors.push(`ASR 热更新失败：${err?.message || err}`);
+        restartRequired.push(...changedPaths);
+      }
+      return { applied, restartRequired, errors };
+    }
+    const setters = {
+      'asr.sensitivity': 'setSensitivity',
+      'asr.wakeCooldownMs': 'setWakeCooldownMs',
+      'asr.inputGainPercent': 'setInputGainPercent',
+    };
+    for (const path of changedPaths) {
+      const method = setters[path];
+      const key = path.split('.').pop();
+      if (method && typeof asr[method] === 'function') {
         try {
-          voice.tts = factory({
-            config,
-            onLevel: (value) => emit({ type: 'level', value: clamp01(value) }),
-            onState: (next) => {
-              ttsSpeaking = next === 'speaking';
-              if (next === 'idle' && current === null && state === 'speaking' && !ackActive) setState('idle');
-            },
-            onError: (err) => handleVoiceError('tts', err),
-          });
-          log.info('tts module loaded');
+          asr[method](runtime[key]);
+          applied.push(path);
         } catch (err) {
-          log.warn(`[tts] createTts() failed: ${err?.message || err}; running without it`);
-          voice.tts = null;
+          errors.push(`${path} 热更新失败：${err?.message || err}`);
+          restartRequired.push(path);
+        }
+      } else {
+        restartRequired.push(path);
+      }
+    }
+    return { applied, restartRequired, errors };
+  }
+
+  /**
+   * Apply a validated config patch without restarting where possible.
+   * @returns {Promise<{applied: string[], restartRequired: string[], errors: string[]}>}
+   */
+  async function applyConfigPatch(patch, changedPaths) {
+    const applied = [];
+    const restartRequired = [];
+    const errors = [];
+    void patch;
+
+    const asrHot = changedPaths.filter((path) => ASR_HOT_PATHS.includes(path));
+    const asrRestart = changedPaths.filter((path) => path.startsWith('asr.') && !ASR_HOT_PATHS.includes(path));
+    if (asrRestart.length > 0) restartRequired.push(...asrRestart);
+    if (asrHot.length > 0) {
+      const result = applyAsrRuntime(asrHot);
+      applied.push(...result.applied);
+      restartRequired.push(...result.restartRequired);
+      errors.push(...result.errors);
+    }
+
+    const ttsRecreate = changedPaths.filter((path) => TTS_RECREATE_PATHS.includes(path));
+    let ttsRecreated = false;
+    if (ttsRecreate.length > 0) {
+      const ok = await recreateTts();
+      ttsRecreated = ok;
+      if (ok) applied.push(...ttsRecreate);
+      else {
+        errors.push('TTS 重新加载失败，设置将在重启后生效');
+        restartRequired.push(...ttsRecreate);
+      }
+    }
+
+    const ackPaths = changedPaths.filter((path) => path.startsWith('tts.ack'));
+    if (ackPaths.length > 0) {
+      if (ttsRecreated) {
+        // recreateTts() already rebuilt the cache with the new voice/phrases.
+        applied.push(...ackPaths);
+      } else {
+        const ok = await recreateAck();
+        if (ok || !ttsEnabled) applied.push(...ackPaths);
+        else {
+          errors.push('唤醒应答缓存重建失败，设置将在重启后生效');
+          restartRequired.push(...ackPaths);
         }
       }
     }
-    void prepareAck();
+
+    return {
+      applied: [...new Set(applied)],
+      restartRequired: [...new Set(restartRequired)],
+      errors,
+    };
+  }
+
+  /** Restart the daemon: exit non-zero so systemd's Restart=on-failure pulls us back. */
+  function requestRestart() {
+    if (typeof options.restartFn === 'function') {
+      setTimeout(() => options.restartFn(), 200).unref?.();
+      return;
+    }
+    log.info(`service.restart: exiting with code ${RESTART_EXIT_CODE} (systemd Restart=on-failure)`);
+    setTimeout(() => process.exit(RESTART_EXIT_CODE), 250).unref?.();
   }
 
   /** Pre-synthesize the wake acknowledgements once the TTS module is available. */
@@ -763,6 +1051,19 @@ export function createDaemon(options = {}) {
   function handleMessage(message, client) {
     if (!message || typeof message !== 'object' || typeof message.type !== 'string') {
       client.send({ type: 'error', message: 'message must be an object with a string type' });
+      return;
+    }
+    // docs/ipc.md §3.1: settings & self-test messages are handled by a separate
+    // service so they cannot interfere with the conversation state machine.
+    if (settings && SETTINGS_MESSAGE_TYPES.includes(message.type)) {
+      Promise.resolve(settings.handle(message, client)).catch((err) => {
+        log.error(`settings handler crashed (${message.type}):`, err?.message || err);
+        try {
+          client.send({ type: 'error', code: 'SETTINGS_FAILED', message: `内部错误：${err?.message || err}` });
+        } catch {
+          /* ignore */
+        }
+      });
       return;
     }
     switch (message.type) {
@@ -882,12 +1183,42 @@ export function createDaemon(options = {}) {
       ipc.server.once('error', onError);
     });
     log.info(`daemon listening on ${socketPath} (pid ${process.pid}, model ${config.deepseek?.model ?? '?'})`);
-    if (ttsEnabled) {
-      ack = ackFactory({ config, logger: log, getTts: () => voice.tts });
-      log.info(
-        `wake-ack: ${ack.enabled ? 'enabled' : 'disabled'} (phrases=${JSON.stringify(ack.phrases)}, timeout=${ack.timeoutMs}ms)`,
-      );
-    }
+    ack = createAckController();
+    settings = createSettingsService({
+      config,
+      logger: log,
+      configPath,
+      context: {
+        getVoice: () => voice,
+        getAck: () => ack,
+        getEffectiveConfig: () => config,
+        getUptimeMs: () => (startedAt > 0 ? Date.now() - startedAt : 0),
+        getVersion: () => PKG_VERSION,
+        getRecentErrors: () => recentErrors,
+        getMicInfo: () => ({
+          rms: clamp01(voice.asr?.micInfo?.rms ?? lastMicRms),
+          peak: clamp01(voice.asr?.micInfo?.peak ?? lastMicPeak),
+        }),
+        getState: () => state,
+        broadcast: (message) => emit(message),
+        reply: (client, message) => client?.send?.(message),
+        reloadConfig: reloadConfigFromFile,
+        applyConfigPatch,
+        describeRestart: () => (process.env.INVOCATION_ID ? 'systemd' : 'manual'),
+        requestRestart,
+        cancelSpeech: () => {
+          cancelCurrent('settings tts test');
+          if (voice.tts) {
+            try {
+              voice.tts.stop();
+            } catch {
+              /* ignore */
+            }
+          }
+        },
+      },
+    });
+    log.info(`settings service ready (config: ${configPath})`);
     // Voice modules load in the background: the text path must never wait on them.
     void ensureVoice();
     return { socketPath };
@@ -907,6 +1238,12 @@ export function createDaemon(options = {}) {
     } catch (err) {
       log.warn('tts.stop() failed:', err?.message || err);
     }
+    try {
+      settings?.close?.();
+    } catch {
+      /* ignore */
+    }
+    settings = null;
     try {
       ack?.close?.();
     } catch {
@@ -948,6 +1285,9 @@ export function createDaemon(options = {}) {
     },
     get voice() {
       return voice;
+    },
+    get settings() {
+      return settings;
     },
     /** Test hook: run a turn directly without the socket. */
     ask: (text, speak = false) => enqueueTurn(() => processAsk({ text, speak }, null)),
