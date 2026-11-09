@@ -32,7 +32,7 @@ test('tool catalog keeps exactly the voice-relevant dsh tools', () => {
   const registry = buildToolRegistry(createTools({ config: {}, workdir: os.tmpdir() }));
   assert.deepEqual(
     registry.names().sort(),
-    ['bash', 'edit', 'glob', 'grep', 'read', 'web_fetch', 'web_search', 'write'].sort(),
+    ['bash', 'edit', 'glob', 'grep', 'read', 'web_fetch', 'web_search', 'write', 'screenshot', 'view_image'].sort(),
   );
   const bashSchema = registry.schemas.find((tool) => tool.function.name === 'bash');
   assert.equal(bashSchema.type, 'function');
@@ -195,4 +195,29 @@ test('grep groups matches by file with line numbers and skips binaries', async (
   assert.match(none, /No matches/);
 
   await assert.rejects(() => tools.run('grep', { pattern: '([unclosed' }), /invalid regular expression/);
+});
+
+test('screenshot and view_image are offered to the model', () => {
+  const registry = buildToolRegistry(createTools({ config: {}, workdir: os.tmpdir() }));
+  const shot = registry.get('screenshot');
+  const view = registry.get('view_image');
+  assert.ok(shot && view, 'both screen tools exist');
+  assert.match(shot.description, /screen/i);
+  assert.deepEqual(view.parameters.required, ['path']);
+  const schema = registry.schemas.find((tool) => tool.function.name === 'view_image');
+  assert.equal(schema.type, 'function');
+});
+
+test('view_image returns the picture separately from its text result', async () => {
+  const { createViewImageTool } = await import('../../src/agent/tools/screen.js');
+  const { spawnSync } = await import('node:child_process');
+  const file = path.join(os.tmpdir(), `figaro-view-test-${Date.now()}.png`);
+  const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=64x64', '-frames:v', '1', file]);
+  if (r.status !== 0) return; // no ffmpeg in this environment: nothing to test
+  const tool = createViewImageTool();
+  const result = await tool.execute({ path: file });
+  assert.equal(typeof result.content, 'string');
+  assert.equal(result.image.mimeType, 'image/jpeg');
+  assert.ok(result.image.dataBase64.length > 100, 'image bytes are returned');
+  await fs.rm(file, { force: true });
 });

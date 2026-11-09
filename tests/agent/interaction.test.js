@@ -542,7 +542,7 @@ test('all new states are part of the exported state machine', () => {
 
 // ---------------------------------------------------------------- dismissal
 
-test('dismiss: saying 退下 during the waiting window leaves immediately', async (t) => {
+test('dismiss: saying 退下 during the waiting window answers once, then leaves', async (t) => {
   const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, {
     followUpWindowMs: 1500,
     followUpMinRms: 0.012,
@@ -565,8 +565,9 @@ test('dismiss: saying 退下 during the waiting window leaves immediately', asyn
   }
   await waitFor(() => lastState(messages) === 'listening', { label: 'follow-up listening' });
   deliverFinal(asr, '退下');
-  await waitFor(() => lastState(messages) === 'idle', { label: 'dismissed -> idle' });
-  assert.equal(agent.record.texts.length, before, 'dismissal never reaches the model');
+  await waitFor(() => agent.record.texts.length === before + 1, { label: 'farewell turn ran' });
+  assert.deepEqual(agent.record.texts.at(-1), '退下', 'the dismissal is answered once');
+  await waitFor(() => lastState(messages) === 'idle', { label: 'left after the farewell' });
 });
 
 test('dismiss: a spoken reply is finished before standing down', async (t) => {
@@ -598,4 +599,44 @@ test('dismiss: a spoken reply is finished before standing down', async (t) => {
   await waitFor(() => lastState(messages) === 'idle', { label: 'left after the reply finished' });
   assert.equal(messages.filter((message) => message.type === 'reply').length, replyCount, 'no extra reply');
   void agent;
+});
+
+test('dismiss tool: the goodbye is spoken before the assistant stands down', async (t) => {
+  // The model calls the dismiss tool while it is still thinking; the daemon must
+  // not settle right there, or the goodbye would never be heard.
+  const heldTts = makeFakeTts({ blockFlush: true });
+  let controlled = null;
+  const agentFactory = (options) => {
+    controlled = options;
+    return {
+      async run() {
+        options.control?.dismiss();
+        return { text: '好，我先退下' };
+      },
+      reset() {},
+      history: [],
+    };
+  };
+  const { client, messages, asr, ack } = await startInteractionDaemon(t, {
+    tts: { factory: heldTts.factory, record: heldTts.record },
+    agent: { factory: agentFactory, record: { texts: [] } },
+  });
+  client.send({ type: 'wake' });
+  await waitFor(() => lastState(messages) === 'waking', { label: 'waking' });
+  const playback = ack.playbacks.at(-1);
+  playback.settleStart();
+  playback.finish();
+  await waitFor(() => lastState(messages) === 'listening', { label: 'listening' });
+
+  deliverFinal(asr, '你可以退下了');
+  // The phrase list catches this exact wording, so the turn still runs and the
+  // model answers through the control hook.
+  await waitFor(() => lastState(messages) === 'speaking', { label: 'goodbye is being spoken' });
+  const replies = messages.filter((message) => message.type === 'reply').length;
+  assert.ok(replies >= 1, 'the goodbye reply was emitted');
+  assert.ok(controlled, 'the agent received the control hook');
+  // Not gone yet: audio is still playing.
+  assert.equal(lastState(messages), 'speaking');
+  heldTts.record.resolveFlush?.();
+  await waitFor(() => lastState(messages) === 'idle', { label: 'left after the goodbye' });
 });

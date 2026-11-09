@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadSherpa } from './sherpa.js';
 import { buildKeywordLines, filterKeywordsByVocab } from './pinyin.js';
+import { loadEnglishLexicon, buildEnglishKeywordLines } from './english-phones.js';
 
 const SAMPLE_RATE = 16000;
 
@@ -41,6 +42,7 @@ export function locateKwsModel(dir) {
   const files = fs.readdirSync(dir);
   const tokensName = files.find((f) => f === 'tokens.txt') ?? files.find((f) => /tokens.*\.txt$/.test(f));
   if (!tokensName) return null;
+  const lexiconName = files.find((f) => f === 'en.phone') ?? files.find((f) => /\.phone$/.test(f));
   const encoder = pickByPrefix(files, 'encoder');
   if (!encoder) return null;
   // Sibling decoder/joiner must come from the same export (same epoch tag).
@@ -57,8 +59,21 @@ export function locateKwsModel(dir) {
     decoder: path.join(dir, decoder),
     joiner: path.join(dir, joiner),
     tokens: path.join(dir, tokensName),
+    lexicon: lexiconName ? path.join(dir, lexiconName) : null,
     epoch: tag || 'unknown',
+    dir,
   };
+}
+
+/** Human-readable model name: `.figaro-model` marker, else directory name. */
+export function modelDisplayName(dir) {
+  try {
+    const text = fs.readFileSync(path.join(dir, '.figaro-model'), 'utf8');
+    const m = /^model=(.+)$/m.exec(text);
+    if (m && m[1].trim()) return m[1].trim();
+  } catch { /* no marker */ }
+  const base = path.basename(dir);
+  return fs.existsSync(path.join(dir, 'en.phone')) ? `${base} (zh-en)` : base;
 }
 
 /** Read tokens.txt into a Set (first whitespace-separated column). */
@@ -80,16 +95,33 @@ export function loadVocab(tokensPath) {
  *
  * @returns {{file: string, lines: string[], skipped: string[], source: 'config'|'model-dir', cleanup: () => void}}
  */
-export function resolveKeywordsFile({ modelDir, wakeWords, vocab, tmpRoot }) {
+export function resolveKeywordsFile({ modelDir, wakeWords, wakeWordsEn = [], vocab, tmpRoot, onLog = () => {} }) {
   const built = buildKeywordLines(wakeWords ?? []);
   const usable = vocab ? filterKeywordsByVocab(built.lines, vocab) : built.lines;
-  if (usable.length) {
+
+  // English keywords (bilingual model only: the archive ships en.phone)
+  const files = locateKwsModel(modelDir);
+  let english = { lines: [], used: [], skipped: [], missingTokens: [] };
+  if (files?.lexicon && wakeWordsEn.length) {
+    const lexicon = loadEnglishLexicon(files.lexicon);
+    english = buildEnglishKeywordLines(wakeWordsEn, { lexicon, vocab, onLog });
+  } else if (wakeWordsEn.length) {
+    onLog('[kws] 当前 KWS 模型不含 en.phone（非中英双语模型），英文唤醒词已忽略');
+  }
+
+  const allLines = [...usable, ...english.lines];
+  if (allLines.length) {
     const dir = tmpRoot ? tmpRoot : fs.mkdtempSync(path.join(os.tmpdir(), 'figaro-kws-'));
     const file = path.join(dir, 'keywords.txt');
-    fs.writeFileSync(file, usable.join('\n') + '\n');
+    fs.writeFileSync(file, allLines.join('\n') + '\n');
     return {
       file,
-      lines: usable,
+      lines: allLines,
+      chineseLines: usable,
+      englishLines: english.lines,
+      englishUsed: english.used,
+      englishSkipped: english.skipped,
+      missingTokens: english.missingTokens,
       skipped: built.skipped,
       source: 'config',
       cleanup: () => { if (!tmpRoot) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } } },
@@ -98,11 +130,22 @@ export function resolveKeywordsFile({ modelDir, wakeWords, vocab, tmpRoot }) {
   const fallback = path.join(modelDir, 'keywords.txt');
   if (fs.existsSync(fallback)) {
     const lines = fs.readFileSync(fallback, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
-    return { file: fallback, lines, skipped: built.skipped, source: 'model-dir', cleanup: () => {} };
+    return {
+      file: fallback,
+      lines,
+      chineseLines: lines,
+      englishLines: [],
+      englishUsed: [],
+      englishSkipped: [],
+      missingTokens: [],
+      skipped: built.skipped,
+      source: 'model-dir',
+      cleanup: () => {},
+    };
   }
   throw new Error(
     `无法为唤醒词生成 KWS 关键词（config.asr.wakeWords=${JSON.stringify(wakeWords)}）。` +
-    `KWS 模型只支持拼音建模单元；请使用中文唤醒词，或手写 ${fallback}`,
+    `KWS 模型只支持拼音/音素建模单元；请使用中文或英文唤醒词，或手写 ${fallback}`,
   );
 }
 
@@ -123,10 +166,11 @@ export function createKws(opts) {
   const {
     modelDir,
     wakeWords,
+    wakeWordsEn = [],
     numThreads = 2,
     keywordsScore = 1.5,
     keywordsThreshold = 0.25,
-    maxActivePaths = 4,
+    maxActivePaths,
     tmpRoot,
     onLog = () => {},
   } = opts;
@@ -136,9 +180,18 @@ export function createKws(opts) {
     throw new Error(`KWS 模型不完整：${modelDir} 里找不到 encoder/decoder/joiner(.onnx) + tokens.txt`);
   }
   const vocab = loadVocab(files.tokens);
-  const keywords = resolveKeywordsFile({ modelDir, wakeWords, vocab, tmpRoot });
+  const keywords = resolveKeywordsFile({ modelDir, wakeWords, wakeWordsEn, vocab, tmpRoot, onLog });
   if (keywords.skipped.length) {
     onLog(`wake words skipped (no pinyin mapping for KWS model): ${keywords.skipped.join(', ')}`);
+  }
+  const isBilingual = files.lexicon && keywords.englishLines.length > 0;
+  // Multiple English pronunciation variants compete for decoder paths; measured
+  // on this machine, 4 paths only caught ~40% of English voices, 16 catches 12/12.
+  const paths = maxActivePaths ?? (keywords.englishLines.length ? 16 : 4);
+  const englishDisplays = new Set();
+  for (const line of keywords.englishLines) {
+    const at = line.indexOf('@');
+    if (at >= 0) englishDisplays.add(line.slice(at + 1).trim());
   }
 
   const sherpa = loadSherpa();
@@ -151,7 +204,7 @@ export function createKws(opts) {
       provider: 'cpu',
       debug: 0,
     },
-    maxActivePaths,
+    maxActivePaths: paths,
     keywordsFile: keywords.file,
     keywordsScore,
     keywordsThreshold,
@@ -163,6 +216,10 @@ export function createKws(opts) {
   return {
     modelFiles: files,
     keywords,
+    modelName: modelDisplayName(files.dir ?? modelDir),
+    hasEnglish: Boolean(isBilingual),
+    englishKeywords: [...englishDisplays],
+    maxActivePaths: paths,
     /** @param {Float32Array} samples @ 16kHz */
     feed(samples) {
       let hit = null;
@@ -170,7 +227,8 @@ export function createKws(opts) {
       while (spotter.isReady(stream)) spotter.decode(stream);
       const result = spotter.getResult(stream);
       if (result && result.keyword) {
-        hit = { keyword: result.keyword, startTime: result.start_time ?? 0 };
+        const lang = englishDisplays.has(result.keyword) ? 'en' : 'zh';
+        hit = { keyword: result.keyword, lang, startTime: result.start_time ?? 0 };
         lastHit = hit;
         spotter.reset(stream);
       }

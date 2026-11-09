@@ -517,13 +517,26 @@ export function createDaemon(options = {}) {
    * happens instead of the follow-up window.
    */
   function requestDismiss(reason = 'dismissed') {
-    if (state === 'speaking' || ttsSpeaking) {
-      dismissRequested = true;
-      log.info(`dismiss requested (${reason}); finishing the spoken reply first`);
+    // A dismissal is a *request*, not an immediate action: whenever a turn owns
+    // the screen (its reply being generated or spoken, including the goodbye the
+    // model writes after calling the dismiss tool) the turn runner settles when
+    // the audio has finished. That is what makes "退下" wait for the last
+    // sentence instead of cutting it off.
+    dismissRequested = true;
+    log.info(`dismiss requested (${reason})`);
+    const turnInFlight = current !== null;
+    const busy = turnInFlight
+      || state === 'speaking'
+      || state === 'waking'
+      || state === 'listening'
+      || state === 'finalizing'
+      || state === 'thinking'
+      || ttsSpeaking;
+    if (busy) {
+      log.info('dismiss deferred until the turn and its audio finish');
       return;
     }
     dismissRequested = false;
-    cancelCurrent('dismissed');
     stopCaptureForBargeIn();
     settleTurn('dismissed');
   }
@@ -714,8 +727,19 @@ export function createDaemon(options = {}) {
       return;
     }
     if (isDismissPhrase(transcript)) {
-      log.info(`dismiss phrase heard: "${transcript}" -> stand down`);
-      requestDismiss('dismiss-phrase');
+      const busy = current !== null || state === 'speaking' || state === 'thinking';
+      if (busy) {
+        log.info(`dismiss phrase heard: "${transcript}" -> stand down after this turn`);
+        requestDismiss('dismiss-phrase');
+        return;
+      }
+      // Nothing is being said: let the assistant answer the dismissal with one
+      // short farewell, speak it completely, and only then leave.
+      log.info(`dismiss phrase heard: "${transcript}" -> short farewell, then stand down`);
+      enqueueTurn(() => processAsk(
+        { text: transcript, speak: true, fromVoice: true, dismissAfterReply: true },
+        null,
+      ));
       return;
     }
     if (ackActive) {
@@ -1041,6 +1065,7 @@ export function createDaemon(options = {}) {
       full: '',
       speak,
       fromVoice: message.fromVoice === true,
+      dismissAfterReply: message.dismissAfterReply === true,
       cancelled: false,
       speechBuffer: '',
       lastPartialAt: 0,
@@ -1099,14 +1124,14 @@ export function createDaemon(options = {}) {
       // If a wake/cancel already took over during playback, it owns the state
       // machine now; do not stomp its state from this (finished) turn.
       if (turn.cancelled || state !== 'speaking') return;
-      if (dismissRequested) {
+      if (turn.dismissAfterReply || dismissRequested) {
         dismissRequested = false;
         settleTurn('dismissed-after-reply');
         return;
       }
       if (followUpWindowMs > 0 && turn.fromVoice) startFollowUpWindow();
       else settleTurn('reply-done');
-    } else if (dismissRequested) {
+    } else if (turn.dismissAfterReply || dismissRequested) {
       dismissRequested = false;
       settleTurn('dismissed-after-reply');
     } else if (followUpWindowMs > 0 && turn.fromVoice) {

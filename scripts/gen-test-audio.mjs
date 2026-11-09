@@ -26,6 +26,8 @@ const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 // Voice ids available on MiniMax t2a_v2 (tried in this order; failures fall back).
 const VOICES = ['male-qn-jingying', 'female-shaonv', 'male-qn-qingse', 'female-tianmei', 'audiobook_male_1'];
+// English voices used by the bilingual wake-word fixtures (voice field overrides VOICES).
+const ENGLISH_VOICES = ['English_Trustworth_Man', 'English_Graceful_Lady', 'English_DecentYoungMan', 'English_ConfidentWoman'];
 
 // name -> {text, voice, speed, tag}
 // tag "wake": MUST trigger the wake word; "neg": MUST NOT; "cmd": capture/transcription.
@@ -48,6 +50,15 @@ const CLIPS = [
   { name: 'neg-light', text: '打开客厅的灯', voice: 'male-qn-jingying', speed: 1.0, tag: 'neg' },
   { name: 'neg-xiaoyi', text: '你好小艺小艺', voice: 'female-shaonv', speed: 1.0, tag: 'neg' },
   { name: 'neg-dinner', text: '我晚上想吃火锅', voice: 'male-qn-qingse', speed: 1.0, tag: 'neg' },
+
+  // --- English wake word positives (bilingual KWS) ---
+  { name: 'wake-en-figaro-man', text: 'Figaro', voice: 'English_Trustworth_Man', speed: 1.0, tag: 'wake-en' },
+  { name: 'wake-en-figaro-woman', text: 'Figaro', voice: 'English_Graceful_Lady', speed: 1.0, tag: 'wake-en' },
+  { name: 'wake-en-hey-figaro', text: 'Hey Figaro', voice: 'English_DecentYoungMan', speed: 1.0, tag: 'wake-en' },
+
+  // --- English distractors (must not wake) ---
+  { name: 'neg-en-weather', text: 'What is the weather like tomorrow?', voice: 'English_ConfidentWoman', speed: 1.0, tag: 'neg-en' },
+  { name: 'neg-en-music', text: 'Play some music please', voice: 'English_Trustworth_Man', speed: 1.0, tag: 'neg-en' },
 
   // --- capture / transcription sentences ---
   { name: 'cmd-time', text: '现在几点了', voice: 'male-qn-jingying', speed: 1.0, tag: 'cmd', expect: '现在几点了' },

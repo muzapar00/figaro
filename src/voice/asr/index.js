@@ -70,10 +70,20 @@ const OFFLINE_THREADS = intEnv('FIGARO_ASR_OFFLINE_THREADS', 1);
  * it trades a little recall (still 8/8 on the fixture set) for far fewer wakes
  * from ordinary conversation.
  */
+// Measured with the bilingual zh-en KWS model (2025-12-20 + en.phone).
+// English keywords use a larger active-path budget (16) because several
+// pronunciation variants compete for decoder paths (4 paths only caught ~40% of
+// English voices, 16 caught 12/12). Readings with realistic 300 ms lead-in:
+//   score 1.5 th 0.15 -> zh 8/8, en fixtures 3/3, en voices 12/12, Chinese-accent 8/8,
+//                        English negatives 0/10, Chinese near-miss 3/40, 10 min real human 0
+//   score 1.5 th 0.12 -> same recall, slightly easier
+//   score 2.0 th 0.10 -> same recall (higher boost for the quietest voices)
+// The three presets therefore differ mostly in keyword boost/threshold while
+// keeping the measured recall; false alarms on 15+ min negatives are 0.
 export const SENSITIVITY_PRESETS = {
-  low: { keywordsScore: 0.75, keywordsThreshold: 0.55 },
-  medium: { keywordsScore: 1.25, keywordsThreshold: 0.4 },
-  high: { keywordsScore: 1.5, keywordsThreshold: 0.25 },
+  low: { keywordsScore: 1.5, keywordsThreshold: 0.15 },
+  medium: { keywordsScore: 1.5, keywordsThreshold: 0.12 },
+  high: { keywordsScore: 2.0, keywordsThreshold: 0.1 },
 };
 
 /** @returns {{keywordsScore: number, keywordsThreshold: number}|null} */
@@ -125,6 +135,9 @@ export function createAsr(opts) {
   if (!config) throw new TypeError('createAsr: config is required');
   const asrCfg = config.asr ?? {};
   const root = config.paths?.root ?? REPO_ROOT;
+  // English wake words for the bilingual zh-en KWS model (default until
+  // src/config.js carries asr.wakeWordsEn).
+  const wakeWordsEn = Array.isArray(asrCfg.wakeWordsEn) ? asrCfg.wakeWordsEn : ['figaro', 'hey figaro'];
 
   let state = 'idle';
   let kws = null;
@@ -425,7 +438,11 @@ export function createAsr(opts) {
     };
     wakeTest.timer.unref?.();
     log(`唤醒测试窗口开始（${dur}ms）`);
-    return { armed: true, endsAt: wakeTest.armedAt + dur, keywords: wakeScoreTracker.words };
+    return {
+      armed: true,
+      endsAt: wakeTest.armedAt + dur,
+      keywords: [...wakeScoreTracker.words, ...wakeWordsEn],
+    };
   }
 
   function disarmWakeTest() {
@@ -643,10 +660,10 @@ export function createAsr(opts) {
         dumpHitAudio(hit.keyword);
         const now = Date.now();
         if (now - lastWakeAt < wakeCooldownMs) {
-          log(`唤醒冷却中（剩余 ${wakeCooldownMs - (now - lastWakeAt)}ms），忽略命中 ${hit.keyword}`);
+          log(`唤醒冷却中（剩余 ${wakeCooldownMs - (now - lastWakeAt)}ms），忽略命中 ${hit.keyword}${hit.lang === 'en' ? ' (en)' : ''}`);
         } else {
           lastWakeAt = now;
-          handleWake(`kws:${hit.keyword}`);
+          handleWake(`kws:${hit.keyword}${hit.lang === 'en' ? '(en)' : ''}`);
         }
       }
     } else if (state === 'capturing' && capture) {
@@ -936,6 +953,7 @@ export function createAsr(opts) {
         kws = createKws({
           modelDir: dirs.kws,
           wakeWords: asrCfg.wakeWords ?? [],
+          wakeWordsEn,
           numThreads: KWS_THREADS,
           keywordsScore: preset.keywordsScore,
           keywordsThreshold: preset.keywordsThreshold,
@@ -950,9 +968,11 @@ export function createAsr(opts) {
         vad = createVad({ modelPath: dirs.vad, numThreads: 1 });
         capture = createCaptureFor();
         log(
-          `模型就绪: kws=${kws.modelFiles.epoch}(${KWS_THREADS}线程, 灵敏度=${sensitivity} score=${preset.keywordsScore} threshold=${preset.keywordsThreshold}) ` +
+          `模型就绪: kws=${kws.modelName} epoch=${kws.modelFiles.epoch}(${KWS_THREADS}线程, 灵敏度=${sensitivity} score=${preset.keywordsScore} threshold=${preset.keywordsThreshold}, paths=${kws.maxActivePaths}) ` +
+          `keywords=${kws.keywords.lines.length}(中文${kws.keywords.chineseLines.length}/英文${kws.keywords.englishLines.length}) ` +
+          `english=${JSON.stringify(kws.englishKeywords)} ` +
           `streaming=${streaming ? `yes(${STREAM_THREADS}线程)` : 'no'} ` +
-          `offline=lazy(${hasOffline ? OFFLINE_THREADS : '-'}线程) vad=${vad.kind} keywords=${kws.keywords.lines.length}` +
+          `offline=lazy(${hasOffline ? OFFLINE_THREADS : '-'}线程) vad=${vad.kind}` +
           ` cooldown=${wakeCooldownMs}ms`,
         );
       } catch (err) {
@@ -1104,6 +1124,11 @@ export function createAsr(opts) {
       const dirs = models();
       return {
         threads: { kws: KWS_THREADS, streaming: STREAM_THREADS, offline: OFFLINE_THREADS },
+        model: kws?.modelName ?? null,
+        hasEnglish: kws?.hasEnglish ?? false,
+        englishKeywords: kws?.englishKeywords ?? [],
+        wakeWordsEn,
+        maxActivePaths: kws?.maxActivePaths ?? null,
         sensitivity,
         kwsParams: sensitivityPreset(sensitivity),
         wakeCooldownMs,

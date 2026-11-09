@@ -8,7 +8,7 @@
 #   FIGARO_MIRROR=modelscope|github|hf|auto ./scripts/fetch-models.sh
 #
 # Models land in <repo>/models (git-ignored) exactly where config.asr points:
-#   models/kws          sherpa-onnx KWS zipformer wenetspeech 3.3M  (wake word「费加罗」)
+#   models/kws          sherpa-onnx KWS zipformer zh-en 3M        (唤醒词「费加罗」/「figaro」)
 #   models/asr-stream   sherpa-onnx streaming zipformer zh 14M     (live partials)
 #   models/asr-offline  sherpa-onnx paraformer zh                  (final transcript)
 #   models/vad          silero_vad.onnx                            (speech/silence)
@@ -16,6 +16,11 @@
 # Mirrors: ModelScope is tried first by default (domestic), then GitHub releases,
 # then HuggingFace. Downloads are resumable (curl -C -) and idempotent; a partial
 # file is reused by the next run. Tar archives are bzip2-tested before extraction.
+#
+# The KWS model is the bilingual (Chinese pinyin + English CMU phones) export
+# sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20, so both「费加罗」and "figaro"
+# can wake Figaro. It replaces the old Chinese-only wenetspeech 3.3M model
+# (kept as an opt-in legacy download: FIGARO_FETCH_KWS_LEGACY=1).
 
 set -uo pipefail
 
@@ -72,6 +77,8 @@ artifact_complete() {
       compgen_ok "${dir}" "encoder-*.onnx" 1000000 || return 1
       compgen_ok "${dir}" "decoder-*.onnx" 50000 || return 1
       compgen_ok "${dir}" "joiner-*.onnx" 20000 || return 1
+      # English wake words need the CMU lexicon shipped with the zh-en model
+      file_ok "${dir}/en.phone" 100000 || return 1
       return 0 ;;
     asr-stream)
       dir="${MODELS_DIR}/asr-stream"
@@ -108,7 +115,9 @@ artifact_report() {
   esac
   if artifact_complete "$name"; then
     for f in "$dir"/*; do [[ -f "$f" && "$(basename "$f")" != .figaro-model ]] && total=$((total + $(size_of "$f"))); done
-    info "  $(printf '%-12s' "$name") OK        ${dir#${REPO_ROOT}/}  ($(human "$total"))"
+    local model=""
+    [[ -f "$dir/.figaro-model" ]] && model="$(sed -n 's/^model=//p' "$dir/.figaro-model" | head -1)"
+    info "  $(printf '%-12s' "$name") OK        ${dir#${REPO_ROOT}/}  ($(human "$total"))${model:+  [$model]}"
     return 0
   fi
   info "  $(printf '%-12s' "$name") MISSING   ${dir#${REPO_ROOT}/}"
@@ -177,74 +186,112 @@ ms_file() { printf 'https://modelscope.cn/api/v1/models/pkufool/%s/repo?Revision
 gh_release() { printf 'https://github.com/k2-fsa/sherpa-onnx/releases/download/%s' "$1"; }
 hf_file() { printf 'https://huggingface.co/%s/resolve/main/%s' "$1" "$2"; }
 
-KWS_REPO="sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+KWS_MODEL_NAME="sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
+KWS_LEGACY_REPO="sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+KWS_ENCODER="encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+KWS_DECODER="decoder-epoch-13-avg-2-chunk-16-left-64.onnx"
+KWS_JOINER="joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+KWS_FILES=("${KWS_ENCODER}" "${KWS_DECODER}" "${KWS_JOINER}" "tokens.txt" "en.phone")
 
-# --- artifact fetchers -------------------------------------------------------
-fetch_kws() {
+# Move a previously installed Chinese-only export out of the way (kept as
+# models/kws-legacy-zh for diagnostics; the bilingual model supersedes it).
+ensure_kws_legacy_backup() {
+  local dir="$1"
+  [[ -f "${dir}/en.phone" ]] && return 0
+  local any=0
+  compgen -G "${dir}/*.onnx" >/dev/null && any=1
+  [[ -f "${dir}/tokens.txt" ]] && any=1
+  [[ ${any} -eq 0 ]] && return 0
+  local legacy="${MODELS_DIR}/kws-legacy-zh"
+  mkdir -p "${legacy}"
+  mv -f "${dir}"/*.onnx "${dir}"/tokens.txt "${dir}"/keywords*.txt "${legacy}/" 2>/dev/null || true
+  log "旧的中文-only KWS 模型已移到 ${legacy}（已被中英双语模型取代）"
+}
+
+install_kws_zh_en() {
   local dir="${MODELS_DIR}/kws"
   mkdir -p "${dir}"
-  if artifact_complete kws && [[ ${FORCE} -eq 0 ]]; then log "kws 已就绪，跳过"; return 0; fi
-  local ms_urls=() gh_urls=() hf_urls=()
+  ensure_kws_legacy_backup "${dir}"
   local f
-  for f in tokens.txt encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx \
-           decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx \
-           joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx keywords.txt; do
-    ms_urls+=("$(ms_file "${KWS_REPO}" "$f")")
-    hf_urls+=("$(hf_file "csukuangfj/${KWS_REPO}" "$f")")
+  for f in "${KWS_FILES[@]}"; do
+    cp -f "${SRC_DIR}/${f}" "${dir}/" || return 1
   done
-  gh_urls+=("$(gh_release "kws-models/${KWS_REPO}.tar.bz2")")
-
-  # 1) ModelScope (file-level: only the epoch-12 int8 export is mirrored there)
-  if [[ "${MIRROR}" == "auto" || "${MIRROR}" == "modelscope" ]]; then
-    local ok=1
-    for f in tokens.txt encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx \
-             decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx \
-             joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx; do
-      download "${dir}/${f}.part" 20000 "$(ms_file "${KWS_REPO}" "$f")" || { ok=0; break; }
-      mv -f "${dir}/${f}.part" "${dir}/${f}" || { ok=0; break; }
-    done
-    if [[ ${ok} -eq 1 ]]; then
-      download "${dir}/keywords.txt" 50 "$(ms_file "${KWS_REPO}" "keywords.txt")" || true
-      cp -f "${dir}/keywords.txt" "${dir}/keywords.example.txt" 2>/dev/null || true
-      write_stamp kws modelscope "epoch-12-avg-2-int8"
-      log "kws 安装完成（ModelScope, epoch-12 int8）"
-      return 0
-    fi
-    warn "ModelScope 下载 kws 失败，回退 GitHub"
+  if [[ -d "${SRC_DIR}/test_wavs" ]]; then
+    rm -rf "${dir}/example-test-wavs"
+    cp -r "${SRC_DIR}/test_wavs" "${dir}/example-test-wavs" 2>/dev/null || true
   fi
+  write_stamp kws github "kws-zipformer-zh-en-3M-2025-12-20"
+  printf 'kind=kws-zh-en\nmodel=%s\n' "${KWS_MODEL_NAME}" >> "${dir}/.figaro-model"
+  artifact_complete kws
+}
 
-  # 2) GitHub release tar (contains both epoch-12 and the newer epoch-99 export)
-  if [[ "${MIRROR}" == "auto" || "${MIRROR}" == "github" ]]; then
-    if fetch_tarball "kws.tar.bz2" "${gh_urls[@]}" && extract_dir "${TARBALL}" "${CACHE_DIR}/kws-extract"; then
-      cp -f "${SRC_DIR}"/encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx \
-            "${SRC_DIR}"/decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx \
-            "${SRC_DIR}"/joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx \
-            "${SRC_DIR}"/tokens.txt "${dir}/" || true
-      cp -f "${SRC_DIR}"/keywords.txt "${dir}/keywords.example.txt" 2>/dev/null || true
-      if artifact_complete kws; then
-        write_stamp kws github "epoch-99-avg-1-int8"
-        log "kws 安装完成（GitHub tar, epoch-99 int8）"
-        return 0
+fetch_kws_legacy() {
+  # Opt-in: the old Chinese-only 3.3M model (superseded; kept for comparison).
+  local legacy="${MODELS_DIR}/kws-legacy-zh"
+  mkdir -p "${legacy}"
+  if file_ok "${legacy}/tokens.txt" 100 && compgen_ok "${legacy}" "encoder-*.onnx" 1000000 && [[ ${FORCE} -eq 0 ]]; then
+    log "kws-legacy-zh 已就绪，跳过"; return 0
+  fi
+  local url; url="$(gh_release "kws-models/${KWS_LEGACY_REPO}.tar.bz2")"
+  fetch_tarball "kws-legacy.tar.bz2" "${url}" || die "无法下载旧 KWS 模型"
+  extract_dir "${TARBALL}" "${CACHE_DIR}/kws-legacy-extract" || die "解压旧 KWS 模型失败"
+  cp -f "${SRC_DIR}"/*.onnx "${SRC_DIR}/tokens.txt" "${legacy}/" 2>/dev/null || true
+  write_stamp kws-legacy-zh github "${KWS_LEGACY_REPO}"
+  log "旧中文 KWS 模型已安装到 ${legacy}（仅供对比，默认不再使用）"
+}
+
+fetch_kws() {
+  local dir="${MODELS_DIR}/kws"
+  if [[ "${FORCE}" -eq 0 ]] && artifact_complete kws && file_ok "${dir}/en.phone" 100000; then
+    log "kws(zh-en) 已就绪，跳过"; return 0
+  fi
+  if [[ "${FIGARO_FETCH_KWS_LEGACY:-0}" == "1" ]]; then
+    fetch_kws_legacy
+  fi
+  mkdir -p "${dir}"
+
+  local gh_url; gh_url="$(gh_release "kws-models/${KWS_MODEL_NAME}.tar.bz2")"
+  local hf_base="csukuangfj/${KWS_MODEL_NAME}"
+
+  # 1) gh CLI (most reliable for this release; direct curl has been seen to 504)
+  if command -v gh >/dev/null 2>&1 && [[ "${MIRROR}" != "modelscope" ]]; then
+    if gh release download -R k2-fsa/sherpa-onnx -p "${KWS_MODEL_NAME}.tar.bz2" -D "${CACHE_DIR}" --clobber 2>/dev/null; then
+      local cache="${CACHE_DIR}/${KWS_MODEL_NAME}.tar.bz2"
+      if [[ -s "${cache}" ]] && bzip2 -t "${cache}" 2>/dev/null; then
+        TARBALL="${cache}"
+        if extract_dir "${TARBALL}" "${CACHE_DIR}/kws-zh-en-extract" && install_kws_zh_en; then
+          log "kws(zh-en) 安装完成（gh release）"; return 0
+        fi
       fi
     fi
-    warn "GitHub 下载 kws 失败，回退 HuggingFace"
+    warn "gh release download 失败，回退 curl"
+  fi
+
+  # 2) curl GitHub release tar (resumable, retries)
+  if [[ "${MIRROR}" == "auto" || "${MIRROR}" == "github" ]]; then
+    if fetch_tarball "kws-zh-en.tar.bz2" "${gh_url}" \
+        && extract_dir "${TARBALL}" "${CACHE_DIR}/kws-zh-en-extract" \
+        && install_kws_zh_en; then
+      log "kws(zh-en) 安装完成（GitHub release tar）"; return 0
+    fi
+    warn "GitHub release 下载 kws(zh-en) 失败，回退 HuggingFace"
   fi
 
   # 3) HuggingFace file-level fallback
   if [[ "${MIRROR}" == "hf" || "${MIRROR}" == "auto" ]]; then
-    for f in tokens.txt encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx \
-             decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx \
-             joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx; do
-      download "${dir}/${f}.part" 20000 "$(hf_file "csukuangfj/${KWS_REPO}" "$f")" \
-        || die "kws 下载失败: ${f}（所有镜像均失败）"
+    local f
+    for f in "${KWS_FILES[@]}"; do
+      download "${dir}/${f}.part" 20000 "$(hf_file "${hf_base}" "${f}")" \
+        || die "kws(zh-en) 下载失败: ${f}（所有镜像均失败）"
       mv -f "${dir}/${f}.part" "${dir}/${f}"
     done
-    write_stamp kws hf "epoch-12-avg-2-int8"
-    log "kws 安装完成（HuggingFace, epoch-12 int8）"
-    return 0
+    write_stamp kws hf "kws-zipformer-zh-en-3M-2025-12-20"
+    printf 'kind=kws-zh-en\nmodel=%s\n' "${KWS_MODEL_NAME}" >> "${dir}/.figaro-model"
+    artifact_complete kws || die "kws(zh-en) 模型文件不完整"
+    log "kws(zh-en) 安装完成（HuggingFace）"; return 0
   fi
 
-  die "kws 下载失败（所有镜像均失败）"
+  die "kws(zh-en) 下载失败（所有镜像均失败；可尝试 gh release download kws-models -R k2-fsa/sherpa-onnx -p '${KWS_MODEL_NAME}.tar.bz2'）"
 }
 
 fetch_asr_stream() {

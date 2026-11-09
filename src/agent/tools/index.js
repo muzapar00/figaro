@@ -11,9 +11,10 @@ import { createBashTool } from './bash.js';
 import { createReadTool, createWriteTool, createEditTool } from './fs.js';
 import { createGlobTool, createGrepTool } from './search.js';
 import { createWebSearchTool, createWebFetchTool } from './web.js';
+import { createScreenshotTool, createViewImageTool } from './screen.js';
 import { toChatTools, summarizeToolCall, redactArgs } from './define.js';
 
-export const TOOL_NAMES = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'web_search', 'web_fetch'];
+export const TOOL_NAMES = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'web_search', 'web_fetch', 'screenshot', 'view_image'];
 
 // Only offered when the host supplies a control hook: standing down is a daemon
 // decision, not something a tool implementation can do on its own.
@@ -51,6 +52,8 @@ export function createTools(options = {}) {
     createGrepTool({ workdir }),
     createWebSearchTool(),
     createWebFetchTool(),
+    createScreenshotTool(),
+    createViewImageTool(),
   ];
 
   if (control?.dismiss) {

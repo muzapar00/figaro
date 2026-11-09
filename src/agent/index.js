@@ -150,12 +150,21 @@ export function createAgent(options = {}) {
     const startedAt = Date.now();
     const tool = registry.get(name);
     let content;
+    let imagePart = null;
     if (!tool) {
       content = `Error: unknown tool "${name}". Available tools: ${registry.names().join(', ')}`;
     } else {
       try {
         const result = await tool.execute(args, { signal });
-        content = typeof result === 'string' ? result : JSON.stringify(result);
+        if (result && typeof result === 'object' && result.image) {
+          // Picture-returning tools (view_image) hand the image back separately:
+          // it has to travel as a user message with an image part, not as a text
+          // tool result.
+          imagePart = result.image;
+          content = String(result.content ?? 'image');
+        } else {
+          content = typeof result === 'string' ? result : JSON.stringify(result);
+        }
       } catch (err) {
         if (err?.name === 'AbortError' || signal?.aborted) {
           content = 'Error: tool call aborted by the user';
@@ -168,6 +177,18 @@ export function createAgent(options = {}) {
       content = `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n[truncated: tool result exceeded ${MAX_TOOL_RESULT_CHARS} chars]`;
     }
     messages.push({ role: 'tool', tool_call_id: callId, content });
+    if (imagePart) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: '(image returned by the view_image tool above)' },
+          {
+            type: 'image_url',
+            image_url: { url: `data:${imagePart.mimeType};base64,${imagePart.dataBase64}` },
+          },
+        ],
+      });
+    }
     onToolEvent?.({
       name,
       status: 'end',

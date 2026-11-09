@@ -10,11 +10,13 @@ import { FIXTURES, readManifest, readWav } from './helpers.js';
 
 test('fixture manifest lists the complete tone/speaker matrix', () => {
   const manifest = readManifest();
-  assert.equal(manifest.length, 20);
+  assert.equal(manifest.length, 25);
   const byTag = (tag) => manifest.filter((m) => m.tag === tag);
-  assert.equal(byTag('wake').length, 8, '8 wake-word positives');
+  assert.equal(byTag('wake').length, 8, '8 Chinese wake-word positives');
   assert.equal(byTag('neg').length, 7, '7 ordinary-speech negatives');
   assert.equal(byTag('cmd').length, 5, '5 capture/transcription sentences');
+  assert.equal(byTag('wake-en').length, 3, '3 English wake-word positives (bilingual KWS)');
+  assert.equal(byTag('neg-en').length, 2, '2 English ordinary-speech negatives');
   for (const m of manifest) {
     assert.ok(m.text && m.voice && m.file, `incomplete manifest entry: ${JSON.stringify(m)}`);
   }
