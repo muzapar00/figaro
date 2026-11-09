@@ -118,11 +118,38 @@ async function runLoop() {
   }
 }
 
+const sequence = process.argv.includes('--sequence');
+
+async function runSequence() {
+  // Mirrors a real turn closely enough to watch the shapes: listen, answer,
+  // then the reply ends and the daemon clears the text (pill retracts to ball),
+  // then the follow-up window expires and the overlay leaves.
+  setState('listening');
+  broadcast({ type: 'partial', text: '今天下午的会挪到四点了' });
+  streamLevels(1.2, 1.0);
+  await sleep(1200);
+  stopLevels();
+  setState('thinking');
+  await sleep(500);
+  setState('speaking');
+  broadcast({ type: 'partial', text: '好，已经把下午三点的会挪到四点，并且加了出门前带充电器的提醒。' });
+  streamLevels(2.4, 0.85);
+  await sleep(2400);
+  stopLevels();
+  setState('waiting');
+  broadcast({ type: 'partial', text: '' });
+  await sleep(2200);
+  setState('idle');
+  await sleep(2400);
+}
+
 if (holdState) {
   setState(holdState);
   if (holdState === 'listening') { broadcast({ type: 'partial', text: '费加罗，帮我看看今天有哪些安排，然后把下午三点的会挪到四点，顺便提醒我带充电器' }); streamLevels(600, 1.0); }
   else if (holdState === 'speaking') { broadcast({ type: 'partial', text: '好，我已经把下午三点的会挪到四点，并且加了一条四点二十分出门前带充电器的提醒。今天还有两件事：十点半的项目同步，和晚上七点跟设计组的评审。' }); streamLevels(600, 0.85); }
   else if (holdState === 'thinking') { broadcast({ type: 'tool', name: 'bash', status: 'start', summary: '正在运行 bash…' }); }
+} else if (sequence) {
+  runSequence();
 } else if (cycle) {
   runLoop();
 } else {
