@@ -1,0 +1,19 @@
+{
+  "deepseek": {
+    "apiKey": "sk-...",
+    "baseUrl": "https://api.deepseek.com",
+    "model": "deepseek-flash"
+  },
+  "minimax": {
+    "apiKey": "sk-api-...",
+    "baseUrl": "https://api.minimax.cn",
+    "wsUrl": "wss://api.minimax.cn/ws/v1/t2a_v2",
+    "model": "speech-2.6-turbo",
+    "voiceId": "male-qn-jingying"
+  },
+  "asr": {
+    "hotkey": "F5",
+    "wakeWords": ["费加罗", "菲加罗", "飞加罗", "figaro"]
+  },
+  "tts": { "enabled": true }
+}
