@@ -1,0 +1,391 @@
+#!/usr/bin/env node
+// Figaro CLI: talks to the daemon over the unix socket in docs/ipc.md §3.
+//
+//   figaro daemon            run the daemon in the foreground (systemd unit uses this)
+//   figaro ask "问题"        ask the agent, print the reply (no TTS by default)
+//   figaro say "…"           just speak the given text through the TTS module
+//   figaro status            show daemon state and health
+//   figaro help              this text
+//
+// ask/say auto-start the daemon when it is not running yet; --no-tts keeps the
+// auto-started daemon from using the speaker.
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { createIpcClient } from '../src/ipc.js';
+import { loadConfig } from '../src/config.js';
+import { createDaemon } from '../src/daemon.js';
+
+const SELF = fileURLToPath(import.meta.url);
+const SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const USAGE = `用法:
+  figaro daemon [--no-tts] [--no-asr]   前台运行守护进程
+  figaro ask "问题" [--speak] [--stream] [--no-tts] [--json] [--verbose]
+  figaro say "文字"                      只朗读
+  figaro status [--json]                 查看状态与健康
+  figaro help                            显示帮助
+
+ask 默认不朗读；--speak 让守护进程同时朗读。
+守护进程未运行时，ask/say 会自动在后台拉起一个。`;
+
+function parseArgs(argv) {
+  const flags = new Set();
+  const positional = [];
+  let endOfFlags = false;
+  for (const arg of argv) {
+    if (endOfFlags) {
+      positional.push(arg);
+      continue;
+    }
+    if (arg === '--') {
+      endOfFlags = true;
+    } else if (arg.startsWith('--')) {
+      flags.add(arg.slice(2));
+    } else if (arg.startsWith('-') && arg.length > 1) {
+      throw new Error(`未知选项: ${arg}`);
+    } else {
+      positional.push(arg);
+    }
+  }
+  const command = positional.shift() ?? 'help';
+  return { command, flags, positional };
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '0s';
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours > 0) return `${hours}h${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m${seconds % 60}s`;
+  return `${seconds}s`;
+}
+
+function fail(message) {
+  console.error(`figaro: ${message}`);
+  process.exit(1);
+}
+
+function daemonLogPath(socketPath) {
+  return path.join(path.dirname(socketPath), 'daemon.log');
+}
+
+function spawnDaemon({ socketPath, noTts, noAsr }) {
+  const logPath = daemonLogPath(socketPath);
+  fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+  const fd = fs.openSync(logPath, 'a', 0o600);
+  const child = spawn(
+    process.execPath,
+    [SELF, 'daemon', ...(noTts ? ['--no-tts'] : []), ...(noAsr ? ['--no-asr'] : [])],
+    {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      env: { ...process.env, FIGARO_AUTOSTARTED: '1' },
+    },
+  );
+  child.unref();
+  try {
+    fs.closeSync(fd);
+  } catch {
+    /* ignore */
+  }
+  return logPath;
+}
+
+/** IPC client whose message handler can be swapped after creation. */
+function openClient(socketPath) {
+  const client = createIpcClient({ socketPath, onMessage: (message) => client._handler?.(message) });
+  client._handler = null;
+  client.setMessageHandler = (handler) => {
+    client._handler = handler;
+  };
+  return client;
+}
+
+async function tryConnect(socketPath, timeoutMs) {
+  const client = openClient(socketPath);
+  const connected = client.connect();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('connect timeout')), timeoutMs);
+  });
+  try {
+    await Promise.race([connected, timeout]);
+    clearTimeout(timer);
+    return client;
+  } catch (err) {
+    clearTimeout(timer);
+    client.close();
+    try {
+      await connected;
+    } catch {
+      /* expected */
+    }
+    throw err;
+  }
+}
+
+/**
+ * Connect to the daemon, spawning a detached one if needed.
+ * @returns {Promise<{client: object, spawned: string|null}>}
+ */
+async function connectOrStart({ socketPath, autoStart = true, noTts = false, noAsr = false }) {
+  try {
+    return { client: await tryConnect(socketPath, 1000), spawned: null };
+  } catch (err) {
+    if (!autoStart) throw err;
+  }
+  const logPath = spawnDaemon({ socketPath, noTts, noAsr });
+  console.error(`figaro: 守护进程未运行，已在后台启动（日志: ${logPath}）`);
+  const deadline = Date.now() + 10_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    await SLEEP(150);
+    try {
+      return { client: await tryConnect(socketPath, 800), spawned: logPath };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error(`无法连接或拉起守护进程（${lastError?.message || 'timeout'}）；请查看 ${logPath}`);
+}
+
+/**
+ * Install a handler and resolve when `done(message)` is true, on error, or on timeout.
+ * @returns {Promise<{messages: object[], reply: object|null, error: string|null, timedOut?: boolean}>}
+ */
+function waitFor(client, done, timeoutMs) {
+  const state = { messages: [], reply: null, error: null, timedOut: false };
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      client.setMessageHandler(null);
+      resolve(state);
+    };
+    const timer = setTimeout(() => {
+      state.timedOut = true;
+      finish();
+    }, timeoutMs);
+    client.setMessageHandler((message) => {
+      state.messages.push(message);
+      if (message.type === 'error') state.error = message.message;
+      if (message.type === 'reply') state.reply = message;
+      if (done(message, state)) finish();
+    });
+  });
+}
+
+async function commandDaemon(flags) {
+  const config = loadConfig();
+  const daemon = createDaemon({
+    config,
+    disableTts: flags.has('no-tts') || process.env.FIGARO_NO_TTS === '1',
+    disableAsr: flags.has('no-asr') || process.env.FIGARO_NO_ASR === '1',
+  });
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.error(`figaro: 收到 ${signal}，正在停止…`);
+    try {
+      await daemon.stop();
+    } catch (err) {
+      console.error('figaro: 停止失败:', err?.message || err);
+    }
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+
+  // A stray rejection must be logged, not kill the daemon (systemd restarts us
+  // on real crashes, but a single bad tool promise is not a crash).
+  process.on('unhandledRejection', (reason) => {
+    console.error('figaro: unhandled rejection:', reason?.message || reason);
+  });
+
+  try {
+    const info = await daemon.start();
+    console.error(`figaro: daemon ready on ${info.socketPath}`);
+  } catch (err) {
+    console.error(`figaro: 启动失败: ${err?.message || err}`);
+    process.exit(1);
+  }
+}
+
+async function commandAsk(flags, positional) {
+  const text = positional.join(' ').trim();
+  if (text.length === 0) fail('ask 需要一个问题文本，例如: figaro ask "现在几点？"');
+  const config = loadConfig();
+  const { client } = await connectOrStart({
+    socketPath: config.ui.socket,
+    noTts: flags.has('no-tts'),
+  });
+
+  const requestId = `cli-${process.pid}-${Date.now()}`;
+  const stream = flags.has('stream');
+  const verbose = flags.has('verbose');
+  let printed = '';
+
+  client.send({ type: 'subscribe' });
+  const pending = waitFor(
+    client,
+    (message) => {
+      if (message.type === 'partial' && stream && typeof message.text === 'string') {
+        if (message.text.startsWith(printed)) {
+          process.stdout.write(message.text.slice(printed.length));
+        } else {
+          process.stdout.write(message.text);
+        }
+        printed = message.text;
+        return false;
+      }
+      if (message.type === 'tool' && verbose) {
+        console.error(`[tool] ${message.name} ${message.status}${message.summary ? `: ${message.summary}` : ''}`);
+        return false;
+      }
+      if (message.type === 'reply') {
+        return typeof message.requestId !== 'string' || message.requestId === requestId;
+      }
+      return false;
+    },
+    300_000,
+  );
+  client.send({ type: 'ask', text, speak: flags.has('speak'), requestId });
+  const result = await pending;
+  client.close();
+
+  if (result.timedOut) {
+    console.error(`figaro: 等待回复超时${result.error ? ` (${result.error})` : ''}`);
+    process.exit(3);
+  }
+  const reply = result.reply;
+  if (reply === null) {
+    console.error(`figaro: 没有收到回复${result.error ? `: ${result.error}` : ''}`);
+    process.exit(3);
+  }
+  const replyText = typeof reply.text === 'string' ? reply.text : '';
+  if (stream) {
+    if (replyText.startsWith(printed)) process.stdout.write(replyText.slice(printed.length));
+    else if (printed.length === 0) process.stdout.write(replyText);
+    process.stdout.write('\n');
+  } else if (flags.has('json')) {
+    process.stdout.write(`${JSON.stringify({ text: replyText, requestId: reply.requestId, usage: reply.usage ?? null })}\n`);
+  } else {
+    process.stdout.write(`${replyText}\n`);
+  }
+  if (verbose) {
+    console.error(`figaro: 工具轮次 ${reply.toolRounds ?? 0}${reply.usage ? `，tokens ${reply.usage.total_tokens ?? '?'}` : ''}`);
+  }
+  process.exit(0);
+}
+
+async function commandSay(flags, positional) {
+  const text = positional.join(' ').trim();
+  if (text.length === 0) fail('say 需要要朗读的文本，例如: figaro say "你好呀"');
+  const config = loadConfig();
+  const { client } = await connectOrStart({ socketPath: config.ui.socket });
+  const requestId = `cli-${process.pid}-${Date.now()}`;
+  client.send({ type: 'subscribe' });
+  const pending = waitFor(
+    client,
+    (message) => message.type === 'reply' && (typeof message.requestId !== 'string' || message.requestId === requestId),
+    120_000,
+  );
+  client.send({ type: 'say', text, requestId });
+  const result = await pending;
+  client.close();
+  if (result.timedOut) {
+    console.error(`figaro: 朗读超时${result.error ? ` (${result.error})` : ''}`);
+    process.exit(3);
+  }
+  if (result.reply === null) {
+    console.error(`figaro: 朗读失败${result.error ? `: ${result.error}` : ''}`);
+    process.exit(3);
+  }
+  if (result.reply.spoken === false) {
+    console.error(`figaro: 没发出声音${result.error ? `: ${result.error}` : ''}`);
+    process.exit(3);
+  }
+  if (flags.has('json')) process.stdout.write(`${JSON.stringify(result.reply)}\n`);
+  process.exit(0);
+}
+
+async function commandStatus(flags) {
+  const config = loadConfig();
+  let client;
+  try {
+    client = await tryConnect(config.ui.socket, 1000);
+  } catch (err) {
+    if (flags.has('json')) {
+      process.stdout.write(`${JSON.stringify({ running: false, socket: config.ui.socket, error: err?.message || String(err) })}\n`);
+    } else {
+      console.log(`figaro: 未运行 (socket: ${config.ui.socket})`);
+    }
+    process.exit(1);
+  }
+  const pending = waitFor(client, (message) => message.type === 'pong', 3000);
+  client.send({ type: 'ping' });
+  const result = await pending;
+  client.close();
+  const pong = result.messages.find((message) => message.type === 'pong');
+  if (!pong) {
+    if (flags.has('json')) {
+      process.stdout.write(`${JSON.stringify({ running: false, socket: config.ui.socket, error: 'ping timeout' })}\n`);
+    } else {
+      console.log(`figaro: 守护进程无响应 (socket: ${config.ui.socket})`);
+    }
+    process.exit(1);
+  }
+  if (flags.has('json')) {
+    process.stdout.write(`${JSON.stringify(pong)}\n`);
+    process.exit(0);
+  }
+  console.log('figaro: 运行中');
+  console.log(`  状态: ${pong.state}`);
+  console.log(`  PID: ${pong.pid}`);
+  console.log(`  模型: ${pong.model ?? '?'}`);
+  console.log(`  语音: ASR ${pong.voice?.asr ? '可用' : '不可用'}，TTS ${pong.voice?.tts ? '可用' : '不可用'}`);
+  console.log(`  运行时长: ${formatDuration(pong.uptimeMs)}`);
+  console.log(`  socket: ${pong.socket ?? config.ui.socket}`);
+  if (pong.lastError) console.log(`  最近错误: ${pong.lastError}`);
+  process.exit(0);
+}
+
+async function main() {
+  let parsed;
+  try {
+    parsed = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    fail(err.message);
+  }
+  const { command, flags, positional } = parsed;
+
+  switch (command) {
+    case 'daemon':
+      await commandDaemon(flags);
+      break;
+    case 'ask':
+      await commandAsk(flags, positional);
+      break;
+    case 'say':
+      await commandSay(flags, positional);
+      break;
+    case 'status':
+      await commandStatus(flags);
+      break;
+    case 'help':
+      console.log(USAGE);
+      break;
+    default:
+      console.error(`figaro: 未知命令 "${command}"\n`);
+      console.log(USAGE);
+      process.exit(2);
+  }
+}
+
+await main().catch((err) => {
+  console.error(`figaro: ${err?.message || err}`);
+  process.exit(1);
+});
