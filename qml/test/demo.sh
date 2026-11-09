@@ -10,11 +10,21 @@ pidfile="/tmp/figaro-fake.pid"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 
+# Ask any live instance to shut down before replacing it, so a stale process
+# cannot unlink the new instance's socket file on its way out.
+node -e '
+const net = require("node:net");
+const p = process.env.XDG_RUNTIME_DIR + "/figaro/sock";
+const s = net.createConnection(p);
+s.on("connect", () => { s.write(JSON.stringify({ type: "quit" }) + "\n"); setTimeout(() => { s.end(); process.exit(0); }, 120); });
+s.on("error", () => process.exit(0));
+setTimeout(() => process.exit(0), 400);
+' 2>/dev/null || true
 if [[ -f "$pidfile" ]]; then
   kill "$(cat "$pidfile")" 2>/dev/null || true
   rm -f "$pidfile"
 fi
-sleep 0.2
+sleep 0.3
 
 if [[ "$state" == "off" ]]; then
   echo "fake daemon stopped"

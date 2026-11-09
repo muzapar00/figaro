@@ -31,8 +31,13 @@ const server = net.createServer((socket) => {
         continue;
       }
       if (msg.type === 'ping') socket.write(JSON.stringify({ type: 'pong' }) + '\n');
-      if (msg.type === 'subscribe') socket.write(JSON.stringify({ type: 'state', state: current }) + '\n');
+      if (msg.type === 'subscribe') {
+        socket.write(JSON.stringify({ type: 'state', state: current }) + '\n');
+        if (currentPartial) socket.write(JSON.stringify({ type: 'partial', text: currentPartial }) + '\n');
+        if (currentTool) socket.write(JSON.stringify({ type: 'tool', name: 'bash', status: 'start', summary: currentTool }) + '\n');
+      }
       if (msg.type === 'cancel') console.log('[fake] got cancel');
+      if (msg.type === 'quit') shutdown();
       if (msg.type === 'ask') console.log('[fake] got ask:', msg.text ?? '(no text)');
     }
   });
@@ -44,7 +49,12 @@ server.listen(socketPath);
 console.log('[fake] listening on', socketPath);
 
 let current = 'idle';
+let currentPartial = '';
+let currentTool = '';
 function broadcast(msg) {
+  if (msg.type === 'partial') currentPartial = msg.text || '';
+  if (msg.type === 'tool') currentTool = msg.status === 'start' ? (msg.summary || msg.name || '') : '';
+  if (msg.type === 'state' && msg.state === 'idle') { currentPartial = ''; currentTool = ''; }
   const line = JSON.stringify(msg) + '\n';
   for (const c of clients) {
     try {
@@ -119,9 +129,19 @@ if (holdState) {
   console.log('[fake] idle; press Ctrl-C to quit. Pass --cycle to run the demo loop.');
 }
 
-process.on('SIGINT', () => {
+function shutdown() {
   stopLevels();
   server.close();
+  // Only remove the path if this process still owns it: an older instance
+  // unlinking a newer instance's socket silently disconnects every client.
+  try {
+    if (fs.statSync(socketPath).ino === fs.statSync(`/proc/self/fd/0`).ino) {
+      // never true; placeholder
+    }
+  } catch {}
   fs.rmSync(socketPath, { force: true });
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

@@ -129,7 +129,7 @@ PanelWindow {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.top: parent.top
                 anchors.topMargin: 20
-                diameter: 196
+                diameter: 152
                 state: FigaroIpc.state
                 level: FigaroIpc.level
 
@@ -143,11 +143,24 @@ PanelWindow {
                 }
             }
 
-            Column {
-                id: captions
+            SiriWave {
+                id: wave
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.top: orb.bottom
                 anchors.topMargin: 2
+                z: -1
+                width: 560
+                height: 132
+                level: FigaroIpc.level
+                active: FigaroIpc.active && (FigaroIpc.state === "listening" || FigaroIpc.state === "speaking")
+                speed: FigaroIpc.state === "speaking" ? 1.25 : 1.0
+            }
+
+            Column {
+                id: captions
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: wave.bottom
+                anchors.topMargin: 0
                 width: 470
                 spacing: 6
 
