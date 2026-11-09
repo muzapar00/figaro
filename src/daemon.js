@@ -37,7 +37,23 @@ const CANCEL_TRAILING_CHARS = new Set(['吧', '啊', '呀', '哦', '呢', '了',
 // brings the daemon back after a GUI-triggered restart.
 const RESTART_EXIT_CODE = 75;
 // Paths of the settings API that can change without recreating the ASR module.
-const ASR_HOT_PATHS = Object.freeze(['asr.sensitivity', 'asr.wakeCooldownMs', 'asr.inputGainPercent']);
+const ASR_HOT_PATHS = Object.freeze([
+  'asr.sensitivity',
+  'asr.wakeCooldownMs',
+  'asr.inputGainPercent',
+  'asr.bargeIn.enabled',
+  'asr.bargeIn.minRms',
+  'asr.bargeIn.echoFactor',
+  'asr.bargeIn.minMs',
+]);
+// Interaction settings are pure daemon state, so they re-read instantly.
+const INTERACTION_PATHS = Object.freeze([
+  'interaction.followUpWindowMs',
+  'interaction.followUpMinRms',
+  'interaction.followUpMinMs',
+  'interaction.dismissPhrases',
+  'interaction.cancelPhrases',
+]);
 // TTS settings fixed at module creation: changing them recreates the module.
 const TTS_RECREATE_PATHS = Object.freeze(['tts.model', 'tts.voiceId', 'tts.speed', 'tts.sink']);
 const PKG_VERSION = (() => {
@@ -165,17 +181,17 @@ export function createDaemon(options = {}) {
   // "退下/休息/结束" means: stand down. Unlike the cancel phrases this must not
   // cut a reply that is already being spoken; the assistant finishes talking and
   // then leaves.
-  const dismissPhrases = (Array.isArray(config.interaction?.dismissPhrases)
+  let dismissPhrases = (Array.isArray(config.interaction?.dismissPhrases)
     ? config.interaction.dismissPhrases
     : ['退下', '退下吧', '先退下', '你可以退下了', '可以退下了', '休息吧', '没事了', '结束吧', '关了']
   ).map((value) => String(value ?? '').replace(/[\s，。！？、,.!?~～…—\-]/g, '').toLowerCase())
     .filter((value) => value.length > 0);
-  const followUpMinRms = Math.max(0.004, Number(config.interaction?.followUpMinRms ?? 0.012) || 0.012);
-  const followUpMinMs = Math.max(80, Number(config.interaction?.followUpMinMs ?? 180) || 180);
-  const followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
+  let followUpMinRms = Math.max(0.004, Number(config.interaction?.followUpMinRms ?? 0.012) || 0.012);
+  let followUpMinMs = Math.max(80, Number(config.interaction?.followUpMinMs ?? 180) || 180);
+  let followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
     ? Number(config.interaction.followUpWindowMs)
     : 0;
-  const cancelPhrases = (Array.isArray(config.interaction?.cancelPhrases) && config.interaction.cancelPhrases.length > 0
+  let cancelPhrases = (Array.isArray(config.interaction?.cancelPhrases) && config.interaction.cancelPhrases.length > 0
     ? config.interaction.cancelPhrases
     : DEFAULT_CANCEL_PHRASES
   ).map((phrase) => String(phrase ?? '').trim()).filter((phrase) => phrase.length > 0);
@@ -1378,6 +1394,28 @@ export function createDaemon(options = {}) {
     return config;
   }
 
+  /** Re-read the interaction settings after config.set wrote them. */
+  function reloadInteractionSettings() {
+    const interaction = config.interaction ?? {};
+    const windowMs = Number(interaction.followUpWindowMs);
+    const minRms = Number(interaction.followUpMinRms);
+    const minMs = Number(interaction.followUpMinMs);
+    if (Number.isFinite(windowMs) && windowMs > 0) followUpWindowMs = windowMs;
+    else followUpWindowMs = 0;
+    if (Number.isFinite(minRms) && minRms > 0) followUpMinRms = Math.max(0.004, minRms);
+    if (Number.isFinite(minMs) && minMs > 0) followUpMinMs = Math.max(80, minMs);
+    if (Array.isArray(interaction.dismissPhrases)) {
+      const normalized = interaction.dismissPhrases
+        .map((value) => String(value ?? '').replace(/[\s，。！？、,.!?~～…—\-]/g, '').toLowerCase())
+        .filter((value) => value.length > 0);
+      if (normalized.length > 0) dismissPhrases = normalized;
+    }
+    if (Array.isArray(interaction.cancelPhrases) && interaction.cancelPhrases.length > 0) {
+      cancelPhrases = interaction.cancelPhrases.map(String);
+    }
+    log.info(`interaction settings reloaded (followUp ${followUpWindowMs}ms, gate ${followUpMinRms}/${followUpMinMs}ms, ${dismissPhrases.length} dismiss phrases)`);
+  }
+
   /** Try to apply runtime-changeable ASR settings; anything else needs a restart. */
   function applyAsrRuntime(changedPaths) {
     const asr = voice.asr;
@@ -1388,6 +1426,7 @@ export function createDaemon(options = {}) {
       sensitivity: config.asr?.sensitivity,
       wakeCooldownMs: config.asr?.wakeCooldownMs,
       inputGainPercent: config.asr?.inputGainPercent,
+      bargeIn: config.asr?.bargeIn,
     };
     if (!asr) {
       restartRequired.push(...changedPaths);
@@ -1453,6 +1492,17 @@ export function createDaemon(options = {}) {
       applied.push(...result.applied);
       restartRequired.push(...result.restartRequired);
       errors.push(...result.errors);
+    }
+
+    const interactionChanged = changedPaths.filter((path) => INTERACTION_PATHS.includes(path));
+    if (interactionChanged.length > 0) {
+      try {
+        reloadInteractionSettings();
+        applied.push(...interactionChanged);
+      } catch (err) {
+        errors.push(`交互设置热应用失败：${err?.message || err}`);
+        restartRequired.push(...interactionChanged);
+      }
     }
 
     const ttsRecreate = changedPaths.filter((path) => TTS_RECREATE_PATHS.includes(path));
