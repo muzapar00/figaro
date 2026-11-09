@@ -12,11 +12,13 @@ MPageScroll {
     property string sensitivity: "low"
     property int cooldownMs: 2500
     property var wakeWords: []
+    property var wakeWordsEn: []
+    property bool englishEnabled: true
     property string hotkey: ""
-    property bool editingWords: false
     property bool editingHotkey: false
-    property string draftWords: ""
     property string draftHotkey: ""
+    readonly property var englishDefaults: ["figaro", "hey figaro"]
+    readonly property var chineseDefaults: ["费加罗", "菲加罗", "飞加罗", "figaro", "费加"]
 
     // ---- wake test state ---------------------------------------------------
     property string testMode: ""          // "" | "wake" | "ambient"
@@ -43,8 +45,12 @@ MPageScroll {
         page.wakeEnabled = Ipc.cfg("asr.enabled", true) !== false;
         page.sensitivity = String(Ipc.cfg("asr.sensitivity", "low"));
         page.cooldownMs = Number(Ipc.cfg("asr.wakeCooldownMs", 2500));
-        const words = Ipc.cfg("asr.wakeWords", []);
-        page.wakeWords = Array.isArray(words) ? words : [];
+        const words = Ipc.cfg("asr.wakeWords", page.chineseDefaults);
+        page.wakeWords = Array.isArray(words) ? words : page.chineseDefaults;
+        const wordsEn = Ipc.cfg("asr.wakeWordsEn", page.englishDefaults);
+        const list = Array.isArray(wordsEn) ? wordsEn : [];
+        page.englishEnabled = list.length > 0;
+        page.wakeWordsEn = list.length > 0 ? list : page.englishDefaults.slice(0);
         page.hotkey = String(Ipc.cfg("asr.hotkey", "") || "");
     }
 
@@ -173,6 +179,70 @@ MPageScroll {
         return false;
     }
 
+    function sensitivityNote() {
+        if (page.sensitivity === "high")
+            return "实测（15.2 分钟负样本）：中文 8/8 · 英文 19/20 · 近音误触发 5/40 · 合计误唤醒 6 次（更灵敏，近音代价更高）";
+        if (page.sensitivity === "medium")
+            return "实测（15.2 分钟负样本）：中文 8/8 · 英文 20/20 · 近音误触发 2/40 · 合计误唤醒 3 次";
+        return "实测（15.2 分钟负样本）：中文 8/8 · 英文 20/20 · 近音误触发 2/40 · 真人中文 0/10min · 合计 3 次（默认，最保守）";
+    }
+
+    function sensitivityLatencyNote() {
+        return "中文检测中位 ≈ 900 ms（「费加」说完）；onWake 延迟中位：中文 ≈ 1249 ms / 英文 ≈ 1435 ms";
+    }
+
+    function setWakeEnabled(value) {
+        page.wakeEnabled = value;
+        Ipc.writeField("asr.enabled", value);
+    }
+
+    function setSensitivity(value) {
+        page.sensitivity = value;
+        Ipc.writeField("asr.sensitivity", value);
+    }
+
+    function setCooldown(value) {
+        const v = Math.round(value / 100) * 100;
+        page.cooldownMs = v;
+        Ipc.writeField("asr.wakeCooldownMs", v);
+    }
+
+    function setWakeWords(values) {
+        const list = [];
+        for (let i = 0; i < values.length; i++) {
+            const w = String(values[i]).trim();
+            if (w.length > 0) list.push(w);
+        }
+        page.wakeWords = list;
+        Ipc.writeField("asr.wakeWords", list);
+    }
+
+    function setEnglishEnabled(value) {
+        page.englishEnabled = value;
+        Ipc.writeField("asr.wakeWordsEn", value ? page.wakeWordsEn : []);
+    }
+
+    function setWakeWordsEn(values) {
+        const list = [];
+        for (let i = 0; i < values.length; i++) {
+            const w = String(values[i]).trim();
+            if (w.length > 0) list.push(w);
+        }
+        page.wakeWordsEn = list;
+        page.englishEnabled = list.length > 0;
+        Ipc.writeField("asr.wakeWordsEn", list);
+    }
+
+    // Harness hook for the screenshot/verification script.
+    function demoWrite() {
+        Ipc.writeFields([
+            { path: "asr.sensitivity", value: "low" },
+            { path: "asr.wakeWords", value: ["费加罗", "菲加罗", "飞加罗"] },
+            { path: "asr.wakeWordsEn", value: ["figaro", "hey figaro"] },
+        ]);
+        return "wake-demo-written";
+    }
+
     function snapshot() {
         return {
             title: "唤醒",
@@ -194,6 +264,8 @@ MPageScroll {
             sensitivity: page.sensitivity,
             cooldownMs: page.cooldownMs,
             wakeWords: page.wakeWords,
+            wakeWordsEn: page.wakeWordsEn,
+            englishEnabled: page.englishEnabled,
             hotkey: page.hotkey,
         };
     }
@@ -306,11 +378,12 @@ MPageScroll {
         MRow {
             label: "唤醒监听"
             subtitle: "总开关 · 写入 asr.enabled"
-            MToggle {
-                checked: page.wakeEnabled
-                onToggled: (value) => {
-                    page.wakeEnabled = value;
-                    Ipc.applyPatch({ asr: { enabled: value } });
+            RowLayout {
+                spacing: 8
+                MApplyStatus { paths: ["asr.enabled"] }
+                MToggle {
+                    checked: page.wakeEnabled
+                    onToggled: (value) => page.setWakeEnabled(value)
                 }
             }
         }
@@ -325,15 +398,32 @@ MPageScroll {
         }
         MRow {
             label: "灵敏度"
-            subtitle: "low 更保守（少误唤醒）· high 更灵敏"
-            MSegmented {
-                options: ["low", "medium", "high"]
-                currentIndex: page.sensitivity === "high" ? 2 : (page.sensitivity === "medium" ? 1 : 0)
-                onActivated: (index, value) => {
-                    page.sensitivity = value;
-                    Ipc.applyPatch({ asr: { sensitivity: value } });
+            subtitle: "low 更保守（少误唤醒）· high 更灵敏 · 热切换立即生效"
+            RowLayout {
+                spacing: 8
+                MApplyStatus { paths: ["asr.sensitivity"] }
+                MSegmented {
+                    options: ["low", "medium", "high"]
+                    currentIndex: page.sensitivity === "high" ? 2 : (page.sensitivity === "medium" ? 1 : 0)
+                    onActivated: (index, value) => page.setSensitivity(value)
                 }
             }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: page.sensitivityNote()
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
+            wrapMode: Text.WordWrap
+        }
+        Text {
+            Layout.fillWidth: true
+            text: page.sensitivityLatencyNote()
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
+            wrapMode: Text.WordWrap
         }
         MRow {
             label: "防抖冷却"
@@ -353,55 +443,10 @@ MPageScroll {
                     from: 500
                     to: 6000
                     value: page.cooldownMs
-                    onMoved: (v) => {
-                        page.cooldownMs = Math.round(v / 100) * 100;
-                        Ipc.applyPatch({ asr: { wakeCooldownMs: page.cooldownMs } });
-                    }
+                    markers: [2500]
+                    onMoved: (v) => page.setCooldown(v)
                 }
-            }
-        }
-        MRow {
-            label: "唤醒词"
-            subtitle: page.editingWords ? "逗号分隔，例如 费加罗,figaro" : "daemon 常驻监听这些词"
-            visible: !page.editingWords
-            MButton {
-                text: "编辑"
-                icon: "sliders"
-                onClicked: {
-                    page.editingWords = true;
-                    page.draftWords = page.wakeWords.join(", ");
-                }
-            }
-        }
-        Item {
-            visible: page.editingWords
-            Layout.fillWidth: true
-            Layout.preferredHeight: 40
-            RowLayout {
-                anchors.fill: parent
-                spacing: 8
-                MTextField {
-                    Layout.fillWidth: true
-                    text: page.draftWords
-                }
-                MButton {
-                    text: "保存"
-                    primary: true
-                    onClicked: {
-                        const parts = page.draftWords.split(/[，,]/);
-                        const words = [];
-                        for (let i = 0; i < parts.length; i++) {
-                            const w = parts[i].trim();
-                            if (w.length > 0) words.push(w);
-                        }
-                        Ipc.applyPatch({ asr: { wakeWords: words } });
-                        page.editingWords = false;
-                    }
-                }
-                MButton {
-                    text: "取消"
-                    onClicked: page.editingWords = false;
-                }
+                MApplyStatus { paths: ["asr.wakeCooldownMs"] }
             }
         }
         MRow {
@@ -481,6 +526,104 @@ MPageScroll {
             color: Theme.orange
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    // -------------------------------------------------------- 唤醒词（中英）
+    MCard {
+        title: "唤醒词（中英双语）"
+        subtitle: "模型 sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 · 中文拼音与英文音素同时监听"
+            + " · 默认灵敏度 low 实测中文 8/8、英文 20/20"
+
+        Text {
+            Layout.fillWidth: true
+            text: "中文唤醒词"
+            color: Theme.textDim
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            font.weight: Font.DemiBold
+        }
+        MChipEditor {
+            Layout.fillWidth: true
+            values: page.wakeWords
+            placeholder: "例如：费加罗"
+            addLabel: "添加中文唤醒词"
+            emptyText: "（空：中文无法唤醒）"
+            onEdited: (values) => page.setWakeWords(values)
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            MButton {
+                text: "恢复默认"
+                icon: "refresh"
+                onClicked: page.setWakeWords(page.chineseDefaults.slice(0))
+            }
+            MApplyStatus { paths: ["asr.wakeWords"] }
+            Item { Layout.fillWidth: true }
+            Text {
+                text: "共 " + page.wakeWords.length + " 条"
+                color: Theme.textFaint
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fsSmall
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            height: 1
+            color: Theme.separator
+            opacity: 0.55
+        }
+
+        MRow {
+            label: "英文唤醒"
+            subtitle: "asr.wakeWordsEn · 模型自带 en.phone 音素，Figaro / Hey Figaro 都能唤醒"
+            RowLayout {
+                spacing: 8
+                MApplyStatus { paths: ["asr.wakeWordsEn"] }
+                MToggle {
+                    checked: page.englishEnabled
+                    onToggled: (value) => page.setEnglishEnabled(value)
+                }
+            }
+        }
+        MChipEditor {
+            Layout.fillWidth: true
+            visible: page.englishEnabled
+            values: page.wakeWordsEn
+            placeholder: "例如：figaro / hey figaro"
+            addLabel: "添加英文唤醒词"
+            emptyText: "（空：英文无法唤醒）"
+            onEdited: (values) => page.setWakeWordsEn(values)
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            visible: page.englishEnabled
+            MButton {
+                text: "恢复默认英文"
+                icon: "refresh"
+                onClicked: page.setWakeWordsEn(page.englishDefaults.slice(0))
+            }
+            MApplyStatus { paths: ["asr.wakeWordsEn"] }
+            Item { Layout.fillWidth: true }
+            Text {
+                text: "共 " + page.wakeWordsEn.length + " 条"
+                color: Theme.textFaint
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fsSmall
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: "中文按拼音生成关键词（含「费加/菲加」两字短前缀：召回 8/8 的代价是近音句偶发命中）；"
+                + "英文按 6 个 FIGARO + 3 个 HEY_FIGARO 发音变体匹配，实测英文原生音色 12/12、中文口音英文 8/8。"
+                + "词表改动需要重启 daemon 才会重建 KWS 关键词文件。"
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
             wrapMode: Text.WordWrap
         }
     }

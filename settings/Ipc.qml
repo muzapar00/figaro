@@ -52,6 +52,9 @@ Singleton {
     property var configErrors: []      // last config.set errors (whitelist rejections etc.)
     property var configApplied: []     // last config.set applied paths
     property var configRestartRequired: []
+    // Per-config-path write state, so every control can show 已生效/需重启/未开放.
+    // path -> {state: "pending"|"applied"|"restart"|"forbidden"|"error", at, message}
+    property var fieldStatus: ({})
 
     // ------------------------------------------------------------ diagnostics
     property var diagnostics: ({})
@@ -506,6 +509,117 @@ Singleton {
         });
     }
 
+    // ---------------------------------------------------- per-field config writes
+    // Write one dotted config path (e.g. "asr.bargeIn.minRms") so the daemon
+    // applies it immediately where it has a hot path, and so the UI can show
+    // what happened to *this* field (applied / restart required / rejected).
+    function writeField(path, value, opts) {
+        return root.writeFields([{ path: path, value: value }], opts);
+    }
+
+    function writeFields(entries, opts) {
+        opts = opts || {};
+        entries = entries || [];
+        if (entries.length === 0) return "";
+        if (!root.connected) {
+            const paths0 = [];
+            for (let i = 0; i < entries.length; i++) paths0.push(entries[i].path);
+            root.markFieldStatus(paths0, "error", "daemon 未连接");
+            if (opts.onDone) opts.onDone(null);
+            return paths0.join(",");
+        }
+        const patch = {};
+        const paths = [];
+        for (let i = 0; i < entries.length; i++) {
+            const path = String(entries[i].path);
+            paths.push(path);
+            const parts = path.split(".");
+            let node = patch;
+            for (let j = 0; j < parts.length - 1; j++) {
+                if (!node[parts[j]]) node[parts[j]] = {};
+                node = node[parts[j]];
+            }
+            node[parts[parts.length - 1]] = entries[i].value;
+        }
+        root.markFieldStatus(paths, "pending", "写入中…");
+        root.call("config.set", { patch: patch }, {
+            timeoutMs: 2500,
+            onReply: function(msg) {
+                root.applyFieldStatus(paths, msg);
+                if (opts.onDone) opts.onDone(msg);
+            },
+            onTimeout: function() {
+                root.markFieldStatus(paths, "error", "config.set 未响应（daemon 可能不支持写入）");
+                if (opts.onDone) opts.onDone(null);
+            },
+            onError: function(msg) {
+                root.markFieldStatus(paths, "error", (msg && msg.message) || "写入失败");
+                if (opts.onDone) opts.onDone(msg);
+            },
+        });
+        return paths.join(",");
+    }
+
+    function pathMatches(list, path) {
+        if (!list) return false;
+        for (let i = 0; i < list.length; i++) {
+            const p = String(list[i]);
+            if (p === path || path.indexOf(p + ".") === 0 || p.indexOf(path + ".") === 0) return true;
+        }
+        return false;
+    }
+
+    function applyFieldStatus(paths, msg) {
+        const forbidden = (msg && msg.forbidden) || [];
+        const restart = (msg && msg.restartRequired) || [];
+        const applied = (msg && msg.applied) || [];
+        const errors = (msg && msg.errors) || [];
+        for (let i = 0; i < paths.length; i++) {
+            const path = paths[i];
+            if (root.pathMatches(forbidden, path)) {
+                root.markFieldStatus([path], "forbidden", "daemon 未开放该配置（settings.js 白名单缺失）");
+            } else if (root.pathMatches(restart, path)) {
+                root.markFieldStatus([path], "restart", "已写入，重启 daemon 后生效");
+            } else if (root.pathMatches(applied, path)) {
+                root.markFieldStatus([path], "applied", "已生效");
+            } else if (msg && msg.ok === false) {
+                root.markFieldStatus([path], "forbidden", "daemon 拒绝写入");
+            } else if (errors.length > 0) {
+                root.markFieldStatus([path], "error", String(errors[0]));
+            } else {
+                root.markFieldStatus([path], "applied", "已生效");
+            }
+        }
+    }
+
+    function markFieldStatus(paths, state, message) {
+        const next = {};
+        for (const key in root.fieldStatus) next[key] = root.fieldStatus[key];
+        const now = Date.now();
+        for (let i = 0; i < paths.length; i++) next[paths[i]] = { state: state, at: now, message: message };
+        root.fieldStatus = next;
+    }
+
+    function fieldState(path) {
+        if (root.fieldStatus[path]) return root.fieldStatus[path];
+        for (const key in root.fieldStatus) {
+            if (key.indexOf(path + ".") === 0 || path.indexOf(key + ".") === 0) return root.fieldStatus[key];
+        }
+        return null;
+    }
+
+    // Worst state wins when several paths are shown together.
+    function fieldStateFor(paths) {
+        let worst = null;
+        const rank = { error: 5, forbidden: 4, pending: 3, restart: 2, applied: 1 };
+        for (let i = 0; i < paths.length; i++) {
+            const st = root.fieldState(paths[i]);
+            if (!st) continue;
+            if (!worst || (rank[st.state] || 0) > (rank[worst.state] || 0)) worst = st;
+        }
+        return worst;
+    }
+
     function refreshDiagnostics() {
         if (!root.connected) return;
         root.call("diagnostics", {}, {
@@ -614,11 +728,13 @@ Singleton {
     }
 
     // ------------------------------------------------------------ tts test
-    function ttsTest(text) {
+    function ttsTest(text, voiceId) {
         root.ttsRunning = true;
         root.ttsResult = ({});
         root.ttsLastText = text;
-        root.call("test.tts", { text: text }, {
+        const params = { text: text };
+        if (voiceId) params.voiceId = voiceId;
+        root.call("test.tts", params, {
             timeoutMs: 8000,
             onReply: function(msg) {
                 root.ttsResult = msg;

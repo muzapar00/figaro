@@ -164,6 +164,35 @@ act scroll:330 >/dev/null
 sleep 0.35
 shot 7b-diagnostics-capabilities
 
+# ------------------------------------- 7. new config controls (task-8)
+echo "[shoot] new config controls: barge-in / follow-up / phrases / wake words / voice"
+page interaction
+scroll top
+act interaction-demo >/dev/null
+sleep 1.0
+shot 10-interaction-bargein
+act scroll:260 >/dev/null
+sleep 0.45
+shot 11-interaction-followup
+act scroll:520 >/dev/null
+sleep 0.45
+shot 12-interaction-phrases
+
+page wake
+scroll top
+act wake-demo >/dev/null
+sleep 0.9
+shot 13-wake-sensitivity
+act scroll:300 >/dev/null
+sleep 0.45
+shot 14-wake-words
+
+page voice
+scroll top
+act voice-demo >/dev/null
+sleep 0.9
+shot 15-voice-timbre
+
 # ---------------------------------------------------------------- state dump
 sleep 0.5
 ipc status >"$out/status.json"
@@ -200,6 +229,69 @@ assert_num "journal log copied lines" "d['diagnostics'].get('logCopyLines', 0)" 
 assert_num "wake supported" "1 if d['wake'].get('wakeSupported') else 0" 1
 assert_num "connected" "1 if d['connected'] else 0" 1
 assert_num "test socket in use" "1 if d['testSocket'] else 0" 1
+
+# --- task-8: new config controls landed in the daemon --------------------
+echo
+echo "[shoot] task-8 new config fields"
+python3 - "$out/status.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+checks = []
+
+def check(name, ok, detail=""):
+    checks.append((name, ok, detail))
+
+inter = d.get("interaction", {})
+fs = d.get("fieldStatus", {})
+diag = d.get("daemonDiagnostics", {}) or {}
+d_asr = diag.get("asr", {}) or {}
+d_inter = diag.get("interaction", {}) or {}
+d_tts = diag.get("tts", {}) or {}
+
+check("bargeIn.enabled written", inter.get("bargeEnabled") is True)
+check("bargeIn.minRms = 0.06", abs(float(inter.get("bargeMinRms", -1)) - 0.06) < 1e-6, str(inter.get("bargeMinRms")))
+check("bargeIn.echoFactor = 3.0", abs(float(inter.get("bargeEchoFactor", -1)) - 3.0) < 1e-6, str(inter.get("bargeEchoFactor")))
+check("bargeIn.minMs = 600", int(inter.get("bargeMinMs", -1)) == 600, str(inter.get("bargeMinMs")))
+check("followUpWindowMs = 7000", int(inter.get("followUpWindow", -1)) == 7000, str(inter.get("followUpWindow")))
+check("dismissPhrases contains 告退", "告退" in (inter.get("dismissPhrases") or []), str(inter.get("dismissPhrases")))
+check("wakeWordsEn non-empty", len(d.get("wake", {}).get("wakeWordsEn") or []) >= 1, str(d.get("wake", {}).get("wakeWordsEn")))
+check("daemon readback bargeIn.minRms = 0.06", abs(float((d_asr.get("bargeIn") or {}).get("minRms", -1)) - 0.06) < 1e-6, str(d_asr.get("bargeIn")))
+check("daemon readback dismissPhrases has 告退", "告退" in (d_inter.get("dismissPhrases") or []))
+check("daemon readback followUpWindowMs = 7000", int(d_inter.get("followUpWindowMs", -1)) == 7000, str(d_inter.get("followUpWindowMs")))
+check("daemon readback tts.voiceId = male-qn-qingse", d_tts.get("voiceId") == "male-qn-qingse", str(d_tts.get("voiceId")))
+
+# hot-path vs restart-required classification the GUI shows to the user
+check("asr.sensitivity marked applied (hot)", fs.get("asr.sensitivity", {}).get("state") == "applied", str(fs.get("asr.sensitivity")))
+check("tts.voiceId marked applied (hot)", fs.get("tts.voiceId", {}).get("state") == "applied", str(fs.get("tts.voiceId")))
+check("bargeIn marked restart-required", fs.get("asr.bargeIn.minRms", {}).get("state") == "restart", str(fs.get("asr.bargeIn.minRms")))
+check("interaction marked restart-required", fs.get("interaction.followUpWindowMs", {}).get("state") == "restart", str(fs.get("interaction.followUpWindowMs")))
+check("wakeWords marked restart-required", fs.get("asr.wakeWords", {}).get("state") == "restart", str(fs.get("asr.wakeWords")))
+
+# and the daemon's config file on disk really contains the new values
+config_path = diag.get("configPath") or ""
+try:
+    with open(config_path) as f:
+        cfg = json.load(f)
+    check("config.json asr.bargeIn.minRms = 0.06", abs(float(cfg["asr"]["bargeIn"]["minRms"]) - 0.06) < 1e-6)
+    check("config.json asr.bargeIn.echoFactor = 3.0", abs(float(cfg["asr"]["bargeIn"]["echoFactor"]) - 3.0) < 1e-6)
+    check("config.json interaction.followUpWindowMs = 7000", int(cfg["interaction"]["followUpWindowMs"]) == 7000)
+    check("config.json dismissPhrases has 告退", "告退" in cfg["interaction"]["dismissPhrases"])
+    check("config.json tts.voiceId = male-qn-qingse", cfg["tts"].get("voiceId") == "male-qn-qingse")
+except Exception as e:
+    check("config.json readable (" + config_path + ")", False, str(e))
+
+failed = [c for c in checks if not c[1]]
+for name, ok, detail in checks:
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""))
+sys.exit(1 if failed else 0)
+PYEOF
+task8_fails=$?
+if [[ "$task8_fails" -ne 0 ]]; then
+  fail "task-8 config assertions ($task8_fails)"
+else
+  pass "task-8 config assertions (all new fields written + read back by the daemon)"
+fi
 
 # copy the exported artifacts next to the screenshots as evidence
 latest_diag="$(ls -t "$HOME"/figaro-diagnostics-*.json 2>/dev/null | head -1)"

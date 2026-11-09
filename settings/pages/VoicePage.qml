@@ -8,6 +8,7 @@ MPageScroll {
     id: page
 
     property string sink: ""
+    property string voiceId: ""
     property string draftSink: ""
     property bool editingSink: false
     property real speed: 1.0
@@ -22,11 +23,20 @@ MPageScroll {
     readonly property var ackInfo: (Ipc.diagnostics.ack || ({}))
     readonly property var sinks: (Array.isArray(page.ttsInfo.sinks) ? page.ttsInfo.sinks : [])
     readonly property bool ttsSupported: !Ipc.unsupported("test.tts")
+    // Voices already benchmarked on this machine (tests/tts/bench-voice.mjs).
+    readonly property var voiceCandidates: [
+        { id: "male-qn-jingying", label: "精英青年音色（当前默认）" },
+        { id: "male-qn-qingse", label: "青涩青年音色" },
+        { id: "Chinese (Mandarin)_Gentleman", label: "温润男声" },
+        { id: "Chinese (Mandarin)_Radio_Host", label: "电台男主播" },
+        { id: "Chinese (Mandarin)_Male_Announcer", label: "播报男声" },
+    ]
 
     function syncFromConfig() {
         page.sink = String(Ipc.cfg("tts.sink", "") || "");
         page.draftSink = "";
-        page.speed = Number(Ipc.cfg("minimax.speed", 1.0));
+        page.voiceId = String(Ipc.cfg("tts.voiceId", Ipc.cfg("minimax.voiceId", "male-qn-jingying")));
+        page.speed = Number(Ipc.cfg("tts.speed", Ipc.cfg("minimax.speed", 1.0)));
         page.ackEnabled = Ipc.cfg("tts.ack.enabled", true) !== false;
         const phrases = Ipc.cfg("tts.ack.phrases", []);
         page.ackPhrases = Array.isArray(phrases) ? phrases : [];
@@ -56,13 +66,24 @@ MPageScroll {
     function applySpeed(value) {
         const v = Math.round(value * 20) / 20;
         page.speed = v;
-        Ipc.applyPatch({ tts: { speed: v } });
+        Ipc.writeField("tts.speed", v);
+    }
+
+    function voiceLabel() {
+        for (let i = 0; i < page.voiceCandidates.length; i++)
+            if (page.voiceCandidates[i].id === page.voiceId) return page.voiceCandidates[i].label;
+        return page.voiceId.length > 0 ? page.voiceId : "未设置";
+    }
+
+    function setVoiceId(id) {
+        page.voiceId = id;
+        Ipc.writeField("tts.voiceId", id);
     }
 
     function previewVoice() {
         const text = page.previewText.trim().length > 0 ? page.previewText.trim() : "你好，我是费加罗。";
         page.previewSeq += 1;
-        Ipc.ttsTest(text);
+        Ipc.ttsTest(text, page.voiceId);
         return "tts-preview:" + text;
     }
 
@@ -87,10 +108,16 @@ MPageScroll {
         page.editingPhrases = false;
     }
 
+    function demoWrite() {
+        Ipc.writeField("tts.voiceId", "male-qn-qingse");
+        return "voice-demo-written";
+    }
+
     function snapshot() {
         return {
             title: "语音",
             sink: page.sink,
+            voiceId: page.voiceId,
             speed: page.speed,
             ackEnabled: page.ackEnabled,
             ackPhrases: page.ackPhrases,
@@ -164,6 +191,45 @@ MPageScroll {
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
             wrapMode: Text.WordWrap
+        }
+    }
+
+    // -------------------------------------------------------------- 音色
+    MCard {
+        title: "音色"
+        subtitle: "tts.voiceId · 已在本机实测过的男声候选；改动会重建 TTS 连接（热生效，约 0.2–0.4 s 首字延迟）"
+
+        MRow {
+            label: "音色"
+            subtitle: "当前：" + page.voiceLabel() + "（" + (page.voiceId.length > 0 ? page.voiceId : "未设置") + "）"
+            RowLayout {
+                spacing: 8
+                MApplyStatus { paths: ["tts.voiceId"] }
+                MDropdown {
+                    items: page.voiceCandidates
+                    currentId: page.voiceId
+                    placeholder: "选择音色…"
+                    onPicked: (id) => page.setVoiceId(id)
+                }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            MButton {
+                text: "试听当前音色"
+                icon: "play"
+                enabled: Ipc.connected && page.ttsSupported && !Ipc.ttsRunning
+                onClicked: page.previewVoice()
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "实测（speech-2.6-turbo × 5 音色）：首字延迟 189–239 ms，生成 308–379 ms，语速 4.66–5.82 字/秒"
+                color: Theme.textFaint
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fsTiny
+                wrapMode: Text.WordWrap
+            }
         }
     }
 
@@ -270,8 +336,10 @@ MPageScroll {
                     from: 0.6
                     to: 1.8
                     value: page.speed
+                    markers: [1.0]
                     onMoved: (v) => page.applySpeed(v)
                 }
+                MApplyStatus { paths: ["tts.speed"] }
             }
         }
     }

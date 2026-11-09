@@ -10,6 +10,7 @@ Item {
     property string label: ""
     property string subtitle: ""
     property bool showSeparator: true
+    property bool subtitleWrap: false
     property int controlMinWidth: 0
     property alias labelItem: labelText
     property alias subtitleItem: subtitleText
@@ -44,7 +45,9 @@ Item {
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
-            elide: Text.ElideRight
+            wrapMode: root.subtitleWrap ? Text.WordWrap : Text.NoWrap
+            elide: root.subtitleWrap ? Text.ElideNone : Text.ElideRight
+            lineHeight: 1.15
         }
     }
 

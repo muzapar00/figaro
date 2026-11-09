@@ -118,6 +118,25 @@ Item {
                 ctx.arc(6.5, 13, 1.6, 0, Math.PI * 2, false);
                 ctx.fill();
                 break;
+            case "chat":
+                ctx.beginPath();
+                ctx.moveTo(5.2, 3.8); ctx.lineTo(13.6, 3.8);
+                ctx.quadraticCurveTo(15.4, 3.8, 15.4, 5.6);
+                ctx.lineTo(15.4, 10.2);
+                ctx.quadraticCurveTo(15.4, 12, 13.6, 12);
+                ctx.lineTo(9.4, 12); ctx.lineTo(6.2, 14.8);
+                ctx.lineTo(6.6, 12); ctx.lineTo(5.2, 12);
+                ctx.quadraticCurveTo(3.4, 12, 3.4, 10.2);
+                ctx.lineTo(3.4, 5.6);
+                ctx.quadraticCurveTo(3.4, 3.8, 5.2, 3.8);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(6.5, 7.9, 0.95, 0, Math.PI * 2, false);
+                ctx.arc(9.4, 7.9, 0.95, 0, Math.PI * 2, false);
+                ctx.arc(12.3, 7.9, 0.95, 0, Math.PI * 2, false);
+                ctx.fill();
+                break;
             case "chevronDown":
                 ctx.beginPath();
                 ctx.moveTo(5.6, 7.4); ctx.lineTo(9, 10.8); ctx.lineTo(12.4, 7.4);

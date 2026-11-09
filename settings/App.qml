@@ -17,6 +17,7 @@ Rectangle {
     readonly property var navModel: [
         { key: "overview", label: "概览", icon: "overview" },
         { key: "wake", label: "唤醒", icon: "wake" },
+        { key: "interaction", label: "交互", icon: "chat" },
         { key: "mic", label: "麦克风", icon: "mic" },
         { key: "voice", label: "语音", icon: "speaker" },
         { key: "asr", label: "识别", icon: "text" },
@@ -53,6 +54,9 @@ Rectangle {
         case "ambient-csv": return wakePage.exportAmbientCsv();
         case "wake-noise-on": return wakePage.setNoisePlayback(true);
         case "wake-noise-off": return wakePage.setNoisePlayback(false);
+        case "interaction-demo": return interactionPage.demoWrite();
+        case "wake-demo": return wakePage.demoWrite();
+        case "voice-demo": return voicePage.demoWrite();
         case "mic-monitor": return micPage.startMonitor();
         case "mic-stop": return micPage.stopMonitor();
         case "mic-noise": return micPage.measureNoiseFloor();
@@ -72,7 +76,7 @@ Rectangle {
     }
 
     function currentPage() {
-        const pages = [overviewPage, wakePage, micPage, voicePage, asrPage, diagnosticsPage];
+        const pages = [overviewPage, wakePage, interactionPage, micPage, voicePage, asrPage, diagnosticsPage];
         return pages[app.pageIndex] || null;
     }
 
@@ -83,6 +87,19 @@ Rectangle {
         else if (where === "bottom") p.scrollBottom();
         else p.scrollTo(Number(where) || 0);
         return "scrolled:" + where;
+    }
+
+    // Test harness helper: "asr.bargeIn.minRms" + "0.06" -> immediate write.
+    // base64=true decodes the payload first so arrays/quoted strings survive
+    // `qs ipc call` argument splitting.
+    function writeFieldForTest(path, valueJson, base64) {
+        let value;
+        try {
+            value = JSON.parse(base64 ? Qt.atob(valueJson) : valueJson);
+        } catch (e) {
+            return "bad-json";
+        }
+        return Ipc.writeField(path, value) + "";
     }
 
     function statusSnapshot() {
@@ -98,6 +115,9 @@ Rectangle {
             configLoaded: Ipc.configLoaded,
             diagnosticsLoaded: Ipc.diagnosticsLoaded,
             wake: wakePage.snapshot(),
+            interaction: interactionPage.snapshot(),
+            fieldStatus: Ipc.fieldStatus,
+            daemonDiagnostics: Ipc.diagnostics,
             mic: micPage.snapshot(),
             voice: voicePage.snapshot(),
             asr: asrPage.snapshot(),
@@ -112,7 +132,7 @@ Rectangle {
         width: parent.width
         height: Theme.titleBarH
         targetWindow: app.targetWindow
-        title: "费加罗设置"
+        title: "费加罗"
         subtitle: ""
         modeText: Ipc.usingTestSocket ? "测试 daemon" : ""
         statusText: Ipc.connected ? "已连接" : "未连接"
@@ -172,25 +192,30 @@ Rectangle {
             anchors.fill: parent
             visible: app.pageIndex === 1
         }
+        InteractionPage {
+            id: interactionPage
+            anchors.fill: parent
+            visible: app.pageIndex === 2
+        }
         MicPage {
             id: micPage
             anchors.fill: parent
-            visible: app.pageIndex === 2
+            visible: app.pageIndex === 3
         }
         VoicePage {
             id: voicePage
             anchors.fill: parent
-            visible: app.pageIndex === 3
+            visible: app.pageIndex === 4
         }
         AsrPage {
             id: asrPage
             anchors.fill: parent
-            visible: app.pageIndex === 4
+            visible: app.pageIndex === 5
         }
         DiagnosticsPage {
             id: diagnosticsPage
             anchors.fill: parent
-            visible: app.pageIndex === 5
+            visible: app.pageIndex === 6
         }
     }
 }

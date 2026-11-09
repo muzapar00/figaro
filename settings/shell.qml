@@ -12,7 +12,7 @@ ShellRoot {
     FloatingWindow {
         id: win
         visible: true
-        title: "费加罗设置"
+        title: "费加罗"
         color: Theme.contentBg
         implicitWidth: Theme.windowW
         implicitHeight: Theme.windowH
@@ -73,6 +73,17 @@ ShellRoot {
         }
         function status(): string {
             return JSON.stringify(app.statusSnapshot());
+        }
+        // Test harness: write one dotted config path, e.g.
+        //   qs ipc call figaro-settings write asr.bargeIn.minRms 0.06
+        // Values containing commas/quotes would be split by `qs ipc call`, so
+        // the harness also accepts base64-encoded JSON:
+        //   qs ipc call figaro-settings writeB64 asr.wakeWords RW...
+        function write(path: string, valueJson: string): string {
+            return app.writeFieldForTest(path, valueJson, false);
+        }
+        function writeB64(path: string, valueB64: string): string {
+            return app.writeFieldForTest(path, valueB64, true);
         }
         function quit(): void {
             Qt.quit();

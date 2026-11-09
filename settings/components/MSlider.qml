@@ -10,6 +10,7 @@ Item {
     property real value: 0
     property bool interactive: true
     property color fillColor: "#f2f2f7"
+    property var markers: []
 
     signal moved(real value)
 
@@ -52,6 +53,22 @@ Item {
         color: "#f7f7fa"
         border.width: 0.5
         border.color: Qt.rgba(0, 0, 0, 0.20)
+    }
+
+    // Optional measured reference points (e.g. ambient noise / typical speech
+    // RMS) drawn as ticks under the track so a threshold slider has context.
+    Repeater {
+        model: root.markers
+        Rectangle {
+            required property var modelData
+            width: 1
+            height: 5
+            color: Theme.textFaint
+            opacity: 0.8
+            x: Math.max(0, Math.min(root.width - 1,
+                knob.width / 2 + ((Number(modelData) - root.from) / (root.to - root.from)) * root.usable))
+            y: root.height - height
+        }
     }
 
     MouseArea {

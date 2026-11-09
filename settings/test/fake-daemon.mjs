@@ -81,12 +81,21 @@ const DEFAULTS = {
   },
   asr: {
     wakeWords: ['费加罗', '菲加罗', '飞加罗', 'figaro', '费加'],
+    wakeWordsEn: ['figaro', 'hey figaro'],
     device: 'default',
-    hotkey: 'CTRL+ALT+F5',
+    hotkey: 'F9',
     sensitivity: 'low',
     wakeCooldownMs: 2500,
-    inputGainPercent: 40,
+    inputGainPercent: 45,
     silenceStopMs: 900,
+    bargeIn: { enabled: true, minRms: 0.09, echoFactor: 2.5, minMs: 500 },
+  },
+  interaction: {
+    cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
+    dismissPhrases: ['退下', '退下吧', '先退下', '你可以退下了', '可以退下了', '休息吧', '没事了', '结束吧', '关了'],
+    followUpWindowMs: 7000,
+    followUpMinRms: 0.012,
+    followUpMinMs: 180,
   },
   tts: {
     enabled: true,
@@ -104,6 +113,31 @@ function deepMerge(base, patch) {
   for (const [k, v] of Object.entries(patch)) out[k] = k in base ? deepMerge(base[k], v) : v;
   return out;
 }
+// Mirrors src/daemon.js: TTS snapshots are rebuilt, three ASR fields hot-swap,
+// everything else (barge-in, interaction, wake words, asr.enabled) needs a
+// daemon restart today. Keep this in sync with the real daemon so the GUI demo
+// shows the same 已生效/需重启 states.
+const HOT_PATHS = [
+  'asr.sensitivity',
+  'asr.wakeCooldownMs',
+  'asr.inputGainPercent',
+  'tts.sink',
+  'tts.model',
+  'tts.voiceId',
+  'tts.speed',
+];
+
+function flattenPaths(patch, prefix = '') {
+  const out = [];
+  if (!isPlainObject(patch)) return out;
+  for (const [key, value] of Object.entries(patch)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (isPlainObject(value) && Object.keys(value).length > 0) out.push(...flattenPaths(value, path));
+    else out.push(path);
+  }
+  return out;
+}
+
 function readConfigFile() {
   try {
     return JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -115,9 +149,24 @@ let config = deepMerge(DEFAULTS, readConfigFile());
 function saveConfig() {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
+// The real daemon maps the docs/ipc.md §3.1 aliases tts.voiceId/model/speed
+// onto minimax.* before exposing the effective config (src/daemon.js
+// applyTtsAliases). Mirror that so the GUI reads the same thing here.
+function applyTtsAliases(target) {
+  const tts = target && target.tts;
+  if (!tts || typeof tts !== 'object') return target;
+  const minimax = { ...(target.minimax || {}) };
+  if (typeof tts.voiceId === 'string' && tts.voiceId.trim().length > 0) minimax.voiceId = tts.voiceId.trim();
+  if (typeof tts.model === 'string' && tts.model.trim().length > 0) minimax.model = tts.model.trim();
+  if (Number.isFinite(Number(tts.speed)) && Number(tts.speed) > 0) minimax.speed = Number(tts.speed);
+  target.minimax = minimax;
+  return target;
+}
+
 // config.get must never leak secrets (docs/ipc.md §3.1).
 function publicConfig() {
   const c = JSON.parse(JSON.stringify(config));
+  applyTtsAliases(c);
   if (c.deepseek) delete c.deepseek.apiKey;
   if (c.minimax) delete c.minimax.apiKey;
   return c;
@@ -331,10 +380,20 @@ function handle(socket, msg) {
       return send(socket, { type: 'config', id: msg.id, config: publicConfig() });
 
     case 'config.set': {
+      const changed = flattenPaths(msg.patch || {});
       config = deepMerge(config, msg.patch || {});
       saveConfig();
-      log('config.set:', JSON.stringify(msg.patch));
-      return send(socket, { type: 'config', id: msg.id, config: publicConfig() });
+      const applied = changed.filter((path) => HOT_PATHS.includes(path));
+      const restartRequired = changed.filter((path) => !HOT_PATHS.includes(path));
+      log('config.set:', JSON.stringify(msg.patch), 'applied=', applied.join(','), 'restart=', restartRequired.join(','));
+      return send(socket, {
+        type: 'config',
+        id: msg.id,
+        ok: true,
+        applied,
+        restartRequired,
+        config: publicConfig(),
+      });
     }
 
     // ---- §3.1 microphone test --------------------------------------------
@@ -539,6 +598,7 @@ async function handleRestart(socket, msg) {
 // ---------------------------------------------------------------------------
 function diagnostics() {
   const mic = newMicSim(config.asr.inputGainPercent).tick();
+  const effective = applyTtsAliases(JSON.parse(JSON.stringify(config)));
   return {
     type: 'diagnostics',
     configPath,
@@ -558,6 +618,13 @@ function diagnostics() {
       hotkey: config.asr.hotkey,
       hotkeyState: { state: 'active', bound: true, started: true, session: 'fake-session' },
       muted: false,
+      wakeWordsEn: config.asr.wakeWordsEn,
+      bargeIn: {
+        enabled: config.asr.bargeIn.enabled !== false,
+        minRms: Number(config.asr.bargeIn.minRms),
+        echoFactor: Number(config.asr.bargeIn.echoFactor),
+        minMs: Number(config.asr.bargeIn.minMs),
+      },
       modelInfo: {
         threads: { kws: 2, streaming: 2, offline: 4 },
         sensitivity: config.asr.sensitivity,
@@ -581,9 +648,9 @@ function diagnostics() {
     },
     tts: {
       available: true,
-      model: config.minimax.model,
-      voiceId: config.minimax.voiceId,
-      sink: config.tts.sink,
+      model: effective.minimax.model,
+      voiceId: effective.minimax.voiceId,
+      sink: effective.tts.sink,
       sinkStatus: 'ok',
       speaking: false,
       connected: true,
@@ -629,6 +696,13 @@ function diagnostics() {
       { at: new Date(fakeErrorTimes[0]).toISOString(), message: 'TTS 连接超时一次，已自动重试（fake）' },
       { at: new Date(fakeErrorTimes[1]).toISOString(), message: 'KWS 模型热加载完成（fake）' },
     ],
+    interaction: {
+      followUpWindowMs: Number(config.interaction.followUpWindowMs) || 0,
+      followUpMinRms: Number(config.interaction.followUpMinRms),
+      followUpMinMs: Number(config.interaction.followUpMinMs),
+      dismissPhrases: config.interaction.dismissPhrases,
+      cancelPhrases: config.interaction.cancelPhrases,
+    },
     tests: { mic: false, asr: false, wake: false },
   };
 }

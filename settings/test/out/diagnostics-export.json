@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-09T04:55:07.425Z",
+  "generatedAt": "2026-11-09T06:45:37.167Z",
   "generator": "figaro-settings GUI",
-  "socket": "/run/user/1000/figaro-settings-test/sock",
+  "socket": "/tmp/figaro-settings-dev/sock",
   "usingTestSocket": true,
   "connected": true,
   "daemonState": "idle",
@@ -9,9 +9,9 @@
     "config.get": "supported",
     "config.set": "supported",
     "diagnostics": "supported",
-    "test.mic.start": "supported",
     "test.wake.arm": "supported",
     "test.wake.disarm": "supported",
+    "test.mic.start": "supported",
     "test.mic.stop": "supported",
     "test.tts": "supported",
     "test.asr.start": "supported"
@@ -25,23 +25,49 @@
     "minimax": {
       "baseUrl": "https://api.minimax.cn",
       "model": "speech-2.6-turbo",
-      "voiceId": "male-qn-jingying",
-      "speed": 1
+      "voiceId": "male-qn-qingse",
+      "speed": 1.15
     },
     "asr": {
       "wakeWords": [
         "费加罗",
         "菲加罗",
-        "飞加罗",
+        "飞加罗"
+      ],
+      "wakeWordsEn": [
         "figaro",
-        "费加"
+        "hey figaro"
       ],
       "device": "default",
-      "hotkey": "CTRL+ALT+F5",
+      "hotkey": "F9",
       "sensitivity": "low",
       "wakeCooldownMs": 2500,
-      "inputGainPercent": 40,
-      "silenceStopMs": 900
+      "inputGainPercent": 45,
+      "silenceStopMs": 900,
+      "bargeIn": {
+        "enabled": true,
+        "minRms": 0.06,
+        "echoFactor": 2.5,
+        "minMs": 500
+      }
+    },
+    "interaction": {
+      "cancelPhrases": [
+        "取消",
+        "算了",
+        "停下"
+      ],
+      "dismissPhrases": [
+        "退下",
+        "先退下",
+        "休息吧",
+        "没事了",
+        "关了",
+        "告退"
+      ],
+      "followUpWindowMs": 7000,
+      "followUpMinRms": 0.012,
+      "followUpMinMs": 180
     },
     "tts": {
       "enabled": true,
@@ -54,26 +80,28 @@
           "请指示"
         ],
         "timeoutMs": 800
-      }
+      },
+      "voiceId": "male-qn-qingse",
+      "speed": 1.15
     }
   },
   "diagnostics": {
     "type": "diagnostics",
-    "configPath": "/run/user/1000/figaro-settings-test/config.json",
+    "configPath": "/tmp/figaro-settings-dev/config.json",
     "logPath": "journalctl --user -u figaro",
-    "socketPath": "/run/user/1000/figaro-settings-test/sock",
+    "socketPath": "/tmp/figaro-settings-dev/sock",
     "version": "0.1.0-fake (self-test daemon)",
-    "pid": 51748,
+    "pid": 150887,
     "state": "idle",
-    "uptimeMs": 178316,
+    "uptimeMs": 196294,
     "asr": {
       "available": true,
       "state": "idle",
       "capturing": false,
       "sensitivity": "low",
       "wakeCooldownMs": 2500,
-      "inputGainPercent": 40,
-      "hotkey": "CTRL+ALT+F5",
+      "inputGainPercent": 45,
+      "hotkey": "F9",
       "hotkeyState": {
         "state": "active",
         "bound": true,
@@ -81,6 +109,16 @@
         "session": "fake-session"
       },
       "muted": false,
+      "wakeWordsEn": [
+        "figaro",
+        "hey figaro"
+      ],
+      "bargeIn": {
+        "enabled": true,
+        "minRms": 0.06,
+        "echoFactor": 2.5,
+        "minMs": 500
+      },
       "modelInfo": {
         "threads": {
           "kws": 2,
@@ -93,7 +131,7 @@
           "keywordsThreshold": 0.3
         },
         "wakeCooldownMs": 2500,
-        "inputGainPercent": 40,
+        "inputGainPercent": 45,
         "lastFinalMs": 860,
         "offlineLoaded": true,
         "offlineLoadError": null,
@@ -105,9 +143,7 @@
         "keywords": [
           "费加罗",
           "菲加罗",
-          "飞加罗",
-          "figaro",
-          "费加"
+          "飞加罗"
         ],
         "streaming": true,
         "offline": "paraformer",
@@ -118,7 +154,7 @@
     "tts": {
       "available": true,
       "model": "speech-2.6-turbo",
-      "voiceId": "male-qn-jingying",
+      "voiceId": "male-qn-qingse",
       "sink": "alsa_output.pci-0000_00_1f.3.analog-stereo",
       "sinkStatus": "ok",
       "speaking": false,
@@ -167,9 +203,9 @@
       "reason": null
     },
     "mic": {
-      "gainPercent": 40,
-      "rms": 0.287,
-      "peak": 0.71,
+      "gainPercent": 45,
+      "rms": 0.303,
+      "peak": 0.645,
       "fixed": true
     },
     "latency": {
@@ -185,28 +221,46 @@
     },
     "recentErrors": [
       {
-        "at": "2026-11-09T04:52:06.598Z",
+        "at": "2026-11-09T06:42:20.738Z",
         "message": "TTS 连接超时一次，已自动重试（fake）"
       },
       {
-        "at": "2026-11-09T04:52:13.598Z",
+        "at": "2026-11-09T06:42:27.738Z",
         "message": "KWS 模型热加载完成（fake）"
       }
     ],
+    "interaction": {
+      "followUpWindowMs": 7000,
+      "followUpMinRms": 0.012,
+      "followUpMinMs": 180,
+      "dismissPhrases": [
+        "退下",
+        "先退下",
+        "休息吧",
+        "没事了",
+        "关了",
+        "告退"
+      ],
+      "cancelPhrases": [
+        "取消",
+        "算了",
+        "停下"
+      ]
+    },
     "tests": {
       "mic": false,
       "asr": false,
       "wake": false
     },
-    "id": 28
+    "id": 69
   },
   "recentErrors": [
     {
-      "t": 1794199933598,
+      "t": 1794206547738,
       "message": "KWS 模型热加载完成（fake）"
     },
     {
-      "t": 1794199926598,
+      "t": 1794206540738,
       "message": "TTS 连接超时一次，已自动重试（fake）"
     }
   ],
@@ -217,7 +271,7 @@
     "tts": null
   },
   "windowSize": [
-    695,
-    638
+    687,
+    600
   ]
 }
