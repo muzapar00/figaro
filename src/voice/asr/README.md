@@ -123,6 +123,7 @@ F5 走 XDG Desktop Portal 的 `org.freedesktop.portal.GlobalShortcuts` v2。
 | `hotkey` | 见 `config.js` | 全局快捷键串（如 `CTRL+ALT+F5`、`F5`；空字符串 = 禁用），portal 格式由 `normalizeTrigger()` 规范化 |
 | `longPressMs` | 260 | 按住超过该值才算长按（短按忽略） |
 | `wakeCaptureFallbackMs` | 0 | >0 时唤醒后**等 daemon 调 `beginCapture()`**（daemon 先播「我在」）；超时兜底自己开始采集。daemon 当前配 1500 ms |
+| `verifyWake` | `{ enabled: true, timeoutMs: 1800 }` | 两段式唤醒校验：KWS 命中后先用离线 paraformer 确认唤醒词再 `onWake`；异常/超时**放行**。关闭 = 旧行为 |
 
 补充（F5/快捷键）：
 - `normalizeTrigger()` 把 `ctrl+alt+f5` / `Ctrl+Alt+F5` / `Control+Alt+F5` 统一成
@@ -232,7 +233,58 @@ F IH1 G ER0 OW2 @FIGARO        ← 英文（en.phone 查表 + 发音变体）
 node scripts/gen-wake-negative-audio.mjs     # 生成 40 句近音负样本（TTS，需 key）
 node scripts/asr-wake-sensitivity.mjs        # 中文三档 × (命中/静音/检测位置/各类误唤醒) 表
 node scripts/asr-bilingual-bench.mjs         # 中英双语三档 × 命中/误唤醒/延迟/CPU/RSS 表
+node scripts/asr-wake-verify-bench2.mjs      # 两段式唤醒校验：召回/误唤醒/延迟 验收表
 ```
+
+### 两段式唤醒校验（KWS 命中 → 离线确认 → onWake）
+
+近音词的问题来自两字短前缀（`费加/菲加` 是中文 8/8 召回的关键，但「非加强管理」
+「咖啡加糖」也会命中）。现在 KWS 命中后**不立即 onWake**，而是：
+
+1. 冻结命中时刻的 **pre-roll（最近 1.5 s PCM）**，再收集命中后 **300 ms** 音频
+   （POST_ROLL_MS，「罗」通常在这段时间说完）；
+2. 用**已有的离线 paraformer**（懒加载、不下载新模型）对这段音频转写；
+3. 归一化文本做唤醒词匹配（`src/voice/asr/wake-verify.js`）：
+   - 中文：`费/菲/飞/肥 + 加/伽/佳/家/嘉 + 罗/萝/落/洛/逻/锣` 任意位置，或结尾是
+     `费加/菲加/飞加/肥加`（用户只说两字时）；离线模型会把「费加罗」写成
+     「费伽罗」，两种都接受；
+   - 英文：`fig…` 音素簇 / `飞哥路` 等中文音译视为通过；其余**放行**
+     （离线模型是中文模型，对英文转写极不稳定——实测有 "figure all"、"被押了"、
+     "回家喽" 各种写法，严格校验会漏唤醒；英文 KWS 近音误唤醒实测本来就是 0）。
+4. 通过 → `onWake`（`lastWakeAt` 此时才更新）；不通过 → 丢弃、**不播 ack、不进冷却**、
+   继续监听，计入 `rejected`；
+5. 识别器不可用/超时（`timeoutMs`）→ **放行**（宁误唤不漏唤），只 warn 一次。
+
+第一次校验会触发离线模型懒加载（~0.6 s），与 300 ms 后置缓冲重叠；之后复用实例。
+自测/诊断：`modelInfo.verifyWake`、`modelInfo.verifyStats`（accepted/rejected/failOpen/lastVerify
+含 ms/text/reason）、`applyRuntimeConfig({verifyWake:{...}})` / `asr.setVerifyWake()`；
+`armWakeTest().onEnd({...}).verify` 也会给出窗口内校验统计。
+
+**实测**（`scripts/asr-wake-verify-bench2.mjs`，/usr/bin/node v22，模块逐条回放）：
+
+| 项目 | 校验前（KWS only） | 校验后 |
+|---|---|---|
+| 中文 8 条夹具 | 8/8 | **8/8（校验误拒 0）** |
+| 英文 3 条夹具 | 3/3 | **3/3** |
+| 英文外部 TTS 20 条 | 20/20 命中 | **20/20 校验通过（误拒 0）** |
+| 近音对抗 40 句误唤醒 | 2/40 | **0/40** |
+| 真人中文语音 10 min 误唤醒 | — | **0** |
+| 离线校验转写耗时 | — | 中位 **195–229 ms** |
+
+**唤醒延迟增加**（KWS 命中→onWake，从片段开头计）：
+
+| 场景 | 校验关 | 校验开 | 增加中位 |
+|---|---|---|---|
+| 中文逐条（冷启动：每次重新加载离线模型） | 965 ms | 1825 ms | **+860 ms** |
+| 英文夹具逐条（冷启动） | 1251 ms | 1903 ms | **+652 ms** |
+| 中文连续 3 句（离线模型已加载、稳态） | 1200 ms | 1806 ms | **+606 ms** |
+
+> 延迟构成：后置缓冲 **300 ms** + 离线转写 **195–229 ms** + 首次冷启动懒加载
+> **~580 ms**（与后置缓冲部分重叠）。稳态约 **+600 ms**，高于 task 目标 300 ms；
+> 若需要压到 ≤300 ms，可选：① 把 POST_ROLL_MS 降到 ~150 ms（需复测「罗」是否还
+> 在缓冲内）；② 首次唤醒预加载离线模型（代价：未唤醒时常驻 +233 MB）；③ 校验改用
+> 已在跑的流式识别结果（无需二次推理，但需重新验证近音拒绝率）。默认保守取
+> 300 ms 后置缓冲，优先保证不漏唤醒、近音零误报。
 
 ### 回声抑制（本次用户"一直被触发"的根因）
 
@@ -501,7 +553,7 @@ ASR 侧向 daemon 提供 4 个交互信号，都是 addtive、旧调用方不受
 ## 测试与工具
 
 ```bash
-node --test 'tests/asr/*.test.js'   # 93 个测试，约 30 s，不需要麦克风
+node --test 'tests/asr/*.test.js'   # 102 个测试，约 40 s，不需要麦克风
 node scripts/asr-selftest.mjs       # 冒烟：唤醒/转写/不误唤醒
 node scripts/asr-bench.mjs          # 验收指标（命中率/延迟/CER/误唤醒/内存）
 node scripts/asr-bench.mjs --live=120   # 追加真实麦克风监听 120 s

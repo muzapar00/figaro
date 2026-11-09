@@ -156,7 +156,9 @@ test('wake cooldown suppresses a KWS hit inside the configured window', async (t
   for (const [cooldown, expected] of [[5000, 1], [0, 2]]) {
     const { asr, events } = startModule({
       pcm,
-      asrOverrides: { wakeCaptureFallbackMs: 5000, wakeCooldownMs: cooldown, sensitivity: 'high' },
+      // cooldown semantics are tested independently of the (slower) two-stage
+      // wake verification; that has its own tests in wake-verify.test.js
+      asrOverrides: { wakeCaptureFallbackMs: 5000, wakeCooldownMs: cooldown, sensitivity: 'high', verifyWake: { enabled: false } },
     });
     await asr.start();
     try {

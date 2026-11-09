@@ -67,7 +67,10 @@ test('wake word followed by a command is transcribed without the wake word', asy
   if (!modelsAvailable()) { skipMessage(t); return; }
   const clip = loadFixture('wake-with-command');
   const pcm = concat([silence(300), clip.samples, silence(2200)]);
-  const { asr, events } = startModule(pcm);
+  // This test injects all audio instantly and only cares about capture/transcript;
+  // two-stage wake verification is covered in wake-verify.test.js (it would delay
+  // capture and lose the instantly-injected command audio).
+  const { asr, events } = startModule(pcm, { asr: { verifyWake: { enabled: false } } });
   try {
     await asr.start();
     await events.waitFor((e) => e.type === 'wake', 5000, 'onWake');

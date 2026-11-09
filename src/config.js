@@ -101,6 +101,12 @@ export const DEFAULTS = {
     // "Stand down": finish whatever is being said, then leave without waiting
     // for a follow-up.
     dismissPhrases: ['退下', '退下吧', '先退下', '你可以退下了', '可以退下了', '休息吧', '没事了', '结束吧', '关了'],
+    // Two-stage wake verification: after the keyword spotter fires, transcribe
+    // the buffer with the offline model and only wake if it really says the wake
+    // word. Measured: near-homophone false wakes 2/40 -> 0/40, but every wake
+    // costs ~+600ms (post-roll 300ms + inference ~200ms + first-use model load).
+    // Real human speech already produced 0 false wakes, so this is opt-in.
+    verifyWake: { enabled: false, timeoutMs: 1800 },
     // After a spoken reply the assistant stays on screen this long, waiting for
     // a follow-up. 0 disables the window. Only a voice above followUpMinRms for
     // followUpMinMs re-opens the conversation, so room noise cannot do it.

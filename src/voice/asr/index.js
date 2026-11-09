@@ -40,6 +40,7 @@ import { createParecSource } from './sources.js';
 import { createMicGainController } from './mic-gain.js';
 import { createWakeScoreTracker } from './wake-score.js';
 import { createBargeInDetector, normalizeBargeInConfig } from './barge-in.js';
+import { normalizeVerifyWakeConfig, matchWakeText, POST_ROLL_MS } from './wake-verify.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -138,6 +139,19 @@ export function createAsr(opts) {
   // English wake words for the bilingual zh-en KWS model (default until
   // src/config.js carries asr.wakeWordsEn).
   const wakeWordsEn = Array.isArray(asrCfg.wakeWordsEn) ? asrCfg.wakeWordsEn : ['figaro', 'hey figaro'];
+  // Two-stage wake verification (task-7): KWS hit -> offline paraformer confirm -> onWake.
+  let verifyWake = normalizeVerifyWakeConfig(asrCfg.verifyWake ?? {});
+  const verifyPostSamples = Math.round((SAMPLE_RATE * POST_ROLL_MS) / 1000);
+  let verifyPending = null;
+  const verifyStats = {
+    accepted: 0,
+    rejected: 0,
+    failOpen: 0,
+    selfTestAccepted: 0,
+    selfTestRejected: 0,
+    lastVerify: null,
+  };
+  let verifyFailWarned = false;
 
   let state = 'idle';
   let kws = null;
@@ -395,7 +409,8 @@ export function createAsr(opts) {
       t.hits += 1;
       const latencyMs = t.burstStart ? now - t.burstStart : 0;
       log(`唤醒测试命中：${hit.keyword}（score=${Math.max(score, t.maxScore).toFixed(2)}, ${latencyMs}ms）`);
-      safe(t.onHit, { score: Math.max(score, t.maxScore), latencyMs });
+      safe(t.onHit, { score: Math.max(score, t.maxScore), latencyMs, keyword: hit.keyword, lang: hit.lang });
+      if (verifyWake.enabled && !verifyPending) startWakeVerify(hit, { selfTest: true });
     }
   }
 
@@ -413,6 +428,7 @@ export function createAsr(opts) {
       falseAlarms: 0,
       maxScore: Math.round(t.maxScore * 100) / 100,
       ms: Date.now() - t.armedAt,
+      verify: t.verify ?? { accepted: 0, rejected: 0, failOpen: 0, last: null },
     };
     if (emit) safe(t.onEnd, result);
     log(`唤醒测试窗口结束：hits=${result.hits} maxScore=${result.maxScore}`);
@@ -599,6 +615,10 @@ export function createAsr(opts) {
         bargeDetector.setConfig(merged);
         applied.push(key);
         log(`[barge-in] 配置已热切换：${JSON.stringify(merged)}`);
+      } else if (key === 'verifyWake') {
+        verifyWake = normalizeVerifyWakeConfig(patch.verifyWake ?? {}, verifyWake);
+        applied.push(key);
+        log(`[wake-verify] 配置已热切换：${JSON.stringify(verifyWake)}`);
       } else if (key === 'wakeGiveUpMs') {
         const n = Number(patch.wakeGiveUpMs);
         wakeGiveUpMs = Number.isFinite(n) && n > 0 ? n : 5000;
@@ -633,6 +653,7 @@ export function createAsr(opts) {
       safe(onLevel, Math.max(0, Math.min(1, rms)));
     });
     pushPreRoll(samples);
+    if (verifyPending && !verifyPending.settled) appendVerifyAudio(samples);
     if (state === 'listening' && muted) {
       // Echo suppression (TTS playing): no wake word, no capture. The barge-in
       // detector is fed from the level windows above.
@@ -661,6 +682,10 @@ export function createAsr(opts) {
         const now = Date.now();
         if (now - lastWakeAt < wakeCooldownMs) {
           log(`唤醒冷却中（剩余 ${wakeCooldownMs - (now - lastWakeAt)}ms），忽略命中 ${hit.keyword}${hit.lang === 'en' ? ' (en)' : ''}`);
+        } else if (verifyPending) {
+          log(`[wake-verify] 校验进行中，忽略重复命中 ${hit.keyword}`);
+        } else if (verifyWake.enabled) {
+          startWakeVerify(hit);
         } else {
           lastWakeAt = now;
           handleWake(`kws:${hit.keyword}${hit.lang === 'en' ? '(en)' : ''}`);
@@ -738,6 +763,121 @@ export function createAsr(opts) {
       bargeDetector.disarm();
     }
     return muted;
+  }
+
+  // ------------------------------------------------------------------ wake verify
+  /**
+   * KWS hit -> wait for the rest of the wake word (post-roll), then transcribe
+   * the buffered pre-roll + post-roll with the offline paraformer. onWake only
+   * fires when the transcript contains the wake word. Errors/timeouts pass.
+   */
+  function startWakeVerify(hit, { selfTest = false } = {}) {
+    if (verifyPending) return null;
+    const pending = {
+      hit,
+      selfTest,
+      startedAt: Date.now(),
+      base: preRollPcm(),
+      post: [],
+      postSamples: 0,
+      settled: false,
+      text: '',
+      timer: null,
+    };
+    verifyPending = pending;
+    // Load the 233 MB offline model while we collect the post-roll (first wake
+    // only); it stays resident for capture finals afterwards.
+    void ensureOfflineModel();
+    pending.timer = setTimeout(() => {
+      finishVerifyTimeout(pending);
+    }, verifyWake.timeoutMs);
+    pending.timer.unref?.();
+    log(`[wake-verify] KWS 命中 ${hit.keyword}${hit.lang === 'en' ? '(en)' : ''}，收集 ${POST_ROLL_MS}ms 后校验…`);
+    if (verifyPostSamples <= 0) runWakeVerify(pending);
+    return pending;
+  }
+
+  function appendVerifyAudio(samples) {
+    const p = verifyPending;
+    if (!p || p.settled) return;
+    p.post.push(samples);
+    p.postSamples += samples.length;
+    if (p.postSamples >= verifyPostSamples) runWakeVerify(p);
+  }
+
+  function finishVerifyTimeout(p) {
+    if (!p || p.settled) return;
+    settleWakeVerify(p, { ok: true, failOpen: true, reason: 'timeout', text: p.text });
+  }
+
+  async function runWakeVerify(p) {
+    if (p.settled) return;
+    let text = '';
+    try {
+      const rec = await ensureOfflineModel();
+      if (!rec) throw new Error('offline ASR unavailable');
+      const pcm = new Float32Array(p.base.length + p.postSamples);
+      pcm.set(p.base, 0);
+      let off = p.base.length;
+      for (const chunk of p.post) { pcm.set(chunk, off); off += chunk.length; }
+      const t0 = Date.now();
+      text = await rec.transcribe(pcm);
+      p.text = text;
+      p.inferMs = Date.now() - t0;
+    } catch (err) {
+      if (!verifyFailWarned) {
+        verifyFailWarned = true;
+        log(`[wake-verify] 校验识别器不可用（${asError(err).message}），后续校验放行`);
+      }
+      settleWakeVerify(p, { ok: true, failOpen: true, reason: 'error', text, error: asError(err) });
+      return;
+    }
+    const match = matchWakeText(text, { lang: p.hit.lang });
+    settleWakeVerify(p, { ...match, text });
+  }
+
+  function settleWakeVerify(p, result) {
+    if (!p || p.settled) return;
+    p.settled = true;
+    if (p.timer) { clearTimeout(p.timer); p.timer = null; }
+    if (verifyPending === p) verifyPending = null;
+    const ms = Date.now() - p.startedAt;
+    const last = {
+      ms,
+      ok: Boolean(result.ok),
+      failOpen: Boolean(result.failOpen),
+      reason: result.reason,
+      text: result.text ?? '',
+      keyword: p.hit.keyword,
+      lang: p.hit.lang,
+      inferMs: p.inferMs ?? null,
+      at: Date.now(),
+    };
+    verifyStats.lastVerify = last;
+    if (p.selfTest) {
+      if (result.ok) verifyStats.selfTestAccepted += 1;
+      else verifyStats.selfTestRejected += 1;
+      if (wakeTest) {
+        wakeTest.verify = wakeTest.verify ?? { accepted: 0, rejected: 0, failOpen: 0, last: null };
+        if (result.ok) wakeTest.verify.accepted += 1;
+        else wakeTest.verify.rejected += 1;
+        if (result.failOpen) wakeTest.verify.failOpen += 1;
+        wakeTest.verify.last = last;
+      }
+      log(`[wake-verify] 自测校验 ${result.ok ? '通过' : '拒绝'}（${ms}ms, ${result.reason}, "${last.text}"）`);
+      return;
+    }
+    if (result.ok) {
+      if (result.failOpen) verifyStats.failOpen += 1;
+      else verifyStats.accepted += 1;
+      const kw = p.hit.keyword;
+      log(`[wake-verify] 通过（${ms}ms, ${result.reason}${result.failOpen ? ', fail-open' : ''}, "${last.text}"）`);
+      lastWakeAt = Date.now();
+      handleWake(`kws:${kw}${p.hit.lang === 'en' ? '(en)' : ''}${result.ok && !result.failOpen ? '' : ':unverified'}`);
+    } else {
+      verifyStats.rejected += 1;
+      log(`[wake-verify] 拒绝近音命中 ${p.hit.keyword}（${ms}ms, "${last.text}"），继续监听（不进冷却）`);
+    }
   }
 
   function handleWake(origin) {
@@ -851,6 +991,11 @@ export function createAsr(opts) {
     if (wakeTest) { clearTimeout(wakeTest.timer); wakeTest = null; }
     if (micTest) { clearTimeout(micTest.timer); micTest = null; }
     if (asrTest) { clearTimeout(asrTest.timer); asrTest = null; }
+    if (verifyPending) {
+      if (verifyPending.timer) clearTimeout(verifyPending.timer);
+      verifyPending.settled = true;
+      verifyPending = null;
+    }
     if (finalizePromise) { try { await finalizePromise; } catch { /* ignore */ } }
     if (hotkeyInst) {
       try { await hotkeyInst.stop(); } catch { /* ignore */ }
@@ -1080,6 +1225,7 @@ export function createAsr(opts) {
     setWakeCooldownMs: (ms) => applyRuntimeConfig({ wakeCooldownMs: ms }),
     setWakeGiveUpMs: (ms) => applyRuntimeConfig({ wakeGiveUpMs: ms }),
     setBargeIn: (patch) => applyRuntimeConfig({ bargeIn: patch }),
+    setVerifyWake: (patch) => applyRuntimeConfig({ verifyWake: patch }),
     setInputGainPercent: (value) => setInputGainPercent(value),
     get sensitivity() {
       return sensitivity;
@@ -1092,6 +1238,19 @@ export function createAsr(opts) {
     },
     get bargeIn() {
       return bargeDetector.config;
+    },
+    get verifyWake() {
+      return { ...verifyWake };
+    },
+    get verifyStats() {
+      return {
+        accepted: verifyStats.accepted,
+        rejected: verifyStats.rejected,
+        failOpen: verifyStats.failOpen,
+        selfTestAccepted: verifyStats.selfTestAccepted,
+        selfTestRejected: verifyStats.selfTestRejected,
+        lastVerify: verifyStats.lastVerify,
+      };
     },
     get inputGainPercent() {
       return inputGainSetting;
@@ -1133,6 +1292,16 @@ export function createAsr(opts) {
         kwsParams: sensitivityPreset(sensitivity),
         wakeCooldownMs,
         wakeGiveUpMs,
+        verifyWake: { ...verifyWake },
+        verifyStats: {
+          accepted: verifyStats.accepted,
+          rejected: verifyStats.rejected,
+          failOpen: verifyStats.failOpen,
+          selfTestAccepted: verifyStats.selfTestAccepted,
+          selfTestRejected: verifyStats.selfTestRejected,
+          lastVerify: verifyStats.lastVerify,
+        },
+        verifyPending: Boolean(verifyPending),
         bargeIn: bargeDetector.config,
         bargeInStats: {
           active: bargeDetector.active,
