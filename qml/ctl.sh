@@ -11,6 +11,8 @@ log="/tmp/figaro-ui.log"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export PATH="$HOME/.local/bin:$PATH"
+# Forward a dev socket to the overlay when the caller set one.
+export FIGARO_SOCKET="${FIGARO_SOCKET:-}"
 
 stop() {
   if [[ -f "$pidfile" ]]; then

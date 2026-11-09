@@ -10,7 +10,7 @@ import path from 'node:path';
 const socketFlag = process.argv.slice(2).find((a) => a.startsWith('--socket='));
 const socketArg = socketFlag ? socketFlag.slice('--socket='.length) : null;
 const socketPath =
-  socketArg || path.join(process.env.XDG_RUNTIME_DIR || '/tmp', 'figaro', 'sock');
+  socketArg || path.join(process.env.XDG_RUNTIME_DIR || '/tmp', 'figaro-ui-test', 'sock');
 
 fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
 try {

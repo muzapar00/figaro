@@ -1,0 +1,24 @@
+[Unit]
+Description=Figaro assistant overlay (Quickshell, Siri-style orb)
+Documentation=https://github.com/figaro
+PartOf=graphical-session.target
+After=graphical-session.target plasma-kwin_wayland.service
+# The overlay only shows a layer-shell surface; it must not start before the
+# compositor has a Wayland socket, or qs aborts on "could not connect to display".
+After=plasma-kwin_wayland.service
+
+[Service]
+Type=simple
+# The installed config directory is rsync'd on every deploy; a watcher can catch
+# a half-written QML file and crash the shell. Deploys restart the unit instead.
+Environment=QS_DISABLE_FILE_WATCHER=1
+# 52 threads let glibc open many malloc arenas; each keeps its own freed memory
+# instead of returning it, inflating RSS. Cap the arenas.
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/home/mzpr00/.local/bin/qs --no-duplicate -c figaro
+Restart=on-failure
+RestartSec=2
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

@@ -9,7 +9,11 @@ import Quickshell.Io
 Singleton {
     id: root
 
-    readonly property string socketPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/figaro/sock"
+    // FIGARO_SOCKET lets a development harness point the overlay at a fake
+    // daemon. Never share the production socket path with test tooling: two
+    // daemons on one path silently disconnect each other's clients.
+    readonly property string socketPath: Quickshell.env("FIGARO_SOCKET")
+        || ((Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/figaro/sock")
 
     property bool connected: false
     property string state: "idle"   // idle | listening | thinking | speaking

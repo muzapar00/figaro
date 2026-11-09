@@ -124,7 +124,7 @@ export function createTts({
 | `{type:"cancel"}` | — | 打断当前思考/说话 |
 | `{type:"wake"}` | — | 等价唤醒（UI 点击麦克风） |
 | `{type:"listen_begin"}` / `{type:"listen_end"}` | — | 手动按住说话 |
-| `{type:"subscribe"}` | — | 之后收所有事件（UI 必须发一次） |
+| `{type:"subscribe"}` | — | 之后收所有事件（UI 必须发一次）。**daemon 必须立即回一帧当前 `state`**（若有 partial / 正在跑的工具也一并 replay），否则中途连入的 UI 会停在 idle |
 | `{type:"ping"}` | — | 健康检查 |
 
 **daemon → 客户端**
@@ -140,6 +140,11 @@ export function createTts({
 | `{type:"pong"}` | — | 心跳回包 |
 
 `ask` 可以先回 `{type:"ack", requestId}`（可选，UI 不要依赖）。
+
+实现事实（验收时确认）：
+- 取消/打断时 daemon 不发 `reply`，直接回 `idle`；新 `ask` 会 abort 旧 turn。
+- `level` 不 replay（下一秒就有新值，UI 不要依赖）。
+- 音频链路：ASR/TTS 任一模块缺失时 daemon 只 warn 降级，纯文本 `ask` 仍可用。
 
 ## 4. 系统集成（Lead + A 共同）
 

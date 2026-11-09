@@ -9,12 +9,14 @@ pidfile="/tmp/figaro-fake.pid"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+# Test daemons must never bind the production socket.
+export FIGARO_SOCKET="${FIGARO_SOCKET:-$XDG_RUNTIME_DIR/figaro-ui-test/sock}"
 
 # Ask any live instance to shut down before replacing it, so a stale process
 # cannot unlink the new instance's socket file on its way out.
 node -e '
 const net = require("node:net");
-const p = process.env.XDG_RUNTIME_DIR + "/figaro/sock";
+const p = process.env.FIGARO_SOCKET;
 const s = net.createConnection(p);
 s.on("connect", () => { s.write(JSON.stringify({ type: "quit" }) + "\n"); setTimeout(() => { s.end(); process.exit(0); }, 120); });
 s.on("error", () => process.exit(0));
@@ -31,7 +33,7 @@ if [[ "$state" == "off" ]]; then
   exit 0
 fi
 
-setsid nohup node "$here/fake-daemon.mjs" --state "$state" >/tmp/figaro-fake.log 2>&1 </dev/null &
+setsid nohup node "$here/fake-daemon.mjs" --socket="$FIGARO_SOCKET" --state "$state" >/tmp/figaro-fake.log 2>&1 </dev/null &
 echo $! >"$pidfile"
 sleep 0.6
 echo "fake daemon: $(cat /tmp/figaro-fake.log | head -2 | tr '\n' ' ')"
