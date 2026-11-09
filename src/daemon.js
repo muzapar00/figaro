@@ -656,6 +656,10 @@ export function createDaemon(options = {}) {
   /** ASR module reports the user talked while Figaro is speaking (barge-in). */
   function handleAsrUserSpeech() {
     if (settings?.isAnyTestActive()) return;
+    // Loudness-gated barge-in is a user preference: when it is off, nothing but
+    // an explicit cancel may cut a reply short. The ASR module applies its own
+    // threshold on top of this.
+    if (config.asr?.bargeIn?.enabled === false) return;
     if (state === 'waking') {
       log.info('user spoke during ack -> stop ack, listening');
       finishWakeFlow('speech');

@@ -105,7 +105,7 @@ Item {
         const r = orb.ballRadius * scale;
         // Capped on purpose: the silhouette should breathe, not turn into
         // an egg. The visible bounce comes from the scale, not from wobble.
-        const amp = 0.16 + Math.min(0.55, env * 0.55);
+        const amp = 0.14 + Math.min(0.40, env * 0.40);
 
         ctx.reset();
         ctx.clearRect(0, 0, w, h);

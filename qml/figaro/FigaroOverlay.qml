@@ -123,44 +123,25 @@ PanelWindow {
             }
         ]
 
-        FigaroOrb {
-            id: orb
+        // One assembly that morphs: a ball while it listens, a pill while it
+        // answers (ball on the left, reply on the right).
+        FigaroCapsule {
+            id: shell
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: parent.top
             anchors.topMargin: 2
-            diameter: 128
             state: FigaroIpc.visualState
             level: FigaroIpc.level
-
-            MouseArea {
-                anchors.fill: parent
-                // One button, two meanings, like Siri's orb: tap while idle to
-                // start listening, tap while busy to make it stop.
-                onClicked: {
-                    if (FigaroIpc.state === "idle") FigaroIpc.send({ type: "wake" });
-                    else FigaroIpc.cancel();
-                }
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-            }
-        }
-
-        // The caption hangs off the ball: the neck starts where the ball's glow
-        // fades, so the two are visually one object.
-        FigaroCaption {
-            id: caption
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.top: orb.top
-            anchors.topMargin: orb.haloPadding + orb.diameter - 2
-            text: FigaroIpc.partial
-            state: FigaroIpc.visualState
-            level: FigaroIpc.level
+            // The user asked for text only in the answering shape; while
+            // listening the pill is just a ball.
+            text: (FigaroIpc.visualState === "speaking" || FigaroIpc.visualState === "thinking")
+                ? FigaroIpc.partial : ""
         }
     }
 
-    // Only the ball is clickable.
+    // Only the assembly is clickable (ball, or the whole pill once it exists).
     mask: Region {
-        item: orb
-        shape: RegionShape.Ellipse
+        item: shell.hitItem
+        shape: RegionShape.Rect
     }
 }
