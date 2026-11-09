@@ -60,7 +60,9 @@ PanelWindow {
 
     Timer {
         id: hideTimer
-        interval: 220
+        // Long enough for the pill to retract into a ball before the window
+        // disappears, so the turn ends with a closing gesture rather than a cut.
+        interval: 340
         onTriggered: win.shown = false
     }
 

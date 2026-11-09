@@ -73,6 +73,26 @@ Item {
 
     readonly property color tint: FigaroStyle.colorFor(visualState)
 
+    // Jelly impulse: when the pill starts stretching, the body squashes for a
+    // moment and springs back. One value, driven by a short spring, so the ball
+    // and the pill squash together instead of each doing its own thing.
+    property real jelly: 0
+    onMorphChanged: jellyAnim.restart()
+    SequentialAnimation {
+        id: jellyAnim
+        running: false
+        NumberAnimation {
+            target: shell; property: "jelly"; to: 1
+            duration: 120; easing.type: Easing.OutCubic
+        }
+        NumberAnimation {
+            target: shell; property: "jelly"; to: 0
+            duration: 260; easing.type: Easing.OutCubic
+        }
+    }
+    readonly property real jellyScaleX: 1 + jelly * 0.035
+    readonly property real jellyScaleY: 1 - jelly * 0.045
+
     implicitWidth: 760
     implicitHeight: 240
 
@@ -101,6 +121,12 @@ Item {
     Rectangle {
         id: capsule
         anchors.centerIn: parent
+        transform: Scale {
+            origin.x: capsule.width / 2
+            origin.y: capsule.height / 2
+            xScale: shell.reduce ? 1 : shell.jellyScaleX
+            yScale: shell.reduce ? 1 : shell.jellyScaleY
+        }
         width: shell.capsuleW
         height: shell.capsuleH
         radius: height / 2
@@ -118,6 +144,10 @@ Item {
     FigaroOrb {
         id: ball
         diameter: shell.ballDiameter
+        // The ball is being pulled by the pill, so it follows a slightly softer
+        // spring: it lags a few frames behind, which reads as weight.
+        Behavior on x { SpringAnimation { spring: 2.5; damping: 0.40; mass: 1.0 } }
+        Behavior on y { SpringAnimation { spring: 2.5; damping: 0.40; mass: 1.0 } }
         state: shell.visualState
         level: shell.level
 
@@ -146,6 +176,10 @@ Item {
         opacity: Math.min(1, shell.morphProgress * 1.2)
         horizontalAlignment: Text.AlignLeft
         Behavior on opacity { NumberAnimation { duration: FigaroStyle.textFadeMs; easing.type: Easing.OutCubic } }
+        Behavior on y { NumberAnimation { duration: FigaroStyle.textSlideMs; easing.type: Easing.OutCubic } }
+        // A 3 px rise while fading in: enough to feel intentional, small enough
+        // that it never moves text the eye is already reading.
+        transform: Translate { y: (1 - Math.min(1, shell.morphProgress)) * 3 }
     }
 
     // Click target: the ball, or the whole pill once it exists. Exposed so the

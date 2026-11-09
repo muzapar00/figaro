@@ -115,7 +115,7 @@ Item {
         const r = orb.ballRadius * scale;
         // Capped on purpose: the silhouette should breathe, not turn into
         // an egg. The visible bounce comes from the scale, not from wobble.
-        const amp = orb.reduce ? 0.0 : 0.14 + Math.min(0.40, env * 0.40);
+        const amp = orb.reduce ? 0.0 : 0.12 + Math.min(0.30, env * 0.32);
 
         ctx.reset();
         ctx.clearRect(0, 0, w, h);
@@ -124,7 +124,7 @@ Item {
         // large radial gradient on the software rasteriser (the halo covers
         // ~10x the ball's area, and it is the single most expensive fill in the
         // frame). Eight steps are enough for a soft falloff at this size.
-        const glowSteps = 8;
+        const glowSteps = 12;
         for (let i = glowSteps; i >= 1; i--) {
             const f = i / glowSteps;
             const a = (0.20 + env * 0.26) * Math.pow(1 - f, 1.7);
@@ -223,7 +223,7 @@ Item {
             const m = orb.speakMix;
             for (const p of orb.pulses) {
                 const life = Math.min(1, p.age / 0.85);
-                ctx.strokeStyle = orb.rgba(0.90, 0.66, 1.0, (1 - life) * 0.75 * m);
+                ctx.strokeStyle = orb.rgba(body.r, body.g, body.b, (1 - life) * 0.85 * m);
                 ctx.lineWidth = 2.8;
                 ctx.beginPath();
                 ctx.arc(cx, cy, r * (1.08 + life * 0.70), 0, Math.PI * 2);
