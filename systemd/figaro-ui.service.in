@@ -21,7 +21,7 @@ Environment=MALLOC_ARENA_MAX=2
 # 60 fps animations instead of 30, and single-digit CPU instead of ~54%.
 # Kos.SurfaceShape (KOS's compositor-glass plugin) lives in the KOS config dir.
 Environment=QML2_IMPORT_PATH=%h/.config/quickshell/kos
-ExecStart=/home/mzpr00/.local/bin/qs --no-duplicate -c figaro
+ExecStart=@QS@ --no-duplicate -c figaro
 Restart=on-failure
 RestartSec=2
 KillMode=process

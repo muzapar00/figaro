@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 const require = createRequire(new URL('../../', import.meta.url));
-const sherpa = require('/home/mzpr00/Projects/figaro/node_modules/sherpa-onnx-node/sherpa-onnx.js');
+const sherpa = require('sherpa-onnx-node');
 
 const recognizer = new sherpa.OfflineRecognizer({
   featConfig: { sampleRate: 16000, featureDim: 80 },

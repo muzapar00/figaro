@@ -8,9 +8,24 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 qs_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/figaro"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-node="${FIGARO_NODE:-/usr/bin/node}"
+node="${FIGARO_NODE:-$(command -v node || echo /usr/bin/node)}"
+node_bin_dir="$(dirname "$node")"
+qs="${FIGARO_QS:-$(command -v qs || echo "$HOME/.local/bin/qs")}"
 
-echo "== figaro: installing from $repo (node: $node)"
+# The systemd units and the desktop entry are templates: they carry @REPO@,
+# @NODE@, @QS@, @HOME@ and @NODE_BIN_DIR@ so a checkout can live anywhere and
+# the units are generated at install time instead of pointing at one machine.
+render() {
+  local src="$1" dst="$2"
+  sed -e "s|@REPO@|$repo|g" \
+      -e "s|@NODE@|$node|g" \
+      -e "s|@NODE_BIN_DIR@|$node_bin_dir|g" \
+      -e "s|@QS@|$qs|g" \
+      -e "s|@HOME@|$HOME|g" \
+      "$src" > "$dst"
+}
+
+echo "== figaro: installing from $repo (node: $node, qs: $qs)"
 
 if [[ ! -f "$HOME/.config/figaro/config.json" ]]; then
   echo "!! ~/.config/figaro/config.json is missing." >&2
@@ -31,9 +46,10 @@ if [[ -d "$repo/settings" ]]; then
   echo "== settings app -> $qs_cfg-settings"
   mkdir -p "${qs_cfg}-settings"
   rsync -a --delete "$repo/settings/" "${qs_cfg}-settings/" --exclude test --exclude '*.sh'
-  if [[ -f "$repo/systemd/figaro-settings.desktop" ]]; then
+  if [[ -f "$repo/systemd/figaro-settings.desktop.in" ]]; then
     mkdir -p "$HOME/.local/share/applications"
-    install -Dm644 "$repo/systemd/figaro-settings.desktop" "$HOME/.local/share/applications/figaro-settings.desktop"
+    render "$repo/systemd/figaro-settings.desktop.in" "$HOME/.local/share/applications/figaro-settings.desktop"
+    chmod 644 "$HOME/.local/share/applications/figaro-settings.desktop"
     echo "   desktop entry installed"
 
     # The brand icon is the assistant's speaking orb, rendered from the real
@@ -56,8 +72,8 @@ fi
 
 echo "== systemd units"
 mkdir -p "$unit_dir"
-ln -sfn "$repo/systemd/figaro.service" "$unit_dir/figaro.service"
-ln -sfn "$repo/systemd/figaro-ui.service" "$unit_dir/figaro-ui.service"
+render "$repo/systemd/figaro.service.in" "$unit_dir/figaro.service"
+render "$repo/systemd/figaro-ui.service.in" "$unit_dir/figaro-ui.service"
 systemctl --user daemon-reload
 systemctl --user enable --now figaro.service
 systemctl --user enable --now figaro-ui.service

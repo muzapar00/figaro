@@ -193,7 +193,7 @@ GUI（`qs -c figaro-settings`）与诊断脚本通过同一 socket 使用以下�
 
 ## 6. 从本机 dsh 源码搬用的材料（A 必读）
 
-dsh 安装位置：`/home/mzpr00/node-v24.22.2-linux-x64/lib/node_modules/@deepseek-ai/dsh/`
+dsh 安装位置（本机示意）：`$(npm root -g)/@deepseek-ai/dsh/`
 （其 `node_modules/@deepseek-ai/` 下是各插件包）。
 
 | 要搬的东西 | 位置 |

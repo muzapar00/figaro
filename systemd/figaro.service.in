@@ -1,0 +1,23 @@
+[Unit]
+Description=Figaro voice assistant daemon (DeepSeek brain + local voice IO)
+Documentation=file://@REPO@/docs/ipc.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @REPO@/bin/figaro daemon
+WorkingDirectory=@REPO@
+Environment=HOME=@HOME@
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PATH=@NODE_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+# A missing or broken voice module degrades to text; it is not a crash loop.
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+SyslogIdentifier=figaro
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
