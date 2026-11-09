@@ -1,0 +1,4 @@
+module qs.figaro
+singleton FigaroIpc 1.0 FigaroIpc.qml
+FigaroOrb 1.0 FigaroOrb.qml
+FigaroOverlay 1.0 FigaroOverlay.qml
