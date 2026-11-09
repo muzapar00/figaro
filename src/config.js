@@ -48,6 +48,14 @@ export const DEFAULTS = {
     // When > 0, the ASR waits this long for the daemon to start capture after a
     // wake (the daemon plays its acknowledgement first), then starts it anyway.
     wakeCaptureFallbackMs: 0,
+    // How hard the wake word has to match. "low" trades a little hit rate for
+    // far fewer false wakes; the user was being woken by ordinary conversation.
+    sensitivity: 'low',
+    // Minimum gap between two wakes, so a burst of similar sounds cannot
+    // trigger the assistant repeatedly.
+    wakeCooldownMs: 2500,
+    // null = let the module calibrate the ALSA capture gain; a number pins it.
+    inputGainPercent: null,
     longPressMs: 260,
   },
   tts: {
