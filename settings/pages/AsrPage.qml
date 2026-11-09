@@ -186,6 +186,10 @@ MPageScroll {
     MCard {
         title: "录音 → 转写"
         subtitle: "test.asr.start：过程中推流式 partial，结束后返回两个模型的最终结果"
+        // This card stacks three separate blocks (partial list, two result
+        // panels, the metrics row). MCard defaults to zero spacing for grouped
+        // rows, so without this they visually fuse into one dark slab.
+        contentSpacing: 14
 
         Rectangle {
             visible: !page.asrSupported

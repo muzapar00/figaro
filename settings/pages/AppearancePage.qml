@@ -146,6 +146,7 @@ MPageScroll {
     MCard {
         title: "形状"
         subtitle: "ui.shape · 决定费加罗倾听/回答时显示成什么"
+        contentSpacing: 14
 
         RowLayout {
             Layout.fillWidth: true

@@ -330,6 +330,7 @@ MPageScroll {
         visible: page.step < page.totalSteps
         title: page.step < page.totalSteps ? "第 " + (page.step + 1) + " 步 · " + page.stepTitles[page.step] : ""
         subtitle: page.step < page.totalSteps ? page.stepHints[page.step] : ""
+        contentSpacing: 14
 
         RowLayout {
             Layout.fillWidth: true
@@ -546,6 +547,7 @@ MPageScroll {
     MCard {
         visible: page.step >= page.totalSteps
         title: page.allPassed ? "全部通过 ✓" : "引导结束"
+        contentSpacing: 14
 
         ColumnLayout {
             Layout.fillWidth: true

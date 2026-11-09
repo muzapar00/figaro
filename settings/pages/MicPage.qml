@@ -251,6 +251,7 @@ MPageScroll {
     MCard {
         title: "实时电平"
         subtitle: "test.mic.start 的 20Hz rms/peak 流 · 削波时增益过高"
+        contentSpacing: 14
 
         Rectangle {
             visible: !page.micSupported

@@ -263,6 +263,7 @@ MPageScroll {
     MCard {
         title: "音色试听"
         subtitle: "test.tts：走和回复相同的 TTS 链路与输出设备，测首字延迟"
+        contentSpacing: 14
 
         Rectangle {
             visible: !page.ttsSupported

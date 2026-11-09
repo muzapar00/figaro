@@ -544,6 +544,7 @@ MPageScroll {
     MCard {
         title: "唤醒词（中英双语）"
         subtitle: "模型 sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 · 中文拼音与英文音素同时监听"
+        contentSpacing: 14
             + " · 默认灵敏度 low 实测中文 8/8、英文 20/20"
 
         Text {
@@ -642,6 +643,7 @@ MPageScroll {
     MCard {
         title: "唤醒测试"
         subtitle: "说 3~5 次「费加罗」，观察实时 KWS 分数、命中次数与延迟"
+        contentSpacing: 14
 
         Rectangle {
             visible: Ipc.unsupported("test.wake.arm")
@@ -776,6 +778,7 @@ MPageScroll {
     MCard {
         title: "环境音抑制测试"
         subtitle: "播放音乐/背景噪音，统计误唤醒次数——任何命中都算误触发"
+        contentSpacing: 14
 
         RowLayout {
             Layout.fillWidth: true
