@@ -168,7 +168,7 @@ test('wake → ack plays → only then beginCapture(), ending in listening', asy
   await waitFor(() => daemon.voice.asr && daemon.voice.tts, { label: 'voice modules' });
 
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack speaking state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack waking state' });
   assert.equal(record.plays, 1, 'ack was played once');
   assert.equal(asr.record.begin, 0, 'capture must not start while the ack plays');
 
@@ -191,7 +191,7 @@ test('ack unavailable (play returns null) degrades to immediate capture', async 
   client.send({ type: 'wake' });
   await waitFor(() => asr.record.begin === 1, { label: 'immediate capture' });
   await waitFor(() => states(messages).at(-1) === 'listening', { label: 'listening state' });
-  assert.ok(!states(messages).includes('speaking'), 'no ack, no speaking state');
+  assert.ok(!states(messages).includes('waking'), 'no ack, no waking state');
 });
 
 test('ack that never starts falls back to capture after tts.ack.timeoutMs', async (t) => {
@@ -206,7 +206,7 @@ test('ack that never starts falls back to capture after tts.ack.timeoutMs', asyn
     ackTimeoutMs: 80,
   });
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack playing state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack playing state' });
   await waitFor(() => asr.record.begin === 1, { label: 'timeout fallback capture', timeoutMs: 3000 });
   await waitFor(() => states(messages).at(-1) === 'listening', { label: 'listening after timeout' });
   assert.ok(record.stops >= 1, 'stuck ack was stopped');
@@ -225,7 +225,7 @@ test('echo of the ack ("我在现在几点了") is stripped before the turn', as
   });
   await waitFor(() => daemon.voice.asr && daemon.voice.tts, { label: 'voice modules' });
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack state' });
   await ack.startSettled();
   ack.finish({ ok: true, phrase: '我在', durationMs: 400 });
   await waitFor(() => asr.record.begin === 1, { label: 'capture after ack' });
@@ -249,7 +249,7 @@ test('a transcript that is only the ack echo is discarded and listening re-arms'
   });
   await waitFor(() => daemon.voice.asr && daemon.voice.tts, { label: 'voice modules' });
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack state' });
   await ack.startSettled();
   ack.finish({ ok: true, phrase: '我在', durationMs: 400 });
   await waitFor(() => asr.record.begin === 1, { label: 'capture after ack' });
@@ -275,7 +275,7 @@ test('speech captured while the ack is still playing is processed after it ends'
   });
   await waitFor(() => daemon.voice.asr && daemon.voice.tts, { label: 'voice modules' });
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack state' });
   asr.record.callbacks.onFinal('现在几点了'); // captured during the ack (fallback path)
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(texts, [], 'turn waits for the ack to finish');
@@ -298,7 +298,7 @@ test('cancel during the ack stops it and returns to idle', async (t) => {
     agentFactory: makeFakeAgent([]),
   });
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack state' });
   client.send({ type: 'cancel' });
   await waitFor(() => states(messages).at(-1) === 'idle', { label: 'idle after cancel' });
   assert.ok(record.stops >= 1, 'ack playback was stopped');
@@ -319,7 +319,7 @@ test('without a TTS module there is no ack: wake goes straight to capture', asyn
   client.send({ type: 'wake' });
   await waitFor(() => asr.record.begin === 1, { label: 'capture without tts' });
   await waitFor(() => states(messages).at(-1) === 'listening', { label: 'listening without tts' });
-  assert.ok(!states(messages).includes('speaking'));
+  assert.ok(!states(messages).includes('waking'));
 
   // ping reports the ack as not usable
   client.send({ type: 'ping' });
@@ -359,7 +359,7 @@ test('an explicit cancel is not undone by the empty final of the interrupted cap
   });
   await waitFor(() => daemon.voice.asr && daemon.voice.tts, { label: 'voice modules' });
   client.send({ type: 'wake' });
-  await waitFor(() => states(messages).includes('speaking'), { label: 'ack state' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack state' });
   await ack.startSettled();
   ack.finish({ ok: true, phrase: '我在', durationMs: 400 });
   await waitFor(() => asr.record.begin === 1, { label: 'capture after ack' });

@@ -15,7 +15,7 @@ import { createAgent } from './agent/index.js';
 import { createWakeAck, DEFAULT_PHRASES } from './agent/wake-ack.js';
 import { createSettingsService, SETTINGS_MESSAGE_TYPES } from './agent/settings.js';
 
-export const STATES = Object.freeze(['idle', 'listening', 'thinking', 'speaking']);
+export const STATES = Object.freeze(['idle', 'waking', 'listening', 'finalizing', 'thinking', 'speaking']);
 
 const ASR_MODULE = new URL('./voice/asr/index.js', import.meta.url).href;
 const TTS_MODULE = new URL('./voice/tts/index.js', import.meta.url).href;
@@ -27,6 +27,12 @@ const VOICE_RETRY_COOLDOWN_MS = 15_000;
 const WAKE_CAPTURE_FALLBACK_MS = 1_500;
 // How long after an ack finishes its echo may still be in a transcript (pre-roll).
 const ACK_ECHO_WINDOW_MS = 3_000;
+// Siri-style defaults for the wake/cancel state machine (docs/voice-interaction.md).
+const DEFAULT_WAKE_GIVE_UP_MS = 5_000;
+const DEFAULT_CANCEL_PHRASES = Object.freeze(['取消', '算了', '别说了', '停下', '停止', '不用了', '退出']);
+// Extra characters tolerated after a cancel phrase ("取消吧" / "算了。") without
+// turning a normal command into a cancel.
+const CANCEL_TRAILING_CHARS = new Set(['吧', '啊', '呀', '哦', '呢', '了', '嘛', '呗', '！', '。', '，', '、', '？', '?', '!', '.', '~']);
 // Exit code used for `service.restart`: non-zero so systemd's Restart=on-failure
 // brings the daemon back after a GUI-triggered restart.
 const RESTART_EXIT_CODE = 75;
@@ -150,6 +156,16 @@ export function createDaemon(options = {}) {
   const wakeCaptureFallbackMs = Number.isFinite(Number(config.asr?.wakeCaptureFallbackMs))
     ? Math.max(0, Number(config.asr.wakeCaptureFallbackMs))
     : WAKE_CAPTURE_FALLBACK_MS;
+  const wakeGiveUpMs = Number.isFinite(Number(config.asr?.wakeGiveUpMs)) && Number(config.asr.wakeGiveUpMs) > 0
+    ? Number(config.asr.wakeGiveUpMs)
+    : DEFAULT_WAKE_GIVE_UP_MS;
+  const followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
+    ? Number(config.interaction.followUpWindowMs)
+    : 0;
+  const cancelPhrases = (Array.isArray(config.interaction?.cancelPhrases) && config.interaction.cancelPhrases.length > 0
+    ? config.interaction.cancelPhrases
+    : DEFAULT_CANCEL_PHRASES
+  ).map((phrase) => String(phrase ?? '').trim()).filter((phrase) => phrase.length > 0);
 
   const socketPath = config.ui?.socket;
   if (!socketPath) throw new Error('config.ui.socket is required');
@@ -181,6 +197,13 @@ export function createDaemon(options = {}) {
   let lastCancelAt = 0; // suppresses echo re-listen after an explicit cancel
   let wakeMuted = false; // wake-word listening paused while TTS/ack audio plays
   let wakeMuteSupported = null; // null = not probed yet
+  let giveUpTimer = null; // listening -> silent idle when the user says nothing
+  let giveUpAt = 0; // absolute deadline for the current listening window
+  let followUpTimer = null; // optional "keep listening after a reply" window
+  let followUpActive = false;
+  // True while a wake is taking over the state machine: suppresses the transient
+  // idle state that TTS.stop() would otherwise emit between speaking and waking.
+  let wakeFlowPending = false;
   const recentErrors = []; // ring buffer for diagnostics.recentErrors
 
   const emit = (message) => {
@@ -401,6 +424,117 @@ export function createDaemon(options = {}) {
     }
   }
 
+  // ------------------------------------------------ interaction state helpers
+
+  function clearGiveUpTimer() {
+    if (giveUpTimer) {
+      clearTimeout(giveUpTimer);
+      giveUpTimer = null;
+    }
+  }
+
+  function clearFollowUpTimer() {
+    if (followUpTimer) {
+      clearTimeout(followUpTimer);
+      followUpTimer = null;
+    }
+  }
+
+  /** User made a sound: no give-up while they are talking, but keep the deadline. */
+  function noteUserSpeech() {
+    if (giveUpTimer) {
+      clearTimeout(giveUpTimer);
+      giveUpTimer = null;
+    }
+  }
+
+  function armGiveUpTimer(ms, reason = 'wake') {
+    clearGiveUpTimer();
+    const budget = Math.max(50, Number(ms) || DEFAULT_WAKE_GIVE_UP_MS);
+    giveUpAt = Date.now() + budget;
+    giveUpTimer = setTimeout(() => {
+      giveUpTimer = null;
+      if (state !== 'listening' || current !== null) return;
+      log.info(`listening: no speech within ${budget}ms (${reason}) -> idle silently`);
+      settleTurn('give-up');
+    }, budget);
+    giveUpTimer.unref?.();
+  }
+
+  /** Does a transcript mean "stop"? (取消/算了/别说了/...) */
+  function isCancelPhrase(text) {
+    const normalize = (value) => String(value ?? '').replace(/[\s，。！？、,.!?~～…—\-]/g, '').toLowerCase();
+    const normalized = normalize(text);
+    if (normalized.length === 0) return false;
+    for (const phrase of cancelPhrases) {
+      const target = normalize(phrase);
+      if (target.length === 0) continue;
+      if (normalized === target) return true;
+      if (normalized.startsWith(target)) {
+        const rest = normalized.slice(target.length);
+        if ([...rest].every((ch) => CANCEL_TRAILING_CHARS.has(ch))) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Unified end-of-turn cleanup (docs/voice-interaction.md §"硬要求"):
+   * silence everything, clear interaction timers, restore the wake word, go idle.
+   * Every exit path (cancel/error/timeout/give-up/normal) ends here.
+   */
+  function settleTurn(reason) {
+    wakeFlowPending = false;
+    clearGiveUpTimer();
+    clearFollowUpTimer();
+    followUpActive = false;
+    giveUpAt = 0;
+    if (ackActive) {
+      const playback = ackActive;
+      ackActive = null;
+      try {
+        playback.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+    setWakeMuted(false);
+    if (voice.tts && ttsSpeaking) {
+      try {
+        voice.tts.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+    ttsSpeaking = false;
+    if (state !== 'idle') setState('idle');
+    if (reason) log.info(`turn settled (${reason}) -> idle`);
+  }
+
+  /** Cancel everything now: abort the LLM, stop audio/capture/ack, go idle. */
+  function cancelTurn(reason) {
+    cancelCurrent(reason);
+    stopCaptureForBargeIn();
+    pendingAckFinal = '';
+    settleTurn(reason);
+  }
+
+  /**
+   * Optional continuous conversation (interaction.followUpWindowMs > 0):
+   * after a spoken reply, listen for one more command without a wake word.
+   */
+  function startFollowUpWindow() {
+    if (followUpWindowMs <= 0 || !voice.asr) {
+      settleTurn('reply-done');
+      return;
+    }
+    followUpActive = true;
+    setState('listening');
+    beginCaptureNow();
+    armGiveUpTimer(followUpWindowMs, 'follow-up');
+    log.info(`follow-up window open for ${followUpWindowMs}ms (no wake word needed)`);
+  }
+
   // ---------------------------------------------------------------- ASR callbacks
 
   function handleAsrWake() {
@@ -420,17 +554,22 @@ export function createDaemon(options = {}) {
     // While the ack is audible the mic may pick it up; do not paint that echo
     // into the UI as if the user had said it.
     if (ackActive) return;
+    if (state === 'listening') noteUserSpeech();
     emit({ type: 'partial', text: lastAsrPartial });
   }
 
-  function handleAsrFinal(rawText) {
+  function handleAsrFinal(rawText, meta) {
     if (settings?.isAnyTestActive()) {
       log.info('wake: ignoring ASR final while a settings test is running');
       return;
     }
     if (suppressFinalOnce) {
       suppressFinalOnce = false;
-      if (!ackActive) setState('idle');
+      // Only settle if we are still in a pre-LLM state; a stale final arriving
+      // after a new turn started must not kill that new turn.
+      if (!ackActive && (state === 'listening' || state === 'waking' || state === 'finalizing')) {
+        settleTurn('stale-final');
+      }
       return;
     }
     let transcript = String(rawText ?? '').trim();
@@ -440,26 +579,32 @@ export function createDaemon(options = {}) {
       transcript = stripped;
     }
     if (transcript.length === 0) {
-      // Nothing was captured, or only the ack echo. Right after a wake, give the
-      // user one more listening window instead of going deaf immediately.
       if (ackActive) return;
       // An explicit cancel must not be undone by the empty final of the capture
       // it just interrupted.
       if (lastCancelAt > 0 && Date.now() - lastCancelAt < 3_000) {
         lastCancelAt = 0;
         captureRetryCount = 0;
-        if (current === null) setState('idle');
+        settleTurn('cancelled');
         return;
       }
-      const inWakeWindow = lastAckEndedAt > 0 && Date.now() - lastAckEndedAt < 4_000;
-      if (inWakeWindow && captureRetryCount < 1 && voice.asr) {
-        captureRetryCount += 1;
-        log.info('wake: empty transcript after ack, listening again');
-        beginListeningCapture();
+      // Still inside the give-up budget: keep listening silently (the ASR module
+      // may have ended a 1.5s no-speech capture early; Siri waits longer).
+      if (giveUpAt > Date.now() && voice.asr) {
+        log.info('listening: empty transcript, still waiting for speech');
+        setState('listening');
+        beginCaptureNow();
         return;
       }
-      captureRetryCount = 0;
-      if (current === null) setState('idle');
+      // Silence: leave without a sound and without an error.
+      log.info(`listening: gave up (${meta?.reason || 'no-speech'})`);
+      if (state === 'listening' || state === 'waking' || state === 'finalizing') settleTurn('no-speech');
+      return;
+    }
+    // "取消/算了/别说了/..." -> never reach the model (any active phase).
+    if (isCancelPhrase(transcript)) {
+      log.info(`cancel phrase heard: "${transcript}" -> idle (no LLM call)`);
+      cancelTurn('cancel-phrase');
       return;
     }
     if (ackActive) {
@@ -469,7 +614,9 @@ export function createDaemon(options = {}) {
     }
     captureRetryCount = 0;
     lastAckEndedAt = 0;
-    enqueueTurn(() => processAsk({ text: transcript, speak: true }, null));
+    clearGiveUpTimer();
+    followUpActive = false;
+    enqueueTurn(() => processAsk({ text: transcript, speak: true, fromVoice: true }, null));
   }
 
   /** Remove a leading ack phrase ("我在…") that leaked in through pre-roll/echo. */
@@ -496,20 +643,69 @@ export function createDaemon(options = {}) {
   }
 
   function handleAsrVadStart() {
+    noteUserSpeech();
+    if (state === 'waking') {
+      log.info('user started speaking during ack -> listening now');
+      finishWakeFlow('speech');
+      return;
+    }
+    if (state === 'listening') return;
     if (state === 'idle' || state === 'speaking') setState('listening');
+  }
+
+  /** ASR module reports the user talked while Figaro is speaking (barge-in). */
+  function handleAsrUserSpeech() {
+    if (settings?.isAnyTestActive()) return;
+    if (state === 'waking') {
+      log.info('user spoke during ack -> stop ack, listening');
+      finishWakeFlow('speech');
+      return;
+    }
+    if (state === 'speaking') {
+      log.info('barge-in: user spoke while Figaro was talking');
+      beginWakeFlow('barge-in');
+      return;
+    }
+    if (state === 'listening') noteUserSpeech();
+  }
+
+  /** ASR module reports the capture finished (VAD end) and finalizing is running. */
+  function handleAsrFinalizing() {
+    if (state === 'listening' || state === 'waking') setState('finalizing');
+  }
+
+  /** ASR module reports the wake window expired with no speech. */
+  function handleAsrGiveUp(info) {
+    if (state !== 'listening') return;
+    log.info(`asr give-up${info?.reason ? ` (${info.reason})` : ''} -> idle silently`);
+    settleTurn('give-up');
+  }
+
+  /** Short hotkey press = cancel (long press is the wake path). */
+  function handleAsrTap(info) {
+    if (settings?.isAnyTestActive()) return;
+    const held = Number.isFinite(Number(info?.heldMs)) ? ` (${Math.round(Number(info.heldMs))}ms)` : '';
+    log.info(`hotkey tap${held} -> cancel`);
+    if (state === 'idle') {
+      log.info('hotkey tap while idle: nothing to cancel');
+      return;
+    }
+    cancelTurn('hotkey-tap');
   }
 
   function handleAsrError(err) {
     handleVoiceError('asr', err);
-    if (state === 'listening') setState('idle');
+    if (state !== 'idle' && state !== 'speaking' && state !== 'thinking') settleTurn('asr-error');
   }
 
   // ---------------------------------------------------------------- wake flow
 
   /**
-   * Wake sequence: interrupt everything, play the cached "我在" acknowledgement,
-   * then start capture. If the ack is unavailable or fails, capture starts
-   * immediately (a missed ack must never leave Figaro deaf).
+   * Wake sequence (docs/voice-interaction.md): interrupt anything that is
+   * running, play the cached "我在" acknowledgement (state=waking), then start
+   * listening with a give-up deadline. A second wake while waking is ignored
+   * (debounce); if the user speaks during the ack, the ack stops immediately and
+   * listening starts.
    */
   function beginWakeFlow(origin) {
     if (!voice.asr) return;
@@ -518,29 +714,46 @@ export function createDaemon(options = {}) {
       log.info(`wake (${origin}) ignored during a settings test${counted ? ' (counted as false alarm)' : ''}`);
       return;
     }
+    if (state === 'waking') {
+      log.info(`wake (${origin}) ignored: wake acknowledgement already playing (debounce)`);
+      return;
+    }
     log.info(`wake (${origin})`);
-    cancelCurrent('wake interrupted it');
+    // Abort the old turn (LLM request) and stop any audio that is playing. The
+    // subsequent waking/listening transition owns the state, so no idle flash
+    // (not even from TTS.stop()'s onState('idle') callback).
+    wakeFlowPending = true;
+    try {
+      cancelCurrent('wake interrupted it', { settleState: false });
+    } finally {
+      // Keep the flag until waking/listening is on screen; the ack path sets
+      // `waking` synchronously below, the no-ack path starts capture synchronously.
+      setTimeout(() => { wakeFlowPending = false; }, 0).unref?.();
+    }
     // The internal cancel above is not a user cancel: this wake starts a fresh
     // listening window that is allowed to re-listen on an echo-only final.
     lastCancelAt = 0;
     stopCaptureForBargeIn();
     pendingAckFinal = '';
     captureRetryCount = 0;
+    followUpActive = false;
+    clearFollowUpTimer();
+    clearGiveUpTimer();
 
     const playback = ack && ack.enabled && ack.ready && voice.tts ? ack.play() : null;
     if (!playback) {
       log.info('wake: no ack available, starting capture immediately');
-      beginListeningCapture();
+      beginListeningCapture({ reason: 'wake-no-ack' });
       return;
     }
     ackActive = playback;
-    setState('speaking'); // the ack is audible now
+    setState('waking'); // the ack is audible now
     let startedSeen = false;
     const startTimer = setTimeout(() => {
       if (ackActive !== playback || startedSeen) return;
       log.warn(`wake-ack: no audio within ${ack.timeoutMs}ms; falling back to capture`);
       abortAck('timeout');
-      beginListeningCapture();
+      beginListeningCapture({ reason: 'ack-timeout' });
     }, Math.max(50, ack.timeoutMs));
     startTimer.unref?.();
     playback.started.then(() => {
@@ -554,29 +767,41 @@ export function createDaemon(options = {}) {
       lastAckEndedAt = Date.now();
       if (info?.ok) log.info(`wake-ack: played "${info.phrase}" (${info.durationMs ?? '?'}ms)`);
       else log.warn(`wake-ack: playback incomplete (${info?.error || 'stopped'})`);
-      finishWakeFlow();
+      finishWakeFlow('ack-done');
     }).catch((err) => {
       clearTimeout(startTimer);
       log.warn('wake-ack: playback promise failed:', err?.message || err);
       if (ackActive === playback) {
         ackActive = null;
         lastAckEndedAt = Date.now();
-        finishWakeFlow();
+        finishWakeFlow('ack-failed');
       }
     });
   }
 
-  function finishWakeFlow() {
+  /** Ack finished (or the user barged in): start the listening window. */
+  function finishWakeFlow(reason = 'ack-done') {
     if (stopping) return;
+    // A user speaking during the ack stops it immediately.
+    if (ackActive) {
+      const playback = ackActive;
+      ackActive = null;
+      try {
+        playback.stop();
+      } catch {
+        /* ignore */
+      }
+      lastAckEndedAt = Date.now();
+    }
     const pending = pendingAckFinal;
     pendingAckFinal = '';
-    setState('listening');
     if (pending.length > 0) {
       log.info(`wake: processing transcript captured during ack (${pending.length} chars)`);
-      enqueueTurn(() => processAsk({ text: pending, speak: true }, null));
+      clearGiveUpTimer();
+      enqueueTurn(() => processAsk({ text: pending, speak: true, fromVoice: true }, null));
       return;
     }
-    beginCaptureNow();
+    beginListeningCapture({ reason });
   }
 
   function beginCaptureNow() {
@@ -588,10 +813,11 @@ export function createDaemon(options = {}) {
     }
   }
 
-  function beginListeningCapture() {
+  function beginListeningCapture({ giveUpMs = wakeGiveUpMs, reason = 'wake' } = {}) {
     pendingAckFinal = '';
     setState('listening');
     beginCaptureNow();
+    armGiveUpTimer(giveUpMs, reason);
   }
 
   function abortAck(reason) {
@@ -611,6 +837,7 @@ export function createDaemon(options = {}) {
         /* ignore */
       }
     }
+    lastAckEndedAt = Date.now();
     void reason;
   }
 
@@ -627,20 +854,26 @@ export function createDaemon(options = {}) {
 
   // ---------------------------------------------------------------- turns
 
-  function cancelCurrent(reason) {
+  function cancelCurrent(reason, { settleState = true } = {}) {
     const turn = current;
     current = null;
     lastCancelAt = Date.now();
-    if (turn?.controller) {
-      try {
-        turn.controller.abort();
-      } catch {
-        /* ignore */
+    clearGiveUpTimer();
+    clearFollowUpTimer();
+    followUpActive = false;
+    if (turn) {
+      turn.cancelled = true;
+      if (turn.controller) {
+        try {
+          turn.controller.abort();
+        } catch {
+          /* ignore */
+        }
       }
-    }
-    if (turn?.partialTimer) {
-      clearTimeout(turn.partialTimer);
-      turn.partialTimer = null;
+      if (turn.partialTimer) {
+        clearTimeout(turn.partialTimer);
+        turn.partialTimer = null;
+      }
     }
     if (ackActive) {
       const playback = ackActive;
@@ -661,7 +894,9 @@ export function createDaemon(options = {}) {
     }
     ttsSpeaking = false;
     setWakeMuted(false);
-    if (state === 'thinking' || state === 'speaking' || state === 'listening') setState('idle');
+    // A wake immediately continues into `waking`; skip the idle flash so the UI
+    // sees one continuous transition (Siri-style).
+    if (settleState && state !== 'idle') setState('idle');
     if (turn) log.info(`turn cancelled (${reason})`);
   }
 
@@ -690,6 +925,8 @@ export function createDaemon(options = {}) {
       requestId,
       full: '',
       speak,
+      fromVoice: message.fromVoice === true,
+      cancelled: false,
       speechBuffer: '',
       lastPartialAt: 0,
       partialTimer: null,
@@ -705,7 +942,7 @@ export function createDaemon(options = {}) {
       if (current === turn) {
         reportError(`处理失败：${err?.message || err}`, err);
         current = null;
-        setState('idle');
+        settleTurn('error');
       }
       return;
     }
@@ -715,9 +952,9 @@ export function createDaemon(options = {}) {
       turn.partialTimer = null;
     }
 
-    if (result?.aborted) {
-      current = null;
-      setState('idle');
+    if (result?.aborted || turn.cancelled) {
+      if (current === turn) current = null;
+      settleTurn('aborted');
       return;
     }
 
@@ -733,6 +970,10 @@ export function createDaemon(options = {}) {
     emit(reply);
     log.info(`reply ${requestId}: ${replyText.length} chars`);
 
+    if (turn.cancelled) {
+      settleTurn('cancelled');
+      return;
+    }
     if (speak && voice.tts) {
       setState('speaking');
       try {
@@ -740,9 +981,15 @@ export function createDaemon(options = {}) {
       } catch (err) {
         handleVoiceError('tts', err);
       }
-      if (state === 'speaking') setState('idle');
+      // If a wake/cancel already took over during playback, it owns the state
+      // machine now; do not stomp its state from this (finished) turn.
+      if (turn.cancelled || state !== 'speaking') return;
+      if (followUpWindowMs > 0 && turn.fromVoice) startFollowUpWindow();
+      else settleTurn('reply-done');
+    } else if (followUpWindowMs > 0 && turn.fromVoice) {
+      startFollowUpWindow();
     } else {
-      setState('idle');
+      settleTurn('reply-done');
     }
   }
 
@@ -761,7 +1008,7 @@ export function createDaemon(options = {}) {
       emit({ type: 'reply', text, requestId, spoken: false });
       return;
     }
-    const turn = { requestId, full: text, speak: true, speechBuffer: '', lastPartialAt: 0, partialTimer: null };
+    const turn = { requestId, full: text, speak: true, fromVoice: false, cancelled: false, speechBuffer: '', lastPartialAt: 0, partialTimer: null };
     current = turn;
     setState('speaking');
     try {
@@ -770,11 +1017,12 @@ export function createDaemon(options = {}) {
     } catch (err) {
       handleVoiceError('tts', err);
     }
-    if (current === turn) {
-      current = null;
-      if (state === 'speaking') setState('idle');
-    }
+    const cancelled = current !== turn;
+    if (!cancelled) current = null;
     emit({ type: 'reply', text, requestId, spoken: true });
+    // A wake/cancel that took over during the say() owns the state now.
+    if (cancelled || state !== 'speaking') return;
+    settleTurn('say-done');
   }
 
   // ---------------------------------------------------------------- voice module loading
@@ -814,6 +1062,13 @@ export function createDaemon(options = {}) {
             onFinal: handleAsrFinal,
             onVadStart: handleAsrVadStart,
             onError: handleAsrError,
+            // Siri-style interaction hooks (docs/voice-interaction.md). The ASR
+            // module calls whichever ones it implements; unknown options are
+            // ignored by older module versions.
+            onTap: handleAsrTap,
+            onUserSpeech: handleAsrUserSpeech,
+            onGiveUp: handleAsrGiveUp,
+            onFinalizing: handleAsrFinalizing,
           });
           wakeMuted = false;
           wakeMuteSupported = null;
@@ -848,7 +1103,9 @@ export function createDaemon(options = {}) {
           ttsSpeaking = next === 'speaking';
           // Echo suppression: never listen for the wake word while audio plays.
           setWakeMuted(next === 'speaking');
-          if (next === 'idle' && current === null && state === 'speaking' && !ackActive) setState('idle');
+          if (next === 'idle' && current === null && state === 'speaking' && !ackActive && !wakeFlowPending) {
+            setState('idle');
+          }
         },
         onError: (err) => handleVoiceError('tts', err),
       });
@@ -1153,9 +1410,7 @@ export function createDaemon(options = {}) {
         });
         break;
       case 'cancel':
-        cancelCurrent('cancel message');
-        stopCaptureForBargeIn();
-        pendingAckFinal = '';
+        cancelTurn('cancel message');
         break;
       case 'wake':
         if (voice.asr) {
@@ -1175,6 +1430,7 @@ export function createDaemon(options = {}) {
         break;
       case 'listen_end':
         if (voice.asr) {
+          if (state === 'listening') setState('finalizing');
           try {
             voice.asr.endCapture();
           } catch (err) {
@@ -1284,6 +1540,9 @@ export function createDaemon(options = {}) {
   async function stop() {
     if (stopping) return;
     stopping = true;
+    clearGiveUpTimer();
+    clearFollowUpTimer();
+    followUpActive = false;
     cancelCurrent('shutdown');
     try {
       await voice.asr?.stop?.();
