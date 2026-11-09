@@ -33,43 +33,63 @@ function which(cmd) {
 }
 
 /**
+ * Build a pw-cat command line (pure, unit-testable).
+ * @param {{binary?: string, sampleRate?: number, latencyMs?: number, sink?: string}} [opts]
+ * @returns {string[]}
+ */
+export function buildPwCatCommand(opts = {}) {
+  const sampleRate = opts.sampleRate || 32000;
+  const latencyMs = opts.latencyMs || 40;
+  const sink = (opts.sink || '').trim();
+  const cmd = [
+    opts.binary || 'pw-cat',
+    '--playback',
+    '--raw',
+    '--format=s16',
+    `--rate=${sampleRate}`,
+    '--channels=1',
+    `--latency=${latencyMs}ms`,
+  ];
+  if (sink) cmd.push(`--target=${sink}`);
+  cmd.push('-');
+  return cmd;
+}
+
+/**
  * Find a usable playback command.
- * @param {{sampleRate?: number, latencyMs?: number, command?: string|string[]}} [opts]
- * @returns {{command: string[]|null, source: string}}
+ * @param {{sampleRate?: number, latencyMs?: number, command?: string|string[], sink?: string}} [opts]
+ *   `sink` is a PipeWire/PulseAudio sink name; '' => system default sink.
+ *   A caller-provided `command` override is used verbatim (it owns its own routing).
+ * @returns {{command: string[]|null, source: string, target: string}}
  */
 export function resolvePlayerCommand(opts = {}) {
   const sampleRate = opts.sampleRate || 32000;
   const latencyMs = opts.latencyMs || 40;
+  const sink = (opts.sink || '').trim();
   if (opts.command) {
     const command = Array.isArray(opts.command)
       ? opts.command.map(String)
       : String(opts.command).split(/\s+/).filter(Boolean);
-    if (command.length) return { command, source: 'config' };
+    if (command.length) return { command, source: 'config', target: sink };
   }
   const pwCat = which('pw-cat');
   if (pwCat) {
     return {
       source: 'pw-cat',
-      command: [
-        pwCat,
-        '--playback',
-        '--raw',
-        '--format=s16',
-        `--rate=${sampleRate}`,
-        '--channels=1',
-        `--latency=${latencyMs}ms`,
-        '-',
-      ],
+      target: sink,
+      command: buildPwCatCommand({ binary: pwCat, sampleRate, latencyMs, sink }),
     };
   }
   const aplay = which('aplay');
   if (aplay) {
+    // aplay speaks ALSA device names, not PipeWire sink names: no --target here.
     return {
       source: 'aplay',
+      target: '',
       command: [aplay, '-q', '-t', 'raw', '-f', 'S16_LE', `-r${sampleRate}`, '-c1', '-'],
     };
   }
-  return { command: null, source: 'none' };
+  return { command: null, source: 'none', target: '' };
 }
 
 function rmsOfPcm(buf) {
@@ -87,6 +107,7 @@ function rmsOfPcm(buf) {
 /**
  * @param {object} opts
  * @param {number} [opts.sampleRate=32000]
+ * @param {string} [opts.sink] PipeWire/PulseAudio sink name ('' = system default)
  * @param {string|string[]|null} [opts.command] override playback command
  * @param {number} [opts.latencyMs=40] requested device latency (pw-cat only)
  * @param {number} [opts.sliceMs=64] level publishing period (~15 Hz)
@@ -100,10 +121,11 @@ export function createPlayer(opts = {}) {
   const sliceSamples = Math.max(64, Math.round((sampleRate * sliceMs) / 1000));
   const sliceBytes = sliceSamples * BYTES_PER_SAMPLE;
 
-  const { command, source } = resolvePlayerCommand({
+  const { command, source, target } = resolvePlayerCommand({
     sampleRate,
     latencyMs: opts.latencyMs || 40,
     command: opts.command,
+    sink: opts.sink || '',
   });
 
   let child = null;
@@ -255,6 +277,7 @@ export function createPlayer(opts = {}) {
   return {
     source,
     command,
+    target,
     sampleRate,
     /** Write PCM (16-bit LE mono). Returns false if the sink is gone. */
     write(buf) {

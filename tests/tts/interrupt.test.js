@@ -15,6 +15,7 @@ import {
   makeTempDir,
   fileSinkCommand,
   makeConfig,
+  fakeSinkProbe,
   fileSize,
   trackedCallbacks,
   waitForFileSize,
@@ -29,6 +30,8 @@ async function setup(t, serverOpts, configOpts = {}) {
   const server = await startFakeMiniMaxServer(serverOpts);
   const tts = createTts({
     config: makeConfig({ wsUrl: server.url, playerCommand: fileSinkCommand(sink), ...configOpts }),
+    logger: null,
+    sinkProbe: fakeSinkProbe,
     onLevel: calls.onLevel,
     onState: calls.onState,
     onError: calls.onError,

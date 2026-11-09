@@ -21,6 +21,34 @@ export function blockingSinkCommand() {
   return ['bash', '-c', 'exec sleep 600'];
 }
 
+/** Deterministic fake `pactl` result for hermetic sink-resolution tests. */
+export const FAKE_SINKS = Object.freeze({
+  ok: true,
+  defaultSink: 'fake-sink-analog',
+  available: [
+    { name: 'fake-sink-analog', driver: 'PipeWire', index: 1, state: 'SUSPENDED' },
+    { name: 'fake-sink-hdmi', driver: 'PipeWire', index: 2, state: 'SUSPENDED' },
+  ],
+});
+
+/** Fresh copy so tests may mutate it safely. */
+export function fakeSinkProbe() {
+  return { ...FAKE_SINKS, available: FAKE_SINKS.available.map((s) => ({ ...s })) };
+}
+
+/** Logger stub that records `[level, ...args]` lines. */
+export function trackedLogger() {
+  const lines = [];
+  return {
+    lines,
+    logger: {
+      info: (...args) => lines.push(['info', ...args]),
+      warn: (...args) => lines.push(['warn', ...args]),
+      error: (...args) => lines.push(['error', ...args]),
+    },
+  };
+}
+
 export function makeConfig({
   wsUrl,
   apiKey = 'test-api-key',
@@ -53,6 +81,7 @@ export function makeConfig({
       playerKeepAliveMs: 50,
       playerLatencyMs: 10,
       playerCommand,
+      sink: '',
       levelSliceMs: 32,
       wsIdleCloseMs: 60000,
       requestTimeoutMs: 4000,

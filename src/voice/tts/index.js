@@ -19,13 +19,45 @@
 // * Every asynchronous callback carries a generation token; stop() bumps it, so
 //   late network chunks / timers from an interrupted turn can never make noise.
 // * Failures are reported via onError and never throw into the daemon.
+// * Output never relies on the system default sink: `config.tts.sink` is resolved
+//   once at startup (full name or unique substring) and passed to pw-cat as
+//   `--target=...`; a missing sink warns once and falls back to the default.
+// * playPcm() injects already-synthesized PCM (wake ack) into the same player;
+//   synthesize() produces cached PCM without playing it.
 
 import { cleanText } from './clean.js';
 import { splitText } from './split.js';
 import { createPlayer } from './player.js';
 import { createMiniMaxClient } from './minimax-client.js';
+import { probeAudioSinks, resolveSinkConfig } from './sink.js';
+import { normalizePcm, pcmDurationMs } from './pcm.js';
 
 const noop = () => {};
+const SILENT_LOGGER = { info: noop, warn: noop, error: noop };
+
+/** `[tts] ...` lines go to stderr (systemd/journal) unless a logger is injected. */
+function makeLogger(logger) {
+  if (logger === null) return SILENT_LOGGER;
+  if (logger === undefined) {
+    const write = (...args) => {
+      try {
+        console.error('[tts]', ...args);
+      } catch {
+        /* ignore */
+      }
+    };
+    return { info: write, warn: write, error: write };
+  }
+  const pick = (key) => (typeof logger[key] === 'function' ? logger[key].bind(logger) : noop);
+  return { info: pick('info'), warn: pick('warn'), error: pick('error') };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, Math.max(0, ms));
+    timer.unref?.();
+  });
+}
 
 function clamp01(n) {
   if (!Number.isFinite(n)) return 0;
@@ -36,9 +68,18 @@ function num(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-export function createTts({ config = {}, onLevel = noop, onState = noop, onError = noop } = {}) {
+export function createTts({
+  config = {},
+  onLevel = noop,
+  onState = noop,
+  onError = noop,
+  logger,
+  // test seam: () => ({ available: [{name}], defaultSink, ok })
+  sinkProbe,
+} = {}) {
   const mm = config.minimax || {};
   const tc = config.tts || {};
+  const log = makeLogger(logger);
 
   const settings = {
     enabled: tc.enabled !== false,
@@ -65,7 +106,47 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     // MiniMax t2a_v2 allows 20 requests/min (paid) or 10 (free); one request per
     // sentence. Pace sends to stay under the limit instead of failing mid-reply.
     rpmLimit: Math.max(0, num(tc.rpmLimit, 18)),
+    // Output device: PipeWire/PulseAudio sink name ('' => system default).
+    // Never rely on the *system* default sink: on this machine the default can
+    // be a muted analog jack while the audible speakers are the HDMI sink.
+    sink: typeof tc.sink === 'string' ? tc.sink.trim() : '',
   };
+
+  // Resolve the configured sink once, at module start, and say where we play.
+  const sinkResolution = (() => {
+    let probe;
+    try {
+      probe = typeof sinkProbe === 'function' ? sinkProbe() : sinkProbe || probeAudioSinks();
+    } catch (err) {
+      probe = { ok: false, available: [], defaultSink: '', error: err };
+    }
+    return resolveSinkConfig(settings.sink, probe);
+  })();
+  settings.sink = sinkResolution.target;
+  if (sinkResolution.status === 'fallback-missing') {
+    log.warn(
+      `sink "${sinkResolution.configured}" not found (available: ${
+        (sinkResolution.candidates || []).join(', ') || 'none'
+      }); falling back to default sink (${sinkResolution.name})`,
+    );
+  } else if (sinkResolution.status === 'ambiguous') {
+    log.warn(
+      `sink "${sinkResolution.configured}" matches several sinks (${(
+        sinkResolution.candidates || []
+      ).join(', ')}); falling back to default sink (${sinkResolution.name})`,
+    );
+  } else if (sinkResolution.status === 'unverified') {
+    log.warn(`cannot query audio sinks (pactl unavailable); using configured sink "${sinkResolution.configured}"`);
+  }
+  if (sinkResolution.target) {
+    log.info(
+      sinkResolution.status === 'resolved'
+        ? `playing to ${sinkResolution.name} (resolved from "${sinkResolution.configured}")`
+        : `playing to ${sinkResolution.name}`,
+    );
+  } else {
+    log.info(`playing to default sink (${sinkResolution.name})`);
+  }
 
   const bytesPerMs = (settings.sampleRate * 2) / 1000;
 
@@ -95,6 +176,8 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
   let sendTimes = []; // task_continue timestamps for the RPM guard
   let rateLimitTimer = null;
   let rateLimitedUntil = 0;
+  let pcmWaiters = []; // playPcm() promises waiting for their playback to end
+  let sinkFallbackUsed = false; // warn-once guard for runtime sink failure
 
   const stats = {
     sentences: 0, // sentences queued over the module lifetime
@@ -116,6 +199,13 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     lastSpeakingMs: null, // last turn: first PCM -> estimated playback end
     lastTurnMs: null,
     turnFirstAudioMs: null,
+    // playPcm()/synthesize() path (wake acknowledgement cache)
+    pcmPlays: 0,
+    pcmBytes: 0,
+    lastPcmWriteMs: null, // playPcm() call -> first PCM handed to the player
+    synthRequests: 0,
+    lastSynthMs: null,
+    lastSynthTtfbMs: null,
   };
 
   // -------------------------------------------------------------- helpers ----
@@ -217,7 +307,21 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     finishTurn();
   }
 
+  function resolvePcmWaiters(reason) {
+    const waiters = pcmWaiters;
+    pcmWaiters = [];
+    for (const waiter of waiters) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      try {
+        waiter.resolve({ bytes: waiter.bytes, durationMs: waiter.durationMs, completed: reason === 'played' });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   function finishTurn() {
+    resolvePcmWaiters('played');
     if (speakState) {
       stats.lastSpeakingMs = turnStartAt ? Date.now() - turnStartAt : 0;
       setSpeaking(false);
@@ -290,6 +394,7 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     const p = createPlayer({
       sampleRate: settings.sampleRate,
       command: settings.playerCommand,
+      sink: settings.sink,
       latencyMs: settings.playerLatencyMs,
       sliceMs: settings.levelSliceMs,
       onLevel: (level) => {
@@ -305,10 +410,21 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
         if (info.killLatencyMs !== null && info.killLatencyMs !== undefined) {
           stats.lastInterruptPlayerExitMs = info.killLatencyMs;
         }
-        if (!info.expected && !info.error && !info.killLatencyMs && generation === myGen) {
-          if (speakState || hasWork()) {
-            reportError(new Error(`audio player exited unexpectedly (code ${info.code ?? '?'})`), 'player');
-          }
+        const diedUnexpectedly = !info.expected && !info.error && !info.killLatencyMs;
+        if (diedUnexpectedly && settings.sink && !sinkFallbackUsed && generation === myGen) {
+          // pw-cat does not fail on a missing --target (measured), but a sink can
+          // still disappear at runtime (unplugged monitor, card suspend...).
+          // Never leave the assistant voiceless: fall back to the default sink once.
+          sinkFallbackUsed = true;
+          const failedSink = settings.sink;
+          settings.sink = '';
+          log.warn(
+            `playback to sink "${failedSink}" failed (exit ${info.code ?? '?'}); falling back to default sink`,
+          );
+          return;
+        }
+        if (diedUnexpectedly && generation === myGen && (speakState || hasWork())) {
+          reportError(new Error(`audio player exited unexpectedly (code ${info.code ?? '?'})`), 'player');
         }
       },
     });
@@ -596,6 +712,184 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     }
   }
 
+  // ------------------------------------------------- play cached / raw PCM ----
+  /**
+   * Play already-synthesized PCM (e.g. a pre-cached wake acknowledgement).
+   *
+   * Runs through the *same* player instance as TTS audio, on the same sink, with
+   * the same onLevel/onState semantics, and is stopped by the same stop().
+   * The PCM is written immediately into the playback stream (it is not mixed,
+   * not queued as a separate utterance). Use it while the assistant is idle:
+   * if callers inject while TTS audio is still being written, it plays after the
+   * audio already queued to the sink.
+   *
+   * @param {Buffer|Uint8Array|Int16Array|Float32Array|Float64Array|number[]} data
+   *   s16le Buffer (interleaved), or float samples in [-1, 1].
+   * @param {{rate?: number, channels?: number}} [opts]
+   * @returns {Promise<{bytes:number, durationMs:number, completed:boolean}>}
+   *   resolves when this PCM has finished playing (or immediately if nothing to play).
+   */
+  function playPcm(data, opts = {}) {
+    if (!settings.enabled) return Promise.resolve({ bytes: 0, durationMs: 0, completed: false });
+    const startedAt = Date.now();
+    let pcm;
+    try {
+      pcm = normalizePcm(data, {
+        rate: num(opts.rate, settings.sampleRate),
+        channels: num(opts.channels, 1),
+        targetRate: settings.sampleRate,
+      });
+    } catch (err) {
+      reportError(err, 'playPcm');
+      return Promise.resolve({ bytes: 0, durationMs: 0, completed: false });
+    }
+    if (!pcm || pcm.length === 0) return Promise.resolve({ bytes: 0, durationMs: 0, completed: false });
+
+    const myGen = generation;
+    beginTurnIfIdle();
+    let p;
+    try {
+      p = ensurePlayer(myGen);
+    } catch (err) {
+      reportError(err, 'player');
+      return Promise.resolve({ bytes: 0, durationMs: 0, completed: false });
+    }
+    if (!p || !p.write(pcm)) {
+      if (p) detachPlayer(p);
+      reportError(new Error('audio player unavailable for playPcm'), 'player');
+      return Promise.resolve({ bytes: 0, durationMs: 0, completed: false });
+    }
+    const now = Date.now();
+    playEndAt = Math.max(now, playEndAt) + bytesToMs(pcm.length);
+    const durationMs = Math.round((pcm.length / bytesPerMs) * 10) / 10;
+    const endAt = playEndAt;
+    stats.pcmPlays += 1;
+    stats.pcmBytes += pcm.length;
+    stats.bytes += pcm.length;
+    stats.lastPcmWriteMs = now - startedAt;
+    clearWsIdleTimer();
+    if (!speakState) setSpeaking(true);
+    maybeScheduleIdle();
+
+    return new Promise((resolve) => {
+      const waiter = {
+        bytes: pcm.length,
+        durationMs,
+        endAt,
+        resolve,
+        timer: null,
+      };
+      waiter.timer = setTimeout(() => {
+        waiter.timer = null;
+        const idx = pcmWaiters.indexOf(waiter);
+        if (idx >= 0) pcmWaiters.splice(idx, 1);
+        resolve({ bytes: pcm.length, durationMs, completed: true });
+      }, Math.max(0, endAt + settings.playbackTailMs - Date.now()));
+      waiter.timer.unref?.();
+      pcmWaiters.push(waiter);
+    });
+  }
+
+  /**
+   * Synthesize text to PCM *without playing it* — for pre-caching wake
+   * acknowledgements ("我在"/"在的"/"请指示"). Same voice/model/song settings as
+   * speak(), one task_continue per sentence, own short-lived WebSocket.
+   *
+   * @param {string} text
+   * @param {{model?: string, voiceId?: string}} [opts]
+   * @returns {Promise<{pcm: Buffer, sampleRate: number, durationMs: number, sentences: number, ms: number, ttfbMs: number|null}>}
+   */
+  async function synthesize(text, opts = {}) {
+    const empty = { pcm: Buffer.alloc(0), sampleRate: settings.sampleRate, durationMs: 0, sentences: 0, ms: 0, ttfbMs: null };
+    if (!settings.enabled) return empty;
+    const cleaned = cleanText(text, { maxChars: 4000 });
+    if (!cleaned) return empty;
+    const sentences = splitText(cleaned, { maxLen: settings.maxSentenceChars });
+    if (!sentences.length) return empty;
+    if (!settings.apiKey) {
+      const err = new Error('MiniMax API key is missing (config.minimax.apiKey)');
+      err.fatal = true;
+      throw err;
+    }
+
+    const startedAt = Date.now();
+    const chunks = [];
+    let firstAt = null;
+    let failed = null;
+    let finals = 0;
+    let settle = null;
+    const finished = new Promise((resolve) => {
+      settle = resolve;
+    });
+    const client = createMiniMaxClient({
+      wsUrl: settings.wsUrl,
+      apiKey: settings.apiKey,
+      model: opts.model || settings.model,
+      voiceId: opts.voiceId || settings.voiceId,
+      speed: settings.speed,
+      vol: settings.volume,
+      pitch: settings.pitch,
+      sampleRate: settings.sampleRate,
+      connectTimeoutMs: settings.connectTimeoutMs,
+      requestTimeoutMs: settings.requestTimeoutMs,
+      onAudio: (buf) => {
+        if (firstAt === null) firstAt = Date.now();
+        chunks.push(buf);
+      },
+      onFinal: () => {
+        finals += 1;
+        if (finals >= sentences.length) settle();
+      },
+      onFailed: (err) => {
+        if (!failed) failed = err;
+        settle();
+      },
+      onClose: () => {
+        if (!failed && finals < sentences.length) failed = new Error('synthesis connection closed early');
+        settle();
+      },
+    });
+
+    const timeoutTimer = setTimeout(() => {
+      if (!failed) failed = new Error('synthesize timeout');
+      settle();
+    }, Math.max(5000, settings.requestTimeoutMs * 2));
+    timeoutTimer.unref?.();
+    try {
+      await client.connect();
+      for (const sentence of sentences) {
+        const wait = rateLimitWaitMs();
+        if (wait > 0) {
+          stats.rateLimited += 1;
+          await sleep(wait);
+        }
+        client.send(sentence);
+        sendTimes.push(Date.now());
+        stats.synthRequests += 1;
+      }
+      await finished;
+      if (failed) throw failed;
+      const pcm = Buffer.concat(chunks);
+      stats.lastSynthMs = Date.now() - startedAt;
+      stats.lastSynthTtfbMs = firstAt === null ? null : firstAt - startedAt;
+      return {
+        pcm,
+        sampleRate: settings.sampleRate,
+        durationMs: Math.round(pcmDurationMs(pcm, settings.sampleRate)),
+        sentences: sentences.length,
+        ms: Date.now() - startedAt,
+        ttfbMs: firstAt === null ? null : firstAt - startedAt,
+      };
+    } finally {
+      clearTimeout(timeoutTimer);
+      try {
+        client.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   // ------------------------------------------------------------- public API --
   function speak(text) {
     if (!settings.enabled) return Promise.resolve();
@@ -662,6 +956,7 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     setSpeaking(false);
     emitLevel(0);
     resolveFlush();
+    resolvePcmWaiters('stopped');
     playEndAt = 0;
     turnStartAt = 0;
     turnSentAny = false;
@@ -680,6 +975,8 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
     flush,
     stop,
     close,
+    playPcm,
+    synthesize,
     get speaking() {
       return speakState;
     },
@@ -696,6 +993,9 @@ export function createTts({ config = {}, onLevel = noop, onState = noop, onError
         connected: Boolean(client && client.ready),
         model: settings.model,
         voiceId: settings.voiceId,
+        audioSink: settings.sink,
+        audioSinkName: sinkResolution.name,
+        sinkStatus: sinkResolution.status,
       };
     },
   };

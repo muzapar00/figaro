@@ -45,10 +45,23 @@ export const DEFAULTS = {
     minCaptureMs: 350,
     // hotkey (XDG GlobalShortcuts portal); empty => disabled
     hotkey: 'F5',
+    // When > 0, the ASR waits this long for the daemon to start capture after a
+    // wake (the daemon plays its acknowledgement first), then starts it anyway.
+    wakeCaptureFallbackMs: 0,
     longPressMs: 260,
   },
   tts: {
     enabled: true,
+    // Audio output device for Figaro's voice. "" = system default sink;
+    // a full sink name or a unique substring (e.g. "hdmi") also works.
+    sink: "",
+    // Short acknowledgement spoken right after a wake, so the user immediately
+    // knows they were heard. Cached at daemon start to keep it under ~300 ms.
+    ack: {
+      enabled: true,
+      phrases: ['我在', '在的', '请指示'],
+      timeoutMs: 800,
+    },
     // start speaking after this many sentences are buffered (1 => lowest latency)
     minSentencesBeforeStart: 1,
     maxBufferChars: 220,

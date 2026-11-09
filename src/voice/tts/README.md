@@ -11,6 +11,10 @@ tts.speak('第二句。');       // 生成过程中可继续追加，不丢句
 await tts.flush();           // 等队列真正播完
 tts.stop();                  // 打断：杀播放进程 + 清队列/网络缓冲 + 断 WSS
 tts.speaking;                // 是否正在出声
+
+// 唤醒应答 / 预合成缓存（可选，给 brain 用）
+await tts.playPcm(cachedPcm, { rate: 32000, channels: 1 });  // 播已合成 PCM，同一播放器/sink，可被 stop()
+const { pcm } = await tts.synthesize('在的，请说。');          // 只合成不播放，用于启动时缓存
 ```
 
 ## 文件
@@ -22,6 +26,8 @@ tts.speaking;                // 是否正在出声
 | `player.js` | 原始 PCM → `pw-cat`/`aplay` 子进程；播放节拍 RMS；SIGKILL 打断 |
 | `split.js` | 可追加的句子切分器（流式，不丢字） |
 | `clean.js` | markdown / 代码块 / URL / emoji / 括号注释清洗 |
+| `sink.js` | 输出设备（PipeWire/PulseAudio sink）探测、`config.tts.sink` 解析、失败回退 |
+| `pcm.js` | `playPcm()` 的 PCM 归一化（s16/float、stereo→mono、重采样到播放器格式） |
 
 ## 关键设计
 
@@ -40,6 +46,11 @@ tts.speaking;                // 是否正在出声
   默认 `rpmLimit=18` 会在窗口内排队等待而不是撞 1002 报错；收到 1002/1039 会冷却 10s 再重试。
 - **电平**：`onLevel(rms01)` 取原始归一化 RMS（0..1，语音通常在 0.02~0.2），
   按**播放时间轴**以 `levelSliceMs=64ms`（≈15.6Hz）推送，而不是收到网络包的速度。
+- **指定输出设备**：不依赖系统默认 sink。`config.tts.sink` 支持完整 sink 名或唯一子串
+  （如 `"hdmi"`），启动时解析并打一行 `[tts] playing to <sink>`；找不到就 warn 一次并回退系统默认。
+  原因：本机默认 sink 可能指向被 Auto-Mute 关掉的前面板模拟输出，而房间里响的是 HDMI 显示器扬声器。
+- **唤醒应答缓存**：`playPcm(buf)` 把预合成 PCM 直接灌进同一个播放器（同 sink、同 onLevel/onState、
+  同样被 `stop()` 打断），`synthesize(text)` 只合成不播放，用于启动时预热"在的/请说"这类应答。
 
 ## 配置（读取 `config.minimax` / `config.tts`）
 
@@ -63,8 +74,57 @@ tts.speaking;                // 是否正在出声
 | `tts.requestTimeoutMs` | 20000 | 单次 `task_continue` 无响应超时 |
 | `tts.maxReconnects` | 1 | 连续断线重试预算 |
 | `tts.rpmLimit` | 18 | 主动限速（0 关闭） |
+| `tts.sink` | `""` | 输出设备（PipeWire/PulseAudio sink 名，可写唯一子串如 `"hdmi"`）；空 = 系统默认 |
 
 > 以上 `tts.*` 额外键都是可选增强；不配置时用内置默认值，`src/config.js` 不需要改。
+
+## 输出设备（config.tts.sink）
+
+```jsonc
+// ~/.config/figaro/config.json
+{ "tts": { "sink": "alsa_output.pci-0000_01_00.1.hdmi-stereo" } }  // 或更短的 "hdmi"
+```
+
+启动（`createTts()`）时解析一次，标准错误打一行（systemd/journal 可见）：
+
+```
+[tts] playing to alsa_output.pci-0000_01_00.1.hdmi-stereo
+[tts] playing to alsa_output.pci-0000_01_00.1.hdmi-stereo (resolved from "hdmi")
+[tts] playing to default sink (alsa_output.pci-0000_01_00.1.hdmi-stereo)
+[tts] sink "xxx" not found (available: ...); falling back to default sink (...)
+```
+
+规则：`""` → 系统默认（但日志里打印解析到的默认名，方便排查）；完整名精确匹配；
+唯一子串匹配（不区分大小写）；找不到/多处匹配/查询失败 → 一次 warn + 回退默认（查询失败时信任配置值）。
+解析结果暴露在 `tts.stats.audioSink` / `audioSinkName` / `sinkStatus`。
+播放命令自动带 `pw-cat --target=<sink>`；`tts.playerCommand` 覆盖时由覆盖命令自己负责路由。
+探测耗时约 10ms（`pactl list short sinks` + `pactl get-default-sink`），只在 `createTts()` 时做一次。
+
+## 唤醒应答：playPcm() / synthesize()
+
+```js
+// 启动时把应答语料预合成（不播放），缓存 PCM
+const { pcm, sampleRate, durationMs } = await tts.synthesize('在的，请说。');
+
+// 唤醒瞬间直接播，无需再等 TTS 网络
+const res = await tts.playPcm(pcm, { rate: sampleRate, channels: 1 });
+```
+
+- `playPcm(data, {rate, channels})`：`data` 可为 s16le `Buffer`（交错）、`Int16Array`、
+  或 `Float32Array`/`number[]`（[-1,1]）；会自动 downmix 成 mono、重采样到播放器采样率；
+  返回 Promise，在**这段音频播完**时 resolve（`{bytes, durationMs, completed}`），被 `stop()` 打断时
+  `completed:false` 立即 resolve。
+- 与 `speak()` 队列的关系：**同一个播放器、同一条 PCM 流，立即写入，不是混音、不是独立队列。**
+  空闲时调用就是"马上播"；若 TTS 正好在出声，这段音频会接在已经写进 sink 的音频之后
+  （所以它适合唤醒应答/提示音，不要在长篇回复中途当"插播"用）。
+- `stop()` 同样立即杀播放进程，`playPcm` 的 Promise 跟着 resolve，`speaking` 转 false；
+  `flush()` 也会等 `playPcm` 的音频播完。
+- 走同一套 `onLevel`（播放节拍 RMS）和 `onState('speaking'|'idle')`。
+- `synthesize(text, {model, voiceId})`：清洗+切句后用独立的短连接逐句合成，收集 PCM 返回
+  `{pcm, sampleRate, durationMs, sentences, ms, ttfbMs}`；**不播放、不改 speaking 状态**；
+  计入 RPM 限速。文本为空/只有 markdown 时返回空 PCM 且不发请求；无 API key 时 reject。
+- 快捷验证：`node tests/tts/smoke.mjs --pcm=/tmp/silence300.pcm --sink=hdmi --runs=3`
+  （用一段静音 PCM 验证路由与延迟，不吵人）。
 
 ## 实测（2026-11-09，本机 Node 24.22.2 / PipeWire 1.6.2 / api.minimax.cn）
 
@@ -86,6 +146,10 @@ tts.speaking;                // 是否正在出声
 | `stop()` 同步耗时 | **1.9–2.0ms**（清队列+杀播放进程+断 WSS） |
 | `SIGKILL`→pw-cat 进程退出 | **5–6ms** |
 | 打断后残留音频/电平 | 0（单元测试断言 sink 冻结、无迟到 onLevel），无残留进程 |
+| `createTts()` 启动（含 sink 探测） | ~10ms（探测本身 ~10.7ms） |
+| `playPcm()` 调用→PCM 进播放进程（真机 pw-cat，hdmi sink） | 冷 **14ms** / 热 **0–1ms**；300ms 缓存音频 300ms 播完，wall 450–466ms |
+| 真机静音验证（300ms 静音 PCM → HDMI sink） | `pw-cat --target=alsa_output...hdmi-stereo` 正常退出 0，无残留进程；`[tts] playing to ...` 日志正确；bogus sink 走 warn+默认回退 |
+| **实际路由验证**（播 2s 静音时 `pactl list short sink-inputs`） | `tts.sink="hdmi"` → sink-input 挂到 **index 78 alsa_output...hdmi-stereo**；`tts.sink=""` → 挂到 index 56 analog-stereo（正是房间没声音的那块） |
 | 长文本完整性 | 8 句一次说：8 条 `task_continue` 顺序正确、sink 字节逐字节符合；72 字回复经本地 paraformer 回读，4/5 音色 CER=0.0%、qingse 1.5%（仅「加/伽」同音字） |
 
 音色/模型对比（中位数，3 次 × 5 音色；`字/s` 由合成音频时长与字符数算出，反映语速）：
@@ -141,8 +205,10 @@ tts.speaking;                // 是否正在出声
 # 单元测试（不联网、不出声、不花额度；文件 sink 假播放）
 node --test tests/tts/*.test.js
 
-# 真机 smoke：真合成 + 真播放，打印首字延迟（默认 5 次；--no-play 静音）
+# 真机 smoke：真合成 + 真播放，打印首字延迟与 sink（默认 5 次；--no-play 静音）
 node tests/tts/smoke.mjs --runs=5
+node tests/tts/smoke.mjs --runs=5 --sink=hdmi                  # 指定输出设备
+node tests/tts/smoke.mjs --pcm=tests/tts/out/ack.pcm --sink=hdmi --runs=3  # 静音验证 playPcm 路由
 node tests/tts/smoke.mjs --no-play --text="费加罗，你好。" --capture=tests/tts/out/smoke.wav
 
 # 音色/模型对比（会消耗 API 额度；默认 5 个男声 × 3 个 turbo 模型 × 3 次，带 RPM 限速）
@@ -163,4 +229,9 @@ node tests/tts/bench-voice.mjs
 - `speak()` 的 Promise 在**入队后**立即 resolve，不代表播完；等播完请用 `flush()`。
 - `stop()` 会断开 WSS；下一次 `speak()` 需要重新建连（~150ms），换来的是打断后服务端不会继续烧合成。
 - 电平是原始 RMS（不放大），UI 侧需要按需缩放。
+- `pw-cat` 对不存在的 `--target` **不会报错**（实测 exit 0），所以 sink 校验只能在启动时用
+  `pactl` 做；运行中 sink 消失/切换（拔显示器、切默认设备）时首次异常会 warn 一次并回退默认 sink。
+- 运行中会话中途用户改了系统默认 sink：已配置了 `tts.sink` 的不受影响（推荐显式配置）；
+  没配置的目标是"系统默认"，是否跟随切换取决于 PipeWire/pw-cat 自身行为。
+- `playPcm` 不混音、不排队：适合唤醒应答/提示音，不要拿它在长回复中途插播。
 - 自然度无法自动量化：本目录只提供客观时延/语速数据 + WAV 试听文件，最终音色由人耳和 Lead 定。

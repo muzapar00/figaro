@@ -19,6 +19,7 @@ import {
   makeTempDir,
   fileSinkCommand,
   makeConfig,
+  fakeSinkProbe,
   fileSize,
   readFile,
   trackedCallbacks,
@@ -40,6 +41,8 @@ function setup(t, serverOpts = {}, cfgOpts = {}) {
     });
     ctx.tts = createTts({
       config,
+      logger: null, // keep test output clean; sink resolution is unit-tested separately
+      sinkProbe: fakeSinkProbe,
       onLevel: calls.onLevel,
       onState: calls.onState,
       onError: calls.onError,
@@ -168,6 +171,8 @@ test('missing api key fails fast without touching the network', async (t) => {
     const calls = trackedCallbacks();
     const tts = createTts({
       config: makeConfig({ wsUrl: 'ws://127.0.0.1:1', apiKey: '', playerCommand: fileSinkCommand(sink) }),
+      logger: null,
+      sinkProbe: fakeSinkProbe,
       onLevel: calls.onLevel,
       onState: calls.onState,
       onError: calls.onError,

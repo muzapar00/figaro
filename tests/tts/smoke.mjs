@@ -27,6 +27,8 @@ function parseArgs(argv) {
     noPlay: false,
     capture: null,
     gapMs: 400,
+    sink: null,
+    pcmFile: null,
   };
   for (const raw of argv.slice(2)) {
     const m = /^--([^=]+)(?:=(.*))?$/.exec(raw);
@@ -40,6 +42,8 @@ function parseArgs(argv) {
     else if (key === 'no-play') args.noPlay = true;
     else if (key === 'capture') args.capture = value;
     else if (key === 'gap') args.gapMs = Number(value) || 400;
+    else if (key === 'sink') args.sink = value ?? ''; // --sink= or --sink=<name>
+    else if (key === 'pcm') args.pcmFile = value;
   }
   return args;
 }
@@ -79,7 +83,8 @@ async function main() {
   const cfg = loadConfig();
   if (args.model) cfg.minimax.model = args.model;
   if (args.voice) cfg.minimax.voiceId = args.voice;
-  if (!cfg.minimax.apiKey) {
+  if (args.sink !== null) cfg.tts.sink = args.sink;
+  if (!cfg.minimax.apiKey && !args.pcmFile) {
     console.error('No MiniMax API key in ~/.config/figaro/config.json (minimax.apiKey)');
     process.exit(2);
   }
@@ -100,6 +105,31 @@ async function main() {
     `TTS smoke: model=${tts.stats.model} voice=${tts.stats.voiceId} text="${args.text}" runs=${args.runs}` +
       `${args.noPlay ? ' (no playback)' : ' (real playback)'}`,
   );
+  console.log(
+    `sink: target="${tts.stats.audioSink}" name="${tts.stats.audioSinkName}" status=${tts.stats.sinkStatus}`,
+  );
+
+  // --pcm=<file>: play pre-synthesized raw s16le 32k mono PCM through playPcm()
+  // (the wake-acknowledgement path). Works with a silent file for routing checks.
+  if (args.pcmFile) {
+    const pcm = fs.readFileSync(args.pcmFile);
+    console.log(`playPcm: ${args.pcmFile} (${(pcm.length / 64).toFixed(0)}ms of 32k mono s16le)`);
+    const t0 = Date.now();
+    const result = await tts.playPcm(pcm, { rate: 32000, channels: 1 });
+    console.log(
+      `playPcm: write=${tts.stats.lastPcmWriteMs}ms durationMs=${result.durationMs} completed=${result.completed} wall=${Date.now() - t0}ms`,
+    );
+    const runs = [];
+    for (let i = 1; i < args.runs; i++) {
+      const t = Date.now();
+      const res = await tts.playPcm(pcm, { rate: 32000, channels: 1 });
+      runs.push({ write: tts.stats.lastPcmWriteMs, duration: res.durationMs, wall: Date.now() - t });
+      await sleep(args.gapMs);
+    }
+    if (runs.length) console.log('playPcm repeat runs:', JSON.stringify(runs));
+    tts.close();
+    return;
+  }
   if (!args.noPlay) console.log('注意：接下来会有 ~1 秒的测试播报，结束后立刻释放声卡。\n');
 
   const rows = [];
