@@ -60,6 +60,18 @@ export const DEFAULTS = {
     inputGainPercent: null,
     // Waking and then saying nothing for this long exits quietly.
     wakeGiveUpMs: 5000,
+    // Barge-in (talking over the assistant) needs a deliberate voice, not any
+    // noise: the level has to be clearly above what the microphone hears from
+    // Figaro's own speaker output, and it has to last.
+    bargeIn: {
+      enabled: true,
+      // Absolute floor on normalized RMS (0..1).
+      minRms: 0.14,
+      // ...and this many times the echo level measured while TTS is playing.
+      echoFactor: 2.0,
+      // How long the voice has to hold above the threshold.
+      minMs: 500,
+    },
     longPressMs: 260,
   },
   tts: {
