@@ -1,13 +1,14 @@
 #version 440
 
-// Figaro orb: an iridescent, liquid, Siri-like sphere.
+// Figaro orb, simplified.
 //
-// Shape: a domain-warped fbm field instead of a circle, so the silhouette
-// breathes like a fluid. Colour: an explicit indigo -> violet -> magenta -> cyan
-// -> white gradient (a cosine palette greys out when it saturates, which reads
-// as a soap bubble). Lighting: a warm core hotspot under a bright rim filament,
-// which is what makes the sphere look like it emits light instead of being
-// tinted plastic.
+// Apple's motion guidance asks for motion that is purposeful, brief and
+// precise, and that never competes with content. The first version of this
+// shader had five colour stops, white filaments, a travelling ripple and a
+// specular sheen all moving at once, which read as decoration rather than as
+// state. This one keeps a single idea: a soft ball of light whose hue drifts
+// very slowly and whose brightness follows the microphone. State is carried by
+// size and glow, not by extra props.
 
 layout(location = 0) in vec2 vCoord;
 layout(location = 0) out vec4 fragColor;
@@ -40,124 +41,82 @@ float noise(vec2 p)
     vec2 i = floor(p);
     vec2 f = fract(p);
     vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    return mix(
+        mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+        u.y);
 }
 
 float fbm(vec2 p)
 {
     float v = 0.0;
     float a = 0.5;
-    mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 3; i++) {
         v += a * noise(p);
-        p = rot * p * 2.02 + 11.7;
+        p = p * 2.03 + 17.1;
         a *= 0.5;
     }
     return v;
 }
 
-// Siri-ish ramp. Explicit stops instead of a cosine palette so the mid tones
-// stay saturated: the sphere should read violet/cyan, never grey.
+// Three stops only: indigo, violet, pale cyan. A tight ramp keeps the ball
+// readable at a glance; wider ramps looked like a lava lamp.
 vec3 ramp(float k)
 {
-    const vec3 c0 = vec3(0.10, 0.06, 0.34); // deep indigo
-    const vec3 c1 = vec3(0.36, 0.18, 0.82); // violet
-    const vec3 c2 = vec3(0.83, 0.28, 0.86); // magenta
-    const vec3 c3 = vec3(0.30, 0.80, 0.96); // cyan
-    const vec3 c4 = vec3(0.98, 0.99, 1.00); // hot white
+    const vec3 c0 = vec3(0.14, 0.10, 0.38);
+    const vec3 c1 = vec3(0.46, 0.32, 0.92);
+    const vec3 c2 = vec3(0.62, 0.86, 0.96);
     k = clamp(k, 0.0, 1.0);
-    vec3 col = mix(c0, c1, smoothstep(0.00, 0.26, k));
-    col = mix(col, c2, smoothstep(0.30, 0.54, k));
-    col = mix(col, c3, smoothstep(0.58, 0.78, k));
-    col = mix(col, c4, smoothstep(0.86, 1.00, k));
-    return col;
-}
-
-// Signed distance to a softly wobbling circle; negative inside.
-float sdBlob(vec2 p, float radius, float phase, float amp)
-{
-    float wob = 0.0;
-    wob += 0.050 * sin(3.1 * p.x * 2.6 + phase * 1.7);
-    wob += 0.038 * sin(4.3 * p.y * 2.6 - phase * 1.3);
-    wob += 0.024 * sin(6.7 * (p.x + p.y) * 2.1 + phase * 2.1);
-    return length(p) - (radius + wob * amp);
+    vec3 col = mix(c0, c1, smoothstep(0.05, 0.62, k));
+    return mix(col, c2, smoothstep(0.68, 0.98, k));
 }
 
 void main()
 {
     vec2 res = vec2(max(uWidth, 1.0), max(uHeight, 1.0));
-    // Square space: the orb must not stretch with the item aspect.
     vec2 uv = (vCoord - 0.5) * 2.0;
     uv.x *= res.x / res.y;
 
     float t = uTime;
-    float speed = mix(0.55, 1.45, uThinking) + uLevel * 0.75;
+    // Thinking breathes a little faster; everything else is slow. Nothing races.
+    float speed = mix(0.35, 0.62, uThinking) + uLevel * 0.35;
     float phase = t * speed;
 
-    // Three-layer warp at a finer frequency than the sphere: the detail has to
-    // be smaller than the silhouette or the interior reads as a few flat
-    // blobs instead of flowing liquid.
-    vec2 warp = uv * 2.7;
-    float flow = fbm(warp + vec2(0.0, phase * 0.22) + fbm(warp * 1.5 - phase * 0.15) * 1.1);
-    float body = fbm(warp * 1.9 + vec2(flow * 1.6, -phase * 0.30) + 3.7);
+    // One warp pass is enough at this size; the eye reads it as flow.
+    vec2 warp = uv * 2.1;
+    float flow = fbm(warp + vec2(0.0, phase * 0.16) + fbm(warp * 1.4 - phase * 0.10) * 0.7);
 
-    float radius = mix(0.50, 0.55, uEnergy) + uLevel * 0.055;
-    float wobble = 0.18 + 0.16 * uLevel;
-    float d = sdBlob(uv, radius, phase, wobble);
     float r = length(uv);
+    float radius = mix(0.50, 0.54, uEnergy) + uLevel * 0.035;
 
-    // Core coverage with a soft edge so motion does not alias.
-    float core = smoothstep(0.055, -0.035, d);
+    // Soft silhouette with a gentle wobble. A hard circle looked like a logo;
+    // a strongly wobbling blob looked like an egg. This is in between.
+    float wob = 0.035 * sin(3.1 * uv.x * 2.4 + phase) + 0.028 * sin(4.3 * uv.y * 2.4 - phase * 0.8);
+    float d = r - (radius + wob * (0.5 + uLevel));
 
-    // Colour field: bands of hue that swirl around the sphere, distorted by the
-    // flow field. Sampling the ramp by a plain noise value gives large flat
-    // patches; sampling it by angle gives the aurora-in-glass look, and the
-    // noise bends the bands so they still churn.
+    float core = smoothstep(0.045, -0.030, d);
+
+    // Colour follows a slowly turning angle so the surface drifts instead of
+    // flickering; the hue bias per state is tiny on purpose.
     vec2 sp = uv / max(radius, 0.001);
-    float ang = atan(sp.y, sp.x) * 0.15915494;   // turns, not radians
-    float swirl = ang + flow * 0.50 + r * 0.55 - phase * 0.045 + uHue * 0.35;
-    float k = 0.5 + 0.5 * sin(swirl * TAU);
-    k = clamp(k * 0.90 + 0.03, 0.0, 0.90);
-    vec3 col = ramp(k);
-    // Luminance structure inside the bands, so the sphere is not a flat disc.
-    col *= 0.55 + 0.85 * smoothstep(0.15, 0.85, body);
+    float ang = atan(sp.y, sp.x) * 0.15915494;
+    float k = 0.5 + 0.5 * sin((ang + flow * 0.28 - phase * 0.02 + uHue * 0.12) * TAU);
+    vec3 col = ramp(k * 0.92);
 
-    // Volumetric shading: bright core, darker towards the silhouette, so the
-    // sphere has depth instead of reading as a flat sticker.
-    float depth = smoothstep(radius * 1.05, radius * 0.10, r);
-    col *= 0.50 + 0.78 * depth;
-    col *= 0.88 + 0.24 * (1.0 - clamp(uv.y * 0.5 + 0.5, 0.0, 1.0));
+    // Depth: lit from the middle, darker at the edge, so it reads as a sphere.
+    float depth = smoothstep(radius * 1.02, radius * 0.05, r);
+    col *= 0.52 + 0.62 * depth;
 
-    // Fold highlights: thin bright veins along the noise ridges.
-    float vein = pow(1.0 - abs(sin(swirl * TAU)), 6.0) * smoothstep(0.35, 0.95, body);
-    col += vec3(0.95, 0.97, 1.00) * vein * 1.15 * core;
+    // Brightness answers the microphone, but gently: at rest it is a calm ball,
+    // while loud speech lifts the middle without strobing.
+    col += ramp(0.80) * pow(depth, 2.2) * (0.10 + 0.45 * uLevel);
 
-    // Audio: a ripple that travels outward when the user speaks, plus a small
-    // overall brightening so the orb visibly answers the microphone.
-    float ripple = exp(-pow((r - radius * (0.35 + uLevel * 0.85)) * 7.5, 2.0));
-    col += ramp(0.75 + uLevel * 0.2) * ripple * (0.25 + uLevel * 0.75) * 0.9 * core;
+    // Soft edge + tight halo. No white outline: an outline reads as a sticker.
+    float bloom = exp(-max(d, 0.0) * 9.0);
+    col += ramp(0.62) * bloom * 0.35;
+    float halo = exp(-max(d, 0.0) * 5.0) * (1.0 - core);
+    col += ramp(0.55) * halo * (0.18 + 0.25 * uEnergy);
 
-    // Edge: coloured, soft, no white outline — an outline instantly reads as a
-    // flat sticker pasted on the desktop.
-    float rim = smoothstep(0.075, 0.0, abs(d)) * core;
-    float bloom = exp(-max(d, 0.0) * 10.5) * (1.0 - core);
-    col += ramp(0.62) * rim * 0.75;
-    col += ramp(0.70 + uLevel * 0.1) * bloom * 0.80;
-
-    // Specular sheen: a soft highlight up-left sells the sphere as a volume.
-    float sheen = pow(clamp(1.0 - length(uv - vec2(-0.20, -0.24)) * 1.45, 0.0, 1.0), 3.0);
-    col += vec3(0.92, 0.95, 1.00) * sheen * 0.30 * core;
-
-    // Wide coloured halo, additive and soft, so it sits on any wallpaper.
-    float halo = exp(-max(d, 0.0) * 8.0) * (1.0 - core);
-    col += ramp(0.60) * halo * (0.55 + 0.45 * uEnergy);
-
-    float alpha = clamp(core * 0.99 + rim * 0.28 + bloom * 0.38 + halo * 0.28, 0.0, 1.0) * uOpacity;
-
-    // Tight bloom should stay a light film, not a plate: scale rgb by coverage.
-    fragColor = vec4(clamp(col * 1.12, 0.0, 1.0) * alpha, alpha);
+    float alpha = clamp(core * 0.97 + bloom * 0.22 + halo * 0.16, 0.0, 1.0) * uOpacity;
+    fragColor = vec4(clamp(col, 0.0, 1.0) * alpha, alpha);
 }

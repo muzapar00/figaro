@@ -3,22 +3,23 @@ import Quickshell
 import Quickshell.Wayland
 import qs.figaro
 
-// A transparent layer-shell overlay that appears only while Figaro is awake.
-// It never takes keyboard focus, and its input region is masked to the sphere
-// so the rest of the strip stays click-through.
+// A transparent layer-shell surface that exists only while Figaro is awake.
+//
+// One ball, one caption. The window is masked to the ball so the rest of the
+// strip stays click-through, and it never takes keyboard focus.
 PanelWindow {
     id: win
 
     screen: Quickshell.screens.length > 0 ? Quickshell.screens[0] : null
     anchors {
-        bottom: true
+        top: true
         left: true
         right: true
     }
     margins {
-        bottom: 84
+        top: 6
     }
-    implicitHeight: 440
+    implicitHeight: 300
     exclusiveZone: 0
     color: "transparent"
 
@@ -46,29 +47,31 @@ PanelWindow {
             win.shown = true;
     }
 
-    // Keep the window alive long enough to play the exit animation.
     Timer {
         id: hideTimer
-        interval: 240
+        interval: 220
         onTriggered: win.shown = false
     }
 
     Item {
         id: content
-        anchors.fill: parent
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        width: 560
+        height: 280
+        y: 0
         opacity: 1
-        scale: 1
 
-        // Entering: a short spring with a little overshoot, i.e. the orb pops
-        // into existence. Leaving: plain ease-out, quick, no bounce — a bounce
-        // on dismissal reads as "it came back", the opposite of calm.
+        // Appearing is a state change, so it gets a short spring; disappearing
+        // is a dismissal, so it gets a plain ease-out. A bounce on dismissal
+        // reads as "it came back", which is the opposite of calm.
         states: State {
             name: "hidden"
             when: !win.shown
             PropertyChanges {
                 target: content
                 opacity: 0
-                scale: 0.76
+                y: -content.height - 24
             }
         }
 
@@ -77,12 +80,16 @@ PanelWindow {
                 from: "hidden"
                 to: ""
                 animations: [
+                    // The ball drops in from just above the screen edge and
+                    // settles with a small elastic overshoot. A spring is the
+                    // right model here: it is a physical object arriving, not a
+                    // UI panel expanding.
                     SpringAnimation {
                         target: content
-                        property: "scale"
-                        to: 1
-                        spring: 3.9
-                        damping: 0.66
+                        property: "y"
+                        to: 0
+                        spring: 4.4
+                        damping: 0.52
                         mass: 1.0
                         epsilon: 0.001
                     },
@@ -90,7 +97,7 @@ PanelWindow {
                         target: content
                         property: "opacity"
                         to: 1
-                        duration: 170
+                        duration: 200
                         easing.type: Easing.OutCubic
                     }
                 ]
@@ -99,108 +106,72 @@ PanelWindow {
                 from: ""
                 to: "hidden"
                 animations: [
+                    // Leaving: straight up and out, quickly. A spring on the
+                    // way out would bounce it back into view.
                     NumberAnimation {
                         target: content
-                        property: "scale"
-                        to: 0.76
-                        duration: 150
-                        easing.type: Easing.OutCubic
+                        property: "y"
+                        to: -content.height - 24
+                        duration: 190
+                        easing.type: Easing.InCubic
                     },
                     NumberAnimation {
                         target: content
                         property: "opacity"
                         to: 0
-                        duration: 140
+                        duration: 160
                         easing.type: Easing.OutCubic
                     }
                 ]
             }
         ]
 
-        Item {
-            id: stack
-            width: 560
-            height: 400
+        FigaroOrb {
+            id: orb
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
+            anchors.top: parent.top
+            anchors.topMargin: 0
+            diameter: 150
+            state: FigaroIpc.state
+            level: FigaroIpc.level
 
-            FigaroOrb {
-                id: orb
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.top: parent.top
-                anchors.topMargin: 20
-                diameter: 152
-                state: FigaroIpc.state
-                level: FigaroIpc.level
-
-                MouseArea {
-                    anchors.fill: parent
-                    // The sphere doubles as the stop button: Siri behaves the
-                    // same way, and it is the one place users already point at.
-                    onClicked: FigaroIpc.cancel()
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                }
+            MouseArea {
+                anchors.fill: parent
+                // The ball is the stop button: the one place a person already
+                // looks when they want the assistant to be quiet.
+                onClicked: FigaroIpc.cancel()
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
             }
+        }
 
-            SiriWave {
-                id: wave
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.top: orb.bottom
-                anchors.topMargin: 2
-                z: -1
-                width: 560
-                height: 132
-                level: FigaroIpc.level
-                active: FigaroIpc.active && (FigaroIpc.state === "listening" || FigaroIpc.state === "speaking")
-                speed: FigaroIpc.state === "speaking" ? 1.25 : 1.0
-            }
-
-            Column {
-                id: captions
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.top: wave.bottom
-                anchors.topMargin: 0
-                width: 470
-                spacing: 6
-
-                Text {
-                    id: line
-                    width: parent.width
-                    visible: FigaroIpc.partial.length > 0
-                    text: FigaroIpc.partial
-                    color: "#f2f4ff"
-                    font.pixelSize: 15
-                    font.weight: Font.Medium
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
-                    // Soft shadow instead of an outline: over a bright wallpaper
-                    // outlined text looks cheap.
-                    style: Text.Raised
-                    styleColor: Qt.rgba(0, 0, 0, 0.45)
-                }
-
-                Text {
-                    id: tool
-                    width: parent.width
-                    visible: FigaroIpc.toolLabel.length > 0 && FigaroIpc.state === "thinking"
-                    text: FigaroIpc.toolLabel
-                    color: "#c3ccf2"
-                    font.pixelSize: 12
-                    horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
-                    opacity: 0.75
-                    style: Text.Raised
-                    styleColor: Qt.rgba(0, 0, 0, 0.4)
+        // Caption: what was heard, or what is being said. One line, elided —
+        // a paragraph under the ball competes with it instead of supporting it.
+        Text {
+            id: caption
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: orb.bottom
+            anchors.topMargin: 8
+            width: Math.min(implicitWidth, 520)
+            text: FigaroIpc.partial
+            color: "#eef1ff"
+            font.pixelSize: 14
+            elide: Text.ElideRight
+            horizontalAlignment: Text.AlignHCenter
+            visible: text.length > 0
+            style: Text.Raised
+            styleColor: Qt.rgba(0, 0, 0, 0.55)
+            opacity: visible ? 1 : 0
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 160
+                    easing.type: Easing.OutCubic
                 }
             }
         }
     }
 
-    // Only the sphere is clickable; everything else in the strip passes through
-    // to whatever is underneath.
+    // Only the ball is clickable.
     mask: Region {
         item: orb
         shape: RegionShape.Ellipse

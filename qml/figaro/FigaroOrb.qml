@@ -1,32 +1,51 @@
 import QtQuick
 import Quickshell
 
-// The visual sphere: one shader pass for the liquid body, plus ring/dot layers
-// for the "I am listening" / "I am thinking" cues.
+// The assistant's face: one soft ball of light plus a single level ring.
 //
-// Motion follows the Apple HIG rules we already use elsewhere in this desktop:
-// motion that follows input (the mic level) is direct and unsprung, while
-// state changes (idle -> listening -> thinking) use short springs with a
-// little overshoot so the orb feels like a physical object.
+// Deliberately three moving elements at most (ball, ring, caption). Earlier
+// iterations added sonar rings, an orbiting dot constellation and a separate
+// waveform, which made it impossible to read the state at a glance — the
+// opposite of what the Apple HIG motion guidance asks for.
 Item {
     id: orb
 
     property string state: "idle"
-    property real level: 0            // 0..1, raw from the daemon
-    property real diameter: 200
+    property real level: 0
+    property real diameter: 168
 
     readonly property bool listening: state === "listening"
     readonly property bool thinking: state === "thinking"
     readonly property bool speaking: state === "speaking"
 
-    // Smoothed level: fast attack, slower release. Raw 15 Hz mic levels look
-    // like a volume meter if they drive the shader directly.
+    // Envelope: fast attack, slower release, so the ball tracks a voice without
+    // looking like a VU meter.
     property real env: 0
-    readonly property real energy: thinking ? 0.95 : speaking ? 0.72 + env * 0.28 : 0.48 + env * 0.52
-    readonly property real hue: thinking ? 0.76 : speaking ? 0.56 : 0.30
+    readonly property real energy: thinking ? 0.85 : speaking ? 0.7 + env * 0.3 : 0.45 + env * 0.4
+    readonly property real hue: thinking ? 0.62 : speaking ? 0.52 : 0.30
 
     implicitWidth: diameter
     implicitHeight: diameter
+
+    // Breathing only while thinking: a slow, readable "I am working" cue that
+    // does not pull the eye away from whatever the person is doing.
+    property real breath: 0
+    SequentialAnimation on breath {
+        running: orb.thinking
+        loops: Animation.Infinite
+        NumberAnimation {
+            from: 0
+            to: 1
+            duration: 1600
+            easing.type: Easing.InOutSine
+        }
+        NumberAnimation {
+            from: 1
+            to: 0
+            duration: 1600
+            easing.type: Easing.InOutSine
+        }
+    }
 
     FrameAnimation {
         id: frame
@@ -34,109 +53,55 @@ Item {
         onTriggered: {
             const dt = Math.min(frame.frameTime, 50) / 1000;
             const target = orb.state === "idle" ? 0 : orb.level;
-            const rate = target > orb.env ? 17 : 5.5;
+            const rate = target > orb.env ? 15 : 5.0;
             orb.env += (target - orb.env) * (1 - Math.exp(-dt * rate));
         }
     }
 
-    ShaderEffect {
+    Item {
         id: body
-        // The shader draws a halo outside the nominal diameter, so the item is
-        // larger than the sphere itself.
-        width: orb.diameter * 2.1
-        height: width
         anchors.centerIn: parent
-
-        vertexShader: "shaders/figaro_orb.vert.qsb"
-        fragmentShader: "shaders/figaro_orb.frag.qsb"
-
-        property real uTime: frame.elapsedTime
-        property real uLevel: orb.env
-        property real uEnergy: orb.energy
-        property real uOpacity: 1.0
-        property real uWidth: width
-        property real uHeight: height
-        property real uThinking: orb.thinking ? 1.0 : 0.0
-        property real uHue: orb.hue
-    }
-
-    // Listening: two rings that expand out of the sphere, like sonar. Their
-    // brightness rides the mic envelope so silence looks calm.
-    Item {
-        anchors.fill: parent
-        visible: orb.listening
-        opacity: orb.listening ? 1 : 0
-        Behavior on opacity {
-            NumberAnimation {
-                duration: 180
-                easing.type: Easing.OutCubic
-            }
-        }
-
-        property real pulse: 0
-        NumberAnimation on pulse {
-            from: 0
-            to: 1
-            duration: 2100
-            loops: Animation.Infinite
-            running: orb.listening
-        }
-
-        Repeater {
-            model: 2
-            Rectangle {
-                required property int index
-                readonly property real phase: (parent.pulse + index * 0.5) % 1.0
-                width: orb.diameter
-                height: width
-                radius: width / 2
-                anchors.centerIn: parent
-                color: "transparent"
-                border.width: 1.5
-                border.color: Qt.rgba(0.66, 0.74, 1.0, 0.55)
-                scale: 0.86 + phase * 0.72
-                opacity: (1 - phase) * (0.22 + 0.62 * orb.env)
-            }
-        }
-    }
-
-    // Thinking: a slow orbiting constellation of dots.
-    Item {
-        id: spinner
-        width: orb.diameter * 1.02
+        width: orb.diameter
         height: width
-        anchors.centerIn: parent
-        visible: orb.thinking
-        opacity: orb.thinking ? 1 : 0
-        Behavior on opacity {
-            NumberAnimation {
-                duration: 220
-                easing.type: Easing.OutCubic
-            }
+        scale: orb.thinking ? 1.0 + orb.breath * 0.022 : 1.0
+
+        ShaderEffect {
+            id: fx
+            width: orb.diameter * 1.9
+            height: width
+            anchors.centerIn: parent
+
+            vertexShader: "shaders/figaro_orb.vert.qsb"
+            fragmentShader: "shaders/figaro_orb.frag.qsb"
+
+            property real uTime: frame.elapsedTime
+            property real uLevel: orb.env
+            property real uEnergy: orb.energy
+            property real uOpacity: 1.0
+            property real uWidth: width
+            property real uHeight: height
+            property real uThinking: orb.thinking ? 1.0 : 0.0
+            property real uHue: orb.hue
         }
 
-        RotationAnimation on rotation {
-            from: 0
-            to: 360
-            duration: 2600
-            loops: Animation.Infinite
-            running: orb.thinking
-        }
-
-        Repeater {
-            model: 6
-            Rectangle {
-                required property int index
-                readonly property real angle: index / 6 * Math.PI * 2
-                readonly property real orbitRadius: spinner.width * 0.5 - 6
-                width: 5
-                height: 5
-                radius: 2.5
-                color: "#cdd8ff"
-                x: spinner.width / 2 + Math.cos(angle) * orbitRadius - width / 2
-                y: spinner.width / 2 + Math.sin(angle) * orbitRadius - height / 2
-                opacity: 0.18 + 0.82 * (index / 6)
-                scale: 0.8 + 0.4 * (index / 6)
+        // One ring, one job: show that the microphone is hearing something.
+        // It only appears while listening; there is nothing to orbit or stack.
+        Rectangle {
+            id: ring
+            anchors.centerIn: parent
+            readonly property real live: orb.listening ? orb.env : 0
+            width: orb.diameter * (0.98 + live * 0.16)
+            height: width
+            radius: width / 2
+            color: "transparent"
+            border.width: 1.2
+            border.color: Qt.rgba(0.62, 0.72, 1.0, 0.20 + live * 0.55)
+            opacity: orb.listening ? 0.9 : 0
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 180
+                    easing.type: Easing.OutCubic
+                }
             }
         }
     }
