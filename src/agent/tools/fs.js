@@ -42,7 +42,7 @@ export function createReadTool(options = {}) {
     },
     timeoutMs: 30_000,
     async execute(args = {}) {
-      const abs = resolvePath(args.file_path, baseWorkdir);
+      const abs = resolvePath(args.file_path ?? args.path, baseWorkdir);
       let stat;
       try {
         stat = await fsp.stat(abs);
@@ -117,7 +117,7 @@ export function createWriteTool(options = {}) {
     },
     timeoutMs: 30_000,
     async execute(args = {}) {
-      const abs = resolvePath(args.file_path, baseWorkdir);
+      const abs = resolvePath(args.file_path ?? args.path, baseWorkdir);
       if (typeof args.content !== 'string') throw new Error('content must be a string');
       await atomicWriteFile(abs, args.content);
       const bytes = Buffer.byteLength(args.content, 'utf8');
@@ -153,7 +153,7 @@ export function createEditTool(options = {}) {
     },
     timeoutMs: 30_000,
     async execute(args = {}) {
-      const abs = resolvePath(args.file_path, baseWorkdir);
+      const abs = resolvePath(args.file_path ?? args.path, baseWorkdir);
       if (typeof args.old_string !== 'string' || args.old_string.length === 0) {
         throw new Error('old_string must be a non-empty string');
       }

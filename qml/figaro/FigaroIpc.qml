@@ -19,6 +19,13 @@ Singleton {
     property string state: "idle"   // idle | listening | thinking | speaking
     property real level: 0          // 0..1
     property string partial: ""     // ASR interim / streamed reply text
+
+    // Overlay preferences pushed by the daemon (`{type:"ui"}`). The overlay has
+    // no access to the config file, so the daemon owns these values.
+    property real uiScale: 1.0
+    property string uiShape: "orb"     // orb | ball | line
+    property string uiMotion: "auto"   // auto | off
+    property int windowButtonSize: 16
     property string reply: ""
     property string toolLabel: ""
 
@@ -87,6 +94,12 @@ Singleton {
             return;
 
         switch (msg.type) {
+        case "ui":
+            root.uiScale = typeof msg.scale === "number" ? msg.scale : 1.0;
+            if (msg.shape === "orb" || msg.shape === "ball" || msg.shape === "line") root.uiShape = msg.shape;
+            root.uiMotion = msg.motion === "off" ? "off" : "auto";
+            if (Number.isFinite(Number(msg.windowButtonSize))) root.windowButtonSize = Number(msg.windowButtonSize);
+            break;
         case "state":
             root.state = msg.state || "idle";
             if (root.state !== "listening")

@@ -203,7 +203,9 @@ test('screenshot and view_image are offered to the model', () => {
   const view = registry.get('view_image');
   assert.ok(shot && view, 'both screen tools exist');
   assert.match(shot.description, /screen/i);
-  assert.deepEqual(view.parameters.required, ['path']);
+  // The catalog uses `file_path` elsewhere, so both spellings must be accepted.
+  assert.ok(view.parameters.properties.file_path);
+  assert.ok(view.parameters.properties.path);
   const schema = registry.schemas.find((tool) => tool.function.name === 'view_image');
   assert.equal(schema.type, 'function');
 });
@@ -216,6 +218,8 @@ test('view_image returns the picture separately from its text result', async () 
   if (r.status !== 0) return; // no ffmpeg in this environment: nothing to test
   const tool = createViewImageTool();
   const result = await tool.execute({ path: file });
+  const alias = await tool.execute({ file_path: file });
+  assert.ok(alias.image.dataBase64.length > 100, 'file_path alias works too');
   assert.equal(typeof result.content, 'string');
   assert.equal(result.image.mimeType, 'image/jpeg');
   assert.ok(result.image.dataBase64.length > 100, 'image bytes are returned');

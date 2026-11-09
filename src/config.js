@@ -107,6 +107,9 @@ export const DEFAULTS = {
     // costs ~+600ms (post-roll 300ms + inference ~200ms + first-use model load).
     // Real human speech already produced 0 false wakes, so this is opt-in.
     verifyWake: { enabled: false, timeoutMs: 1800 },
+    // Bundled wake/ASR models live under the checkout's models/ directory. Set
+    // modelDir to an absolute path to use a different keyword spotter bundle.
+    modelDir: null,
     // After a spoken reply the assistant stays on screen this long, waiting for
     // a follow-up. 0 disables the window. Only a voice above followUpMinRms for
     // followUpMinMs re-opens the conversation, so room noise cannot do it.
@@ -116,6 +119,17 @@ export const DEFAULTS = {
   },
   ui: {
     socket: null, // resolved => $XDG_RUNTIME_DIR/figaro/sock
+    // Overall animation scale: every part of the orb/pill/window multiplies by
+    // this, so the overlay size is one setting instead of a dozen.
+    scale: 1.0,
+    // orb = ball while listening, pill while answering (default);
+    // ball = always a ball, captions sit under it;
+    // line = a thin horizontal line that reacts to the level.
+    shape: 'orb',
+    // auto = normal motion; off = instant state changes (no animation at all).
+    motion: 'auto',
+    // macOS-style window buttons in the settings window, in px.
+    windowButtonSize: 16,
   },
   agent: {
     // extra system prompt lines appended to the dsh-derived prompt

@@ -47,6 +47,7 @@ const ASR_HOT_PATHS = Object.freeze([
   'asr.bargeIn.minMs',
 ]);
 // Interaction settings are pure daemon state, so they re-read instantly.
+const UI_PATHS = Object.freeze(['ui.scale', 'ui.shape', 'ui.motion', 'ui.windowButtonSize']);
 const INTERACTION_PATHS = Object.freeze([
   'interaction.followUpWindowMs',
   'interaction.followUpMinRms',
@@ -1394,6 +1395,20 @@ export function createDaemon(options = {}) {
     return config;
   }
 
+  /** Snapshot of the overlay preferences, sent to UI subscribers. */
+  function uiSnapshot() {
+    const ui = config.ui ?? {};
+    const scale = Number(ui.scale);
+    const buttonSize = Number(ui.windowButtonSize);
+    return {
+      type: 'ui',
+      scale: Number.isFinite(scale) && scale > 0 ? Math.min(2.0, Math.max(0.5, scale)) : 1.0,
+      shape: ['orb', 'ball', 'line'].includes(ui.shape) ? ui.shape : 'orb',
+      motion: ui.motion === 'off' ? 'off' : 'auto',
+      windowButtonSize: Number.isFinite(buttonSize) && buttonSize >= 12 && buttonSize <= 24 ? buttonSize : 16,
+    };
+  }
+
   /** Re-read the interaction settings after config.set wrote them. */
   function reloadInteractionSettings() {
     const interaction = config.interaction ?? {};
@@ -1493,6 +1508,28 @@ export function createDaemon(options = {}) {
       restartRequired.push(...result.restartRequired);
       errors.push(...result.errors);
     }
+
+    const uiChanged = changedPaths.filter((path) => UI_PATHS.includes(path));
+    if (uiChanged.length > 0) {
+      // The overlay has no config file access: push the new prefs to it.
+      emit(uiSnapshot());
+      applied.push(...uiChanged);
+      log.info(`ui settings reloaded (${JSON.stringify(uiSnapshot())})`);
+    }
+
+    const keyPaths = changedPaths.filter((path) => path === 'deepseek.apiKey');
+    if (keyPaths.length > 0) applied.push(...keyPaths); // the agent reads config per request
+    const minimaxKey = changedPaths.filter((path) => path === 'minimax.apiKey');
+    if (minimaxKey.length > 0) {
+      const ok = await recreateTts();
+      if (ok) applied.push(...minimaxKey);
+      else {
+        errors.push('MiniMax API key 已写入，但重建 TTS 失败，设置将在重启后生效');
+        restartRequired.push(...minimaxKey);
+      }
+    }
+    const asrModel = changedPaths.filter((path) => path.startsWith('asr.modelDir'));
+    if (asrModel.length > 0) restartRequired.push(...asrModel);
 
     const interactionChanged = changedPaths.filter((path) => INTERACTION_PATHS.includes(path));
     if (interactionChanged.length > 0) {
@@ -1607,6 +1644,7 @@ export function createDaemon(options = {}) {
         // A late subscriber (UI overlay) must be able to render a turn that is
         // already in progress: replay the current state, partial text and tool.
         client.send({ type: 'state', state });
+        client.send(uiSnapshot());
         if (state === 'listening' && lastAsrPartial.length > 0) {
           client.send({ type: 'partial', text: lastAsrPartial });
         } else if (current) {

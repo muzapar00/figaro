@@ -32,12 +32,13 @@ Item {
         : state === "finalizing" ? "thinking"
         : state
     readonly property bool hasText: text.length > 0
-    readonly property bool morph: hasText && (visualState === "thinking" || visualState === "speaking")
+    readonly property bool morph: allowMorph && hasText && (visualState === "thinking" || visualState === "speaking")
     readonly property bool reduce: FigaroStyle.reduceMotion
 
     // The one value everything else is derived from.
     property real morphProgress: morph ? 1 : 0
     Behavior on morphProgress {
+        enabled: shell.motionEnabled
         SpringAnimation {
             // Opening is leisurely and elastic; retracting is quicker so it never
             // gets cut off by the window leaving. Both are still springs, so the
@@ -56,7 +57,13 @@ Item {
 
 
 
-    readonly property real ballDiameter: 128
+    // Overall size multiplier from ui.scale (settings -> daemon -> IPC).
+    property real uiScale: 1.0
+    // The settings can pin the shape to a ball (no pill) or turn motion off.
+    property bool allowMorph: true
+    property bool motionEnabled: true
+
+    readonly property real ballDiameter: 128 * uiScale
     readonly property real ballScale: 1.0 - (1.0 - 0.62) * Math.max(0, Math.min(1, morphProgress))
     readonly property real ballBox: ballDiameter * ballScale
 
@@ -67,16 +74,16 @@ Item {
     // opens the ball is pushed into the left end.
     readonly property real ballCY: height / 2
 
-    readonly property real padH: 14
-    readonly property real padV: 12
-    readonly property real gap: 12
-    readonly property real maxTextW: 400
+    readonly property real padH: 14 * uiScale
+    readonly property real padV: 12 * uiScale
+    readonly property real gap: 12 * uiScale
+    readonly property real maxTextW: 400 * uiScale
 
     Text {
         id: measure
         visible: false
         text: shell.text
-        font.pixelSize: 14
+        font.pixelSize: 14 * shell.uiScale
         font.weight: Font.Medium
         wrapMode: Text.NoWrap
     }
@@ -111,7 +118,7 @@ Item {
     // moment and springs back. One value, driven by a short spring, so the ball
     // and the pill squash together instead of each doing its own thing.
     property real jelly: 0
-    onMorphChanged: jellyAnim.restart()
+    onMorphChanged: if (shell.motionEnabled) jellyAnim.restart()
     SequentialAnimation {
         id: jellyAnim
         running: false
@@ -193,7 +200,7 @@ Item {
     Text {
         id: label
         text: shell.text
-        font.pixelSize: 14
+        font.pixelSize: 14 * shell.uiScale
         font.weight: Font.Medium
         color: "#f2f4ff"
         wrapMode: Text.Wrap

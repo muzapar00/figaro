@@ -47,6 +47,15 @@ function imageSize(file) {
   return null;
 }
 
+/** Accept path / file_path / file: the catalog is not consistent across tools. */
+function pickPath(args) {
+  for (const key of ['path', 'file_path', 'file']) {
+    const value = typeof args?.[key] === 'string' ? args[key].trim() : '';
+    if (value.length > 0) return value;
+  }
+  return '';
+}
+
 export function createScreenshotTool() {
   return {
     name: 'screenshot',
@@ -57,12 +66,14 @@ export function createScreenshotTool() {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Optional output path; defaults to a timestamped file in the temp directory.' },
+        file_path: { type: 'string', description: 'Alias for path.' },
       },
       additionalProperties: false,
     },
     async execute(args) {
-      const target = typeof args?.path === 'string' && args.path.trim().length > 0
-        ? path.resolve(args.path.trim())
+      const wanted = pickPath(args);
+      const target = wanted.length > 0
+        ? path.resolve(wanted)
         : path.join(os.tmpdir(), `figaro-screen-${Date.now()}.png`);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       await run('spectacle', ['-b', '-n', '-f', '-o', target]);
@@ -85,14 +96,20 @@ export function createViewImageTool() {
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to the image file.' },
+        // The file tools in this catalog use `file_path`, and the model naturally
+        // reuses that name here; both spellings are accepted so a wording
+        // difference never reads as "the image tool is broken".
+        file_path: { type: 'string', description: 'Absolute path to the image file.' },
+        path: { type: 'string', description: 'Alias for file_path.' },
       },
-      required: ['path'],
+      required: ['file_path'],
       additionalProperties: false,
     },
     async execute(args) {
-      const file = path.resolve(String(args?.path ?? '').trim());
-      if (!file || !fs.existsSync(file)) throw new Error(`image not found: ${file}`);
+      const wanted = pickPath(args);
+      if (wanted.length === 0) throw new Error('view_image needs a file_path (absolute path to an image)');
+      const file = path.resolve(wanted);
+      if (!fs.existsSync(file)) throw new Error(`image not found: ${file}`);
       const stat = fs.statSync(file);
       if (stat.size > MAX_IMAGE_BYTES) throw new Error(`image too large: ${(stat.size / 1048576).toFixed(1)} MiB`);
       const out = path.join(os.tmpdir(), `figaro-view-${Date.now()}.jpg`);

@@ -279,8 +279,10 @@ test('patch flattening and whitelist validation', () => {
     deepseek: { apiKey: 'nope' },
     ui: { socket: '/tmp/x' },
   });
-  assert.deepEqual(allowed.sort(), ['asr.sensitivity', 'asr.wakeCooldownMs', 'tts.ack.enabled']);
-  assert.deepEqual(forbidden.sort(), ['deepseek.apiKey', 'ui.socket']);
+  // API keys became writable (write-only) for the settings app; the socket path
+  // and model endpoints stay forbidden so a UI bug cannot repoint the daemon.
+  assert.deepEqual(allowed.sort(), ['asr.sensitivity', 'asr.wakeCooldownMs', 'deepseek.apiKey', 'tts.ack.enabled']);
+  assert.deepEqual(forbidden.sort(), ['ui.socket']);
 });
 
 test('deepMergeConfig replaces arrays/scalars and recurses into objects', () => {
@@ -326,8 +328,9 @@ test('config.set rejects non-whitelisted paths and leaves config.json untouched'
   });
   assert.equal(reply.type, 'config');
   assert.equal(reply.ok, false);
-  assert.ok(reply.forbidden.includes('deepseek.apiKey'));
   assert.ok(reply.forbidden.includes('ui.socket'));
+  assert.ok(!reply.forbidden.includes('deepseek.apiKey'), 'api keys are writable now');
+  assert.equal(await fs.readFile(ctx.configPath, 'utf8'), before, 'a forbidden path aborts the whole patch');
   assert.equal(await fs.readFile(ctx.configPath, 'utf8'), before);
   assert.doesNotMatch(JSON.stringify(messages), /hacked/);
 });
