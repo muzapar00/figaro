@@ -103,18 +103,30 @@ MPageScroll {
     }
 
     Rectangle {
+        // Height follows the wrapped text instead of a fixed 44px: the note wraps
+        // to two lines at this width, and a fixed height left uneven space above
+        // and below the text.
+        id: safetyNote
         Layout.fillWidth: true
-        implicitHeight: 44
+        implicitHeight: safetyRow.implicitHeight + 20
         radius: 8
         color: Qt.rgba(0.04, 0.52, 1.0, 0.10)
         border.width: 0.5
         border.color: Qt.rgba(0.04, 0.52, 1.0, 0.32)
         RowLayout {
+            id: safetyRow
             anchors.fill: parent
             anchors.margins: 10
             spacing: 8
-            MIcon { kind: "warning"; size: 14; color: Theme.accent }
+            MIcon {
+                kind: "warning"
+                size: 14
+                color: Theme.accent
+                Layout.alignment: Qt.AlignTop | Qt.AlignHCenter
+                Layout.topMargin: 1
+            }
             Text {
+                Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: true
                 text: "安全说明：本页只会把 key 写进 daemon 的 config.json，不会读取/显示/记录完整内容；"
                     + "输入框保存后立即清空。语音识别用的是本地模型，不需要任何 API Key。"
