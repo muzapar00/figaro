@@ -1,0 +1,223 @@
+{
+  "generatedAt": "2026-11-09T04:55:07.425Z",
+  "generator": "figaro-settings GUI",
+  "socket": "/run/user/1000/figaro-settings-test/sock",
+  "usingTestSocket": true,
+  "connected": true,
+  "daemonState": "idle",
+  "capabilities": {
+    "config.get": "supported",
+    "config.set": "supported",
+    "diagnostics": "supported",
+    "test.mic.start": "supported",
+    "test.wake.arm": "supported",
+    "test.wake.disarm": "supported",
+    "test.mic.stop": "supported",
+    "test.tts": "supported",
+    "test.asr.start": "supported"
+  },
+  "config": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "maxToolRounds": 24
+    },
+    "minimax": {
+      "baseUrl": "https://api.minimax.cn",
+      "model": "speech-2.6-turbo",
+      "voiceId": "male-qn-jingying",
+      "speed": 1
+    },
+    "asr": {
+      "wakeWords": [
+        "费加罗",
+        "菲加罗",
+        "飞加罗",
+        "figaro",
+        "费加"
+      ],
+      "device": "default",
+      "hotkey": "CTRL+ALT+F5",
+      "sensitivity": "low",
+      "wakeCooldownMs": 2500,
+      "inputGainPercent": 40,
+      "silenceStopMs": 900
+    },
+    "tts": {
+      "enabled": true,
+      "sink": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+      "ack": {
+        "enabled": true,
+        "phrases": [
+          "我在",
+          "在的",
+          "请指示"
+        ],
+        "timeoutMs": 800
+      }
+    }
+  },
+  "diagnostics": {
+    "type": "diagnostics",
+    "configPath": "/run/user/1000/figaro-settings-test/config.json",
+    "logPath": "journalctl --user -u figaro",
+    "socketPath": "/run/user/1000/figaro-settings-test/sock",
+    "version": "0.1.0-fake (self-test daemon)",
+    "pid": 51748,
+    "state": "idle",
+    "uptimeMs": 178316,
+    "asr": {
+      "available": true,
+      "state": "idle",
+      "capturing": false,
+      "sensitivity": "low",
+      "wakeCooldownMs": 2500,
+      "inputGainPercent": 40,
+      "hotkey": "CTRL+ALT+F5",
+      "hotkeyState": {
+        "state": "active",
+        "bound": true,
+        "started": true,
+        "session": "fake-session"
+      },
+      "muted": false,
+      "modelInfo": {
+        "threads": {
+          "kws": 2,
+          "streaming": 2,
+          "offline": 4
+        },
+        "sensitivity": "low",
+        "kwsParams": {
+          "keywordsScore": 1.6,
+          "keywordsThreshold": 0.3
+        },
+        "wakeCooldownMs": 2500,
+        "inputGainPercent": 40,
+        "lastFinalMs": 860,
+        "offlineLoaded": true,
+        "offlineLoadError": null,
+        "kwsDir": "models/kws",
+        "streamingDir": "models/asr-stream",
+        "offlineDir": "models/asr-offline",
+        "vadModel": "models/vad",
+        "kws": "kws",
+        "keywords": [
+          "费加罗",
+          "菲加罗",
+          "飞加罗",
+          "figaro",
+          "费加"
+        ],
+        "streaming": true,
+        "offline": "paraformer",
+        "vad": "silero"
+      },
+      "lastFinalMs": 860
+    },
+    "tts": {
+      "available": true,
+      "model": "speech-2.6-turbo",
+      "voiceId": "male-qn-jingying",
+      "sink": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+      "sinkStatus": "ok",
+      "speaking": false,
+      "connected": true,
+      "sinks": [
+        {
+          "name": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+          "description": "内置模拟立体声",
+          "isDefault": true,
+          "isCurrent": true
+        },
+        {
+          "name": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+          "description": "HDMI / 显示器",
+          "isDefault": false,
+          "isCurrent": false
+        },
+        {
+          "name": "bluez_output.00_11_22_33_44_55.1",
+          "description": "蓝牙耳机",
+          "isDefault": false,
+          "isCurrent": false
+        },
+        {
+          "name": "",
+          "description": "系统默认输出",
+          "isDefault": false,
+          "isCurrent": false
+        }
+      ]
+    },
+    "ack": {
+      "enabled": true,
+      "ready": true,
+      "timeoutMs": 800,
+      "phrases": [
+        "我在",
+        "在的",
+        "请指示"
+      ],
+      "model": "speech-2.6-turbo",
+      "voiceId": "male-qn-jingying",
+      "lastPhrase": "我在",
+      "lastPlayDurationMs": 212,
+      "failures": 0,
+      "reason": null
+    },
+    "mic": {
+      "gainPercent": 40,
+      "rms": 0.287,
+      "peak": 0.71,
+      "fixed": true
+    },
+    "latency": {
+      "wakeToAckMs": 232,
+      "ttsFirstByteMs": 381,
+      "ttsFirstAudioMs": 381,
+      "ttsRequestToFirstAudioMs": 402,
+      "ackLastPlayDurationMs": 212,
+      "ackLastFirstWriteMs": 168,
+      "asrLastFinalMs": 860,
+      "asrFinalMs": 860,
+      "asrPartialMs": 148
+    },
+    "recentErrors": [
+      {
+        "at": "2026-11-09T04:52:06.598Z",
+        "message": "TTS 连接超时一次，已自动重试（fake）"
+      },
+      {
+        "at": "2026-11-09T04:52:13.598Z",
+        "message": "KWS 模型热加载完成（fake）"
+      }
+    ],
+    "tests": {
+      "mic": false,
+      "asr": false,
+      "wake": false
+    },
+    "id": 28
+  },
+  "recentErrors": [
+    {
+      "t": 1794199933598,
+      "message": "KWS 模型热加载完成（fake）"
+    },
+    {
+      "t": 1794199926598,
+      "message": "TTS 连接超时一次，已自动重试（fake）"
+    }
+  ],
+  "selftests": {
+    "wake": null,
+    "mic": null,
+    "asr": null,
+    "tts": null
+  },
+  "windowSize": [
+    695,
+    638
+  ]
+}
