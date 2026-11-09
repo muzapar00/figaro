@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import { createIpcServer } from './ipc.js';
 import { loadConfig } from './config.js';
 import { createAgent } from './agent/index.js';
+import { createWakeAck, DEFAULT_PHRASES } from './agent/wake-ack.js';
 
 export const STATES = Object.freeze(['idle', 'listening', 'thinking', 'speaking']);
 
@@ -20,6 +21,11 @@ const TTS_MODULE = new URL('./voice/tts/index.js', import.meta.url).href;
 const PARTIAL_MIN_INTERVAL_MS = 40;
 const MAX_SPEECH_CHUNK_CHARS = 220;
 const VOICE_RETRY_COOLDOWN_MS = 15_000;
+// Time ASR waits for the daemon to start capture after a wake before it starts it
+// itself (the wake acknowledgement plays first). See voice/asr/index.js.
+const WAKE_CAPTURE_FALLBACK_MS = 1_500;
+// How long after an ack finishes its echo may still be in a transcript (pre-roll).
+const ACK_ECHO_WINDOW_MS = 3_000;
 
 function makeLogger(logger) {
   if (logger) return logger;
@@ -105,6 +111,7 @@ function findSentenceEnd(text) {
  * @param {boolean} [options.disableTts]
  * @param {Function} [options.asrFactory] test seam replacing the src/voice/asr module factory
  * @param {Function} [options.ttsFactory] test seam replacing the src/voice/tts module factory
+ * @param {Function} [options.ackFactory] test seam replacing the wake-ack controller
  * @param {object} [options.logger] console-like {info,warn,error}
  */
 export function createDaemon(options = {}) {
@@ -114,6 +121,10 @@ export function createDaemon(options = {}) {
   const asrEnabled = voiceEnabled && options.disableAsr !== true && config.asr?.enabled !== false;
   const ttsEnabled = voiceEnabled && options.disableTts !== true && config.tts?.enabled !== false;
   const agentFactory = options.agentFactory ?? createAgent;
+  const ackFactory = options.ackFactory ?? createWakeAck;
+  const wakeCaptureFallbackMs = Number.isFinite(Number(config.asr?.wakeCaptureFallbackMs))
+    ? Math.max(0, Number(config.asr.wakeCaptureFallbackMs))
+    : WAKE_CAPTURE_FALLBACK_MS;
 
   const socketPath = config.ui?.socket;
   if (!socketPath) throw new Error('config.ui.socket is required');
@@ -132,6 +143,13 @@ export function createDaemon(options = {}) {
   let voiceLastAttempt = 0;
   let ttsSpeaking = false;
   let lastAsrPartial = '';
+  let ack = null; // wake-ack controller (pre-synthesized "我在")
+  let ackActive = null; // current ack playback handle
+  let ackPrepared = false;
+  let pendingAckFinal = ''; // transcript captured while the ack was playing
+  let lastAckEndedAt = 0;
+  let captureRetryCount = 0;
+  let suppressFinalOnce = false;
 
   const emit = (message) => {
     try {
@@ -164,8 +182,30 @@ export function createDaemon(options = {}) {
       uptimeMs: startedAt > 0 ? Date.now() - startedAt : 0,
       model: config.deepseek?.model ?? null,
       voice: { asr: Boolean(voice.asr), tts: Boolean(voice.tts) },
+      asrCapturing: Boolean(voice.asr?.capturing),
       history: agent?.history?.length ?? 0,
+      ack: ackHealth(),
       lastError,
+    };
+  }
+
+  function ackHealth() {
+    if (!ack) {
+      return { enabled: false, ready: false, reason: ttsEnabled ? 'not initialised yet' : 'tts disabled' };
+    }
+    const stats = ack.stats;
+    return {
+      enabled: Boolean(ack.enabled),
+      ready: Boolean(ack.ready),
+      timeoutMs: ack.timeoutMs,
+      phrases: ack.phrases,
+      model: stats.model ?? null,
+      voiceId: stats.voiceId ?? null,
+      sampleRate: stats.sampleRate ?? null,
+      lastPhrase: stats.lastPhrase ?? null,
+      lastPlayDurationMs: stats.lastPlayDurationMs ?? null,
+      failures: stats.failures ?? 0,
+      reason: stats.disabledReason ?? null,
     };
   }
 
@@ -264,12 +304,7 @@ export function createDaemon(options = {}) {
 
   function handleAsrWake() {
     if (!voice.asr) return;
-    try {
-      voice.asr.beginCapture();
-      setState('listening');
-    } catch (err) {
-      handleVoiceError('asr', err);
-    }
+    beginWakeFlow('asr');
   }
 
   function handleAsrLevel(value) {
@@ -278,16 +313,70 @@ export function createDaemon(options = {}) {
 
   function handleAsrPartial(text) {
     lastAsrPartial = String(text ?? '');
+    // While the ack is audible the mic may pick it up; do not paint that echo
+    // into the UI as if the user had said it.
+    if (ackActive) return;
     emit({ type: 'partial', text: lastAsrPartial });
   }
 
-  function handleAsrFinal(text) {
-    const transcript = String(text ?? '').trim();
+  function handleAsrFinal(rawText) {
+    if (suppressFinalOnce) {
+      suppressFinalOnce = false;
+      if (!ackActive) setState('idle');
+      return;
+    }
+    let transcript = String(rawText ?? '').trim();
+    const stripped = stripAckEcho(transcript);
+    if (stripped !== transcript) {
+      log.info(`wake-ack: stripped echo from transcript (${transcript.length} -> ${stripped.length} chars)`);
+      transcript = stripped;
+    }
     if (transcript.length === 0) {
+      // Nothing was captured, or only the ack echo. Right after a wake, give the
+      // user one more listening window instead of going deaf immediately.
+      if (ackActive) return;
+      const inWakeWindow = lastAckEndedAt > 0 && Date.now() - lastAckEndedAt < 4_000;
+      if (inWakeWindow && captureRetryCount < 1 && voice.asr) {
+        captureRetryCount += 1;
+        log.info('wake: empty transcript after ack, listening again');
+        beginListeningCapture();
+        return;
+      }
+      captureRetryCount = 0;
       if (current === null) setState('idle');
       return;
     }
+    if (ackActive) {
+      pendingAckFinal = transcript;
+      log.info(`wake: captured ${transcript.length} chars during ack, will process it after ack`);
+      return;
+    }
+    captureRetryCount = 0;
+    lastAckEndedAt = 0;
     enqueueTurn(() => processAsk({ text: transcript, speak: true }, null));
+  }
+
+  /** Remove a leading ack phrase ("我在…") that leaked in through pre-roll/echo. */
+  function stripAckEcho(text) {
+    if (typeof text !== 'string' || text.length === 0) return '';
+    if (!ack || !ack.enabled) return text;
+    const withinWindow = lastAckEndedAt > 0 && Date.now() - lastAckEndedAt <= ACK_ECHO_WINDOW_MS;
+    if (!withinWindow) return text;
+    const normalize = (value) => value.replace(/[\s，。！？、,.!?~～…—\-]/g, '');
+    const normalized = normalize(text);
+    const candidates = [...(ack.phrases ?? DEFAULT_PHRASES)].sort((a, b) => b.length - a.length);
+    for (const phrase of candidates) {
+      const target = normalize(phrase);
+      if (target.length === 0 || !normalized.startsWith(target)) continue;
+      let seen = 0;
+      let index = 0;
+      while (index < text.length && seen < target.length) {
+        if (normalize(text[index]).length > 0) seen += 1;
+        index += 1;
+      }
+      return text.slice(index).replace(/^[\s，。！？、,.!?~～…—\-]+/, '').trim();
+    }
+    return text;
   }
 
   function handleAsrVadStart() {
@@ -297,6 +386,119 @@ export function createDaemon(options = {}) {
   function handleAsrError(err) {
     handleVoiceError('asr', err);
     if (state === 'listening') setState('idle');
+  }
+
+  // ---------------------------------------------------------------- wake flow
+
+  /**
+   * Wake sequence: interrupt everything, play the cached "我在" acknowledgement,
+   * then start capture. If the ack is unavailable or fails, capture starts
+   * immediately (a missed ack must never leave Figaro deaf).
+   */
+  function beginWakeFlow(origin) {
+    if (!voice.asr) return;
+    log.info(`wake (${origin})`);
+    cancelCurrent('wake interrupted it');
+    stopCaptureForBargeIn();
+    pendingAckFinal = '';
+    captureRetryCount = 0;
+
+    const playback = ack && ack.enabled && ack.ready && voice.tts ? ack.play() : null;
+    if (!playback) {
+      log.info('wake: no ack available, starting capture immediately');
+      beginListeningCapture();
+      return;
+    }
+    ackActive = playback;
+    setState('speaking'); // the ack is audible now
+    let startedSeen = false;
+    const startTimer = setTimeout(() => {
+      if (ackActive !== playback || startedSeen) return;
+      log.warn(`wake-ack: no audio within ${ack.timeoutMs}ms; falling back to capture`);
+      abortAck('timeout');
+      beginListeningCapture();
+    }, Math.max(50, ack.timeoutMs));
+    startTimer.unref?.();
+    playback.started.then(() => {
+      startedSeen = true;
+      clearTimeout(startTimer);
+    }).catch(() => {});
+    playback.done.then((info) => {
+      clearTimeout(startTimer);
+      if (ackActive !== playback) return;
+      ackActive = null;
+      lastAckEndedAt = Date.now();
+      if (info?.ok) log.info(`wake-ack: played "${info.phrase}" (${info.durationMs ?? '?'}ms)`);
+      else log.warn(`wake-ack: playback incomplete (${info?.error || 'stopped'})`);
+      finishWakeFlow();
+    }).catch((err) => {
+      clearTimeout(startTimer);
+      log.warn('wake-ack: playback promise failed:', err?.message || err);
+      if (ackActive === playback) {
+        ackActive = null;
+        lastAckEndedAt = Date.now();
+        finishWakeFlow();
+      }
+    });
+  }
+
+  function finishWakeFlow() {
+    if (stopping) return;
+    const pending = pendingAckFinal;
+    pendingAckFinal = '';
+    setState('listening');
+    if (pending.length > 0) {
+      log.info(`wake: processing transcript captured during ack (${pending.length} chars)`);
+      enqueueTurn(() => processAsk({ text: pending, speak: true }, null));
+      return;
+    }
+    beginCaptureNow();
+  }
+
+  function beginCaptureNow() {
+    if (!voice.asr) return;
+    try {
+      if (!voice.asr.capturing) voice.asr.beginCapture();
+    } catch (err) {
+      handleVoiceError('asr', err);
+    }
+  }
+
+  function beginListeningCapture() {
+    pendingAckFinal = '';
+    setState('listening');
+    beginCaptureNow();
+  }
+
+  function abortAck(reason) {
+    const playback = ackActive;
+    ackActive = null;
+    if (playback) {
+      try {
+        playback.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (voice.tts) {
+      try {
+        voice.tts.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+    void reason;
+  }
+
+  /** Stop capture that was running before an interrupt; ignore its stale final. */
+  function stopCaptureForBargeIn() {
+    if (!voice.asr?.capturing) return;
+    suppressFinalOnce = true;
+    try {
+      voice.asr.endCapture();
+    } catch (err) {
+      log.warn('asr.endCapture() failed:', err?.message || err);
+    }
   }
 
   // ---------------------------------------------------------------- turns
@@ -315,6 +517,16 @@ export function createDaemon(options = {}) {
       clearTimeout(turn.partialTimer);
       turn.partialTimer = null;
     }
+    if (ackActive) {
+      const playback = ackActive;
+      ackActive = null;
+      try {
+        playback.stop();
+      } catch {
+        /* ignore */
+      }
+    }
+    pendingAckFinal = '';
     if (voice.tts) {
       try {
         voice.tts.stop();
@@ -345,6 +557,7 @@ export function createDaemon(options = {}) {
       : `req-${++turnSeq}`;
     if (client) client.send({ type: 'ack', requestId });
 
+    stopCaptureForBargeIn();
     cancelCurrent('new ask superseded it');
     const turn = {
       controller: new AbortController(),
@@ -463,8 +676,12 @@ export function createDaemon(options = {}) {
       const factory = options.asrFactory ?? await loadVoiceFactory('asr', ASR_MODULE, 'createAsr');
       if (factory) {
         try {
+          const asrConfig = {
+            ...config,
+            asr: { ...(config.asr ?? {}), wakeCaptureFallbackMs },
+          };
           voice.asr = factory({
-            config,
+            config: asrConfig,
             onWake: handleAsrWake,
             onLevel: handleAsrLevel,
             onPartial: handleAsrPartial,
@@ -495,7 +712,7 @@ export function createDaemon(options = {}) {
             onLevel: (value) => emit({ type: 'level', value: clamp01(value) }),
             onState: (next) => {
               ttsSpeaking = next === 'speaking';
-              if (next === 'idle' && current === null && state === 'speaking') setState('idle');
+              if (next === 'idle' && current === null && state === 'speaking' && !ackActive) setState('idle');
             },
             onError: (err) => handleVoiceError('tts', err),
           });
@@ -506,6 +723,24 @@ export function createDaemon(options = {}) {
         }
       }
     }
+    void prepareAck();
+  }
+
+  /** Pre-synthesize the wake acknowledgements once the TTS module is available. */
+  async function prepareAck() {
+    if (!ack || !ack.enabled || ackPrepared) return;
+    ackPrepared = true;
+    const ready = await ack.prepare();
+    if (!ready) {
+      log.warn(`wake-ack unavailable: ${ack.stats.disabledReason ?? 'unknown'}; wake will start capture immediately`);
+      return;
+    }
+    const stats = ack.stats;
+    log.info(
+      `wake-ack ready: ${stats.phrases} phrase(s) ${JSON.stringify(ack.phrases)}, voiceId=${stats.voiceId}, ` +
+        `model=${stats.model}, sampleRate=${stats.sampleRate}, synth=${stats.synthMs}ms, timeout=${ack.timeoutMs}ms ` +
+        `(same synthesize()/playPcm() path and voice as normal replies)`,
+    );
   }
 
   /** Load voice modules without ever blocking the text path. */
@@ -562,10 +797,12 @@ export function createDaemon(options = {}) {
         break;
       case 'cancel':
         cancelCurrent('cancel message');
+        stopCaptureForBargeIn();
+        pendingAckFinal = '';
         break;
       case 'wake':
         if (voice.asr) {
-          handleAsrWake();
+          beginWakeFlow('ui-wake');
         } else {
           reportError('没有麦克风模块（或模块不可用），直接用文字问我吧。');
           ensureVoice();
@@ -573,7 +810,7 @@ export function createDaemon(options = {}) {
         break;
       case 'listen_begin':
         if (voice.asr) {
-          handleAsrWake();
+          beginWakeFlow('ui-listen');
         } else {
           reportError('没有麦克风模块（或模块不可用），直接用文字问我吧。');
           ensureVoice();
@@ -645,6 +882,12 @@ export function createDaemon(options = {}) {
       ipc.server.once('error', onError);
     });
     log.info(`daemon listening on ${socketPath} (pid ${process.pid}, model ${config.deepseek?.model ?? '?'})`);
+    if (ttsEnabled) {
+      ack = ackFactory({ config, logger: log, getTts: () => voice.tts });
+      log.info(
+        `wake-ack: ${ack.enabled ? 'enabled' : 'disabled'} (phrases=${JSON.stringify(ack.phrases)}, timeout=${ack.timeoutMs}ms)`,
+      );
+    }
     // Voice modules load in the background: the text path must never wait on them.
     void ensureVoice();
     return { socketPath };
@@ -664,6 +907,13 @@ export function createDaemon(options = {}) {
     } catch (err) {
       log.warn('tts.stop() failed:', err?.message || err);
     }
+    try {
+      ack?.close?.();
+    } catch {
+      /* ignore */
+    }
+    ack = null;
+    ackActive = null;
     voice.asr = null;
     voice.tts = null;
     const closed = ipc?.close();

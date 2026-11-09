@@ -347,6 +347,14 @@ async function commandStatus(flags) {
   console.log(`  PID: ${pong.pid}`);
   console.log(`  模型: ${pong.model ?? '?'}`);
   console.log(`  语音: ASR ${pong.voice?.asr ? '可用' : '不可用'}，TTS ${pong.voice?.tts ? '可用' : '不可用'}`);
+  if (pong.ack) {
+    const ack = pong.ack;
+    let ackLine;
+    if (!ack.enabled) ackLine = '关闭';
+    else if (ack.ready) ackLine = `就绪（${ack.phrases?.length ?? 0} 句：${(ack.phrases ?? []).join('/')}，${ack.voiceId ?? '?'}）`;
+    else ackLine = `未就绪${ack.reason ? `（${ack.reason}）` : ''}`;
+    console.log(`  唤醒应答: ${ackLine}`);
+  }
   console.log(`  运行时长: ${formatDuration(pong.uptimeMs)}`);
   console.log(`  socket: ${pong.socket ?? config.ui.socket}`);
   if (pong.lastError) console.log(`  最近错误: ${pong.lastError}`);
