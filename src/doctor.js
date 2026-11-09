@@ -367,14 +367,25 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
       fix: actionFix('restart-ui', {}, 'systemctl --user restart figaro-ui', '桌面 overlay 未运行'),
     });
   }
+  // pgrep -af matches its own command line (it contains the pattern), and the
+  // systemd unit's MainPID is the daemon we *want*, not a leftover. Both must be
+  // excluded or the check reports a stale instance on a healthy machine.
   const daemonProcs = (await run('pgrep', ['-af', 'bin/figaro daemon'])).stdout
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.includes('figaro doctor'));
-  if (daemonProcs.length <= 1) {
-    add(services, 'ok', 'service.singleton', `守护进程单实例: ${daemonProcs.length === 1 ? '1 个进程' : '无残留进程（服务未运行）'}`);
+    .filter((line) => {
+      if (line.length === 0 || line.includes('figaro doctor')) return false;
+      const pid = Number(line.split(/\s+/)[0]);
+      if (Number.isFinite(pid) && pid === figaroPid) return false;
+      const commandLine = line.replace(/^\d+\s+/, '');
+      const executable = commandLine.split(/\s+/)[0] ?? '';
+      if (/(^|\/)pgrep$/.test(executable)) return false;
+      return /(^|\/)node$/.test(executable) || /bin\/figaro/.test(commandLine);
+    });
+  if (daemonProcs.length === 0) {
+    add(services, 'ok', 'service.singleton', '守护进程单实例: 无残留进程');
   } else {
-    add(services, 'fail', 'service.singleton', `发现 ${daemonProcs.length} 个 daemon 进程`, '残留实例会抢占 socket，导致新实例启动失败', {
+    add(services, 'fail', 'service.singleton', `发现 ${daemonProcs.length} 个额外 daemon 进程`, '残留实例会抢占 socket，导致新实例启动失败', {
       fix: commandFix('systemctl --user stop figaro; pkill -f "bin/figaro daemon"; systemctl --user start figaro', '清理残留 daemon 进程'),
     });
   }
