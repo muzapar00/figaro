@@ -55,6 +55,7 @@ Item {
     readonly property bool collapsed: morphProgress < 0.03
 
 
+
     readonly property real ballDiameter: 128
     readonly property real ballScale: 1.0 - (1.0 - 0.62) * Math.max(0, Math.min(1, morphProgress))
     readonly property real ballBox: ballDiameter * ballScale
@@ -86,8 +87,20 @@ Item {
     readonly property real targetCapsuleW: padH * 2 + targetBallBox + gap + targetTextW
     readonly property real targetCapsuleH: Math.max(targetBallBox + padV * 2, label.implicitHeight + padV * 2)
 
-    readonly property real capsuleW: ballDiameter + (targetCapsuleW - ballDiameter) * p
-    readonly property real capsuleH: ballDiameter + (targetCapsuleH - ballDiameter) * p
+    // The pill's target size is derived from the *current* text, which is
+    // cleared the moment the reply ends. Without freezing it, the target size
+    // collapses instantly and the retraction has nothing to animate: the pill
+    // simply snaps to ball size while the ball is still growing.
+    readonly property real liveTargetW: padH * 2 + targetBallBox + gap + targetTextW
+    readonly property real liveTargetH: Math.max(targetBallBox + padV * 2, label.implicitHeight + padV * 2)
+    property real frozenW: ballDiameter
+    property real frozenH: ballDiameter
+    onLiveTargetWChanged: if (morph) frozenW = Math.max(liveTargetW, ballDiameter)
+    onLiveTargetHChanged: if (morph) frozenH = Math.max(liveTargetH, ballDiameter)
+    readonly property real capWTarget: morph ? Math.max(liveTargetW, ballDiameter) : frozenW
+    readonly property real capHTarget: morph ? Math.max(liveTargetH, ballDiameter) : frozenH
+    readonly property real capsuleW: ballDiameter + (capWTarget - ballDiameter) * p
+    readonly property real capsuleH: ballDiameter + (capHTarget - ballDiameter) * p
     readonly property real capsuleX: (width - capsuleW) / 2
     readonly property real capsuleY: ballCY - capsuleH / 2
     readonly property real ballCX: capsuleX + padH * p + ballBox / 2

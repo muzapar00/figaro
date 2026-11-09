@@ -168,6 +168,7 @@ PanelWindow {
         }
     }
 
+
     // Only the assembly is clickable (ball, or the whole pill once it exists).
     mask: Region {
         item: shell.hitItem
