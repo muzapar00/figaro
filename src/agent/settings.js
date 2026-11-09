@@ -5,6 +5,8 @@
 // modules, missing test hooks or a corrupt config file produce a structured
 // `error` reply instead of crashing the daemon.
 import fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { performance } from 'node:perf_hooks';
 import { CONFIG_PATH, CONFIG_DIR } from '../config.js';
 import { atomicWriteFile } from './tools/atomic-write.js';
@@ -18,6 +20,7 @@ export const SETTINGS_MESSAGE_TYPES = Object.freeze([
   'test.asr.start',
   'test.asr.stop',
   'test.wake.arm',
+  'test.wake.disarm',
   'test.tts',
   'service.restart',
   'diagnostics',
@@ -28,6 +31,7 @@ export const SECRET_PATHS = Object.freeze(['deepseek.apiKey', 'minimax.apiKey'])
 // Paths the GUI may write. Everything else is rejected so a UI bug cannot
 // rewrite the API keys, socket path or model endpoints.
 export const ALLOWED_CONFIG_PATHS = Object.freeze([
+  'asr.enabled',
   'asr.sensitivity',
   'asr.wakeWords',
   'asr.hotkey',
@@ -140,6 +144,52 @@ export async function writeConfigFile(configPath, raw) {
   await fs.chmod(configPath, 0o600).catch(() => {});
 }
 
+const execFileAsync = promisify(execFile);
+const SINK_CACHE_TTL_MS = 5000;
+let sinkCache = { at: 0, value: null };
+
+/**
+ * List PipeWire/PulseAudio playback sinks for the GUI device picker.
+ * Never throws: returns null when pactl is unavailable or the output is not JSON.
+ */
+export async function listAudioSinks({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && sinkCache.value && now - sinkCache.at < SINK_CACHE_TTL_MS) return sinkCache.value;
+  try {
+    const [sinksResult, defaultResult] = await Promise.all([
+      execFileAsync('pactl', ['-f', 'json', 'list', 'sinks'], { timeout: 3000, maxBuffer: 1024 * 1024 }),
+      execFileAsync('pactl', ['get-default-sink'], { timeout: 3000 }),
+    ]);
+    const raw = JSON.parse(sinksResult.stdout);
+    if (!Array.isArray(raw)) return null;
+    const defaultName = String(defaultResult.stdout ?? '').trim();
+    const value = raw
+      .filter((entry) => entry && typeof entry.name === 'string')
+      .map((entry) => {
+        const props = entry.properties ?? {};
+        const candidates = [props['device.description'], entry.description, props['node.description'], props['device.nick']];
+        let description = '';
+        for (const candidate of candidates) {
+          if (typeof candidate === 'string' && candidate.trim().length > 0 && candidate !== '(null)') {
+            description = candidate.trim();
+            break;
+          }
+        }
+        return {
+          name: entry.name,
+          description: description || entry.name,
+          isDefault: entry.name === defaultName,
+        };
+      });
+    sinkCache = { at: now, value };
+    return value;
+  } catch (err) {
+    sinkCache = { at: 0, value: null };
+    void err;
+    return null;
+  }
+}
+
 function clamp01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
@@ -170,11 +220,13 @@ function finiteNumber(value, fallback = null) {
  *   requestRestart() -> void
  *   getConfigPath() -> string
  * @param {string} [options.configPath]
+ * @param {Function} [options.listSinks] test seam: async () => [{name, description, isDefault}]
  */
 export function createSettingsService(options = {}) {
   const log = options.logger ?? { info() {}, warn() {}, error() {} };
   const context = options.context ?? {};
   const configPath = options.configPath ?? CONFIG_PATH;
+  const listSinks = options.listSinks ?? listAudioSinks;
 
   let micTest = null;
   let asrTest = null;
@@ -441,6 +493,26 @@ export function createSettingsService(options = {}) {
     broadcast(withId(test.id, { type: 'test.wake.end', hits, misses, falseAlarms, reason }));
   }
 
+  function handleWakeDisarm(message, client) {
+    const id = messageId(message);
+    if (!wakeTest) {
+      reply(client, withId(id, { type: 'test.wake.end', hits: 0, misses: 0, falseAlarms: 0, reason: 'not-running' }));
+      return;
+    }
+    const test = wakeTest;
+    const asr = voice().asr;
+    if (typeof asr?.disarmWakeTest === 'function') {
+      try {
+        asr.disarmWakeTest();
+      } catch (err) {
+        log.warn('disarmWakeTest failed:', err?.message || err);
+      }
+    }
+    // The module normally emits onEnd synchronously from disarmWakeTest(); if it
+    // does not (older module / missing hook), finish the window here.
+    if (wakeTest === test) endWakeTest('disarmed');
+  }
+
   function handleWakeArm(message, client) {
     const id = messageId(message);
     if (wakeTest) return sendError(client, id, 'TEST_BUSY', '唤醒测试窗口已经打开');
@@ -556,7 +628,7 @@ export function createSettingsService(options = {}) {
 
   // ---------------------------------------------------------- diagnostics ----
 
-  function collectDiagnostics(id) {
+  async function collectDiagnostics(id) {
     const { asr, tts } = voice();
     const ack = context.getAck?.() ?? null;
     const ackStats = ack?.stats ?? null;
@@ -570,6 +642,28 @@ export function createSettingsService(options = {}) {
       null,
     );
     const config = context.getEffectiveConfig?.() ?? options.config ?? {};
+
+    const currentSinkName = ttsStats?.audioSinkName || ttsStats?.audioSink || config.tts?.sink || '';
+    let sinks = null;
+    try {
+      const listed = await listSinks();
+      if (Array.isArray(listed) && listed.length > 0) {
+        sinks = listed.map((sink) => ({
+          name: String(sink.name),
+          description: String(sink.description ?? ''),
+          isDefault: Boolean(sink.isDefault),
+          isCurrent: Boolean(currentSinkName) && sink.name === currentSinkName,
+        }));
+        // The configured/resolved sink may be a substring match not present in the
+        // raw list; still offer it to the GUI so the dropdown can show the truth.
+        if (currentSinkName && !sinks.some((sink) => sink.name === currentSinkName)) {
+          sinks.push({ name: currentSinkName, description: '(current)', isDefault: false, isCurrent: true });
+        }
+      }
+    } catch (err) {
+      log.warn('sink enumeration failed:', err?.message || err);
+      sinks = null;
+    }
 
     return withId(id, {
       type: 'diagnostics',
@@ -595,7 +689,10 @@ export function createSettingsService(options = {}) {
         model: ttsStats?.model ?? config.minimax?.model ?? null,
         voiceId: ttsStats?.voiceId ?? config.minimax?.voiceId ?? null,
         sink: ttsStats?.audioSink ?? config.tts?.sink ?? '',
+        sinkName: ttsStats?.audioSinkName ?? null,
         sinkStatus: ttsStats?.sinkStatus ?? null,
+        // Candidate output devices for the GUI picker (omitted when pactl fails).
+        ...(sinks ? { sinks } : {}),
         speaking: Boolean(tts?.speaking),
         connected: Boolean(ttsStats?.connected),
       },
@@ -662,6 +759,9 @@ export function createSettingsService(options = {}) {
       case 'test.wake.arm':
         handleWakeArm(message, client);
         return;
+      case 'test.wake.disarm':
+        handleWakeDisarm(message, client);
+        return;
       case 'test.tts':
         await handleTtsTest(message, client);
         return;
@@ -673,7 +773,7 @@ export function createSettingsService(options = {}) {
         return;
       }
       case 'diagnostics':
-        reply(client, collectDiagnostics(id));
+        reply(client, await collectDiagnostics(id));
         return;
       default:
         sendError(client, id, 'unsupported', `未知设置消息：${message.type}`);

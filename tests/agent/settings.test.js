@@ -80,6 +80,8 @@ function makeFakeAsr() {
       },
       disarmWakeTest() {
         record.disarm += 1;
+        // Real module: disarmWakeTest() finishes the window and emits onEnd sync.
+        record.wake?.onEnd?.({ hits: 0, misses: 0, falseAlarms: 0, maxScore: 0, ms: 10 });
       },
       applyRuntimeConfig(values) {
         record.runtime.push(values);
@@ -121,7 +123,8 @@ function makeFakeTts() {
       stats: {
         model: 'speech-2.6-turbo',
         voiceId: options.config?.minimax?.voiceId ?? 'male-qn-jingying',
-        audioSink: options.config?.tts?.sink ?? '',
+        audioSink: (options.config?.tts?.sink || 'alsa_output.pci-0000_00_1f.3.analog-stereo'),
+        audioSinkName: (options.config?.tts?.sink || 'alsa_output.pci-0000_00_1f.3.analog-stereo'),
         sinkStatus: 'ok',
         connected: false,
         lastFirstAudioMs: 170,
@@ -191,6 +194,11 @@ async function makeContext(t) {
   return { dir, socketPath, configPath, baseConfig, reloadConfigFn };
 }
 
+const DEFAULT_SINKS = [
+  { name: 'alsa_output.pci-0000_00_1f.3.analog-stereo', description: 'Built-in Audio Analog Stereo', isDefault: true },
+  { name: 'alsa_output.pci-0000_01_00.1.hdmi-stereo', description: 'HDMI Audio', isDefault: false },
+];
+
 async function startSettingsDaemon(t, overrides = {}) {
   const ctx = overrides.ctx ?? (await makeContext(t));
   const asr = overrides.asr ?? makeFakeAsr();
@@ -217,6 +225,7 @@ async function startSettingsDaemon(t, overrides = {}) {
     configPath: ctx.configPath,
     reloadConfigFn: ctx.reloadConfigFn,
     restartFn: () => restartRequests.push(Date.now()),
+    listSinks: overrides.listSinks ?? (async () => DEFAULT_SINKS),
   });
   await daemon.start();
   t.after(async () => {
@@ -389,6 +398,24 @@ test('config.set reports restartRequired for settings that cannot be hot-applied
   assert.deepEqual(reply.restartRequired.sort(), ['asr.hotkey', 'asr.wakeWords']);
 });
 
+test('config.set accepts asr.enabled and marks it restartRequired (no hot enable hook)', async (t) => {
+  const { client, messages, ctx } = await startSettingsDaemon(t);
+  const reply = await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-asr-enabled',
+    patch: { asr: { enabled: false } },
+  });
+  assert.equal(reply.ok, true);
+  assert.deepEqual(reply.applied, []);
+  assert.deepEqual(reply.restartRequired, ['asr.enabled']);
+  // the write is persisted and visible to the next config.get / daemon start
+  const raw = JSON.parse(await fs.readFile(ctx.configPath, 'utf8'));
+  assert.equal(raw.asr.enabled, false);
+  assert.equal(reply.config.asr.enabled, false);
+  const fetched = await request(client, messages, { type: 'config.get', id: 'cfg-after-disabled' });
+  assert.equal(fetched.config.asr.enabled, false);
+});
+
 test('config.set rejects a non-object patch', async (t) => {
   const { client, messages } = await startSettingsDaemon(t);
   const reply = await request(client, messages, { type: 'config.set', id: 'cfg-x', patch: 'nope' });
@@ -508,6 +535,11 @@ test('diagnostics aggregates config path, voice health, mic and recent errors', 
   assert.equal(reply.tts.model, 'speech-2.6-turbo');
   assert.equal(reply.ack.enabled, true);
   assert.equal(reply.ack.ready, true);
+  assert.equal(reply.tts.sinks.length, 2);
+  assert.equal(reply.tts.sinks[0].name, 'alsa_output.pci-0000_00_1f.3.analog-stereo');
+  assert.equal(reply.tts.sinks[0].description, 'Built-in Audio Analog Stereo');
+  assert.equal(reply.tts.sinks[0].isDefault, true);
+  assert.equal(reply.tts.sinks[0].isCurrent, true, 'current sink is marked in the picker list');
   assert.equal(reply.mic.gainPercent, 65);
   assert.ok(reply.mic.rms >= 0 && reply.mic.rms <= 1);
   assert.ok(reply.mic.peak >= 0 && reply.mic.peak <= 1);
@@ -551,4 +583,63 @@ test('settings messages work without voice modules at all (text-only daemon)', a
   assert.equal(diagnostics.tts.available, false);
   const ttsReply = await request(client, messages, { type: 'test.tts', id: 't' });
   assert.equal(ttsReply.code, 'unsupported');
+});
+
+test('test.wake.disarm ends an armed wake-test window through the ASR hook', async (t) => {
+  const { client, messages, asr } = await startSettingsDaemon(t);
+  client.send({ type: 'test.wake.arm', id: 'wake-disarm-1', ms: 20000 });
+  await waitFor(() => asr.record.wake !== null, { label: 'armed wake test' });
+  // a hit so the end payload carries a real count
+  asr.record.wake.onHit({ score: 0.8, latencyMs: 200 });
+  client.send({ type: 'test.wake.disarm', id: 'wake-disarm-1' });
+  const end = await waitFor(() => messages.find((message) => message.type === 'test.wake.end'), { label: 'wake.end' });
+  assert.equal(end.id, 'wake-disarm-1');
+  assert.equal(end.hits, 0, 'module-provided counts win; our onHit was not double counted in this path');
+  assert.equal(end.misses, 0);
+  assert.equal(end.falseAlarms, 0);
+  assert.equal(asr.record.disarm, 1);
+  // disarming again reports not-running instead of throwing
+  client.send({ type: 'test.wake.disarm', id: 'wake-disarm-2' });
+  const again = await waitFor(
+    () => messages.find((message) => message.type === 'test.wake.end' && message.id === 'wake-disarm-2'),
+    { label: 'second wake.end' },
+  );
+  assert.equal(again.reason, 'not-running');
+});
+
+test('test.wake.disarm still ends the window when the ASR module has no disarm hook', async (t) => {
+  const asrFactory = () => ({
+    async start() {},
+    async stop() {},
+    beginCapture() {},
+    endCapture() {},
+    get capturing() {
+      return false;
+    },
+    armWakeTest() {
+      /* no disarmWakeTest hook on purpose */
+    },
+  });
+  const { client, messages } = await startSettingsDaemon(t, {
+    asr: { factory: asrFactory, record: {} },
+  });
+  client.send({ type: 'test.wake.arm', id: 'wake-nohook', ms: 20000 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  client.send({ type: 'test.wake.disarm', id: 'wake-nohook' });
+  const end = await waitFor(() => messages.find((message) => message.type === 'test.wake.end'), { label: 'wake.end' });
+  assert.equal(end.id, 'wake-nohook');
+  assert.equal(end.reason, 'disarmed');
+  assert.equal(end.hits, 0);
+});
+
+test('diagnostics omits the sink list when enumeration fails (GUI has a manual fallback)', async (t) => {
+  const { client, messages } = await startSettingsDaemon(t, {
+    listSinks: async () => {
+      throw new Error('pactl not available');
+    },
+  });
+  const reply = await request(client, messages, { type: 'diagnostics', id: 'diag-nosinks' });
+  assert.equal(reply.type, 'diagnostics');
+  assert.equal(reply.tts.sinks, undefined);
+  assert.equal(typeof reply.tts.sink, 'string');
 });

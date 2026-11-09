@@ -131,6 +131,7 @@ function findSentenceEnd(text) {
  * @param {string} [options.configPath] config.json path used by config.set (default CONFIG_PATH)
  * @param {Function} [options.reloadConfigFn] test seam: () => loadConfig()-shaped object
  * @param {Function} [options.restartFn] test seam replacing the service.restart exit
+ * @param {Function} [options.listSinks] test seam: async () => [{name, description, isDefault}]
  * @param {object} [options.logger] console-like {info,warn,error}
  */
 export function createDaemon(options = {}) {
@@ -138,6 +139,8 @@ export function createDaemon(options = {}) {
   applyTtsAliases(config);
   const log = makeLogger(options.logger);
   const voiceEnabled = options.voice !== false;
+  // Read once at construction: toggling config.asr.enabled through config.set is
+  // reported as restartRequired (the ASR module has no enable/disable hot hook).
   const asrEnabled = voiceEnabled && options.disableAsr !== true && config.asr?.enabled !== false;
   const ttsEnabled = voiceEnabled && options.disableTts !== true && config.tts?.enabled !== false;
   const agentFactory = options.agentFactory ?? createAgent;
@@ -1241,6 +1244,7 @@ export function createDaemon(options = {}) {
       config,
       logger: log,
       configPath,
+      listSinks: options.listSinks,
       context: {
         getVoice: () => voice,
         getAck: () => ack,
