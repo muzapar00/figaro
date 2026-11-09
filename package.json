@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Figaro — a system-level voice assistant with a DeepSeek brain, local wake-word ASR, and MiniMax speech.",
-  "bin": { "figaro": "./bin/figaro" },
+  "bin": {
+    "figaro": "./bin/figaro"
+  },
   "scripts": {
     "start": "node bin/figaro daemon",
-    "test": "node --test tests/"
+    "test": "node --test \"tests/**/*.test.js\""
   },
   "dependencies": {
     "sherpa-onnx-node": "^1.12.0",

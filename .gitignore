@@ -4,3 +4,5 @@ models/*
 config/config.json
 *.log
 tmp/
+tests/tts/out/
+tests/asr/fixtures/generated/
