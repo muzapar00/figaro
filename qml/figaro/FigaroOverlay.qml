@@ -48,6 +48,7 @@ PanelWindow {
                 win.shown = true;
                 hideTimer.stop();
             } else if (win.shown) {
+                win.hideRequestedAt = Date.now();
                 hideTimer.restart();
             }
         }
@@ -58,11 +59,32 @@ PanelWindow {
             win.shown = true;
     }
 
+    // Leaving is a sequence: the pill first collapses back into the ball (a real
+    // spring, visible), and only then does the window withdraw upwards. The
+    // timer is a safety net for the case where the capsule is already a ball.
     Timer {
         id: hideTimer
-        // Long enough for the pill to retract into a ball before the window
-        // disappears, so the turn ends with a closing gesture rather than a cut.
-        interval: 340
+        interval: 60
+        repeat: true
+        onTriggered: {
+            if (shell.collapsed) {
+                hideTimer.stop();
+                // A short beat so the ball is registered before it withdraws;
+                // without it the collapse and the exit read as one blurred move.
+                settleBeat.start();
+            } else if (Date.now() - win.hideRequestedAt > 600) {
+                // Safety: never keep the window around if the retraction stalls.
+                hideTimer.stop();
+                win.shown = false;
+            }
+        }
+    }
+
+    property real hideRequestedAt: 0
+
+    Timer {
+        id: settleBeat
+        interval: 90
         onTriggered: win.shown = false
     }
 
@@ -116,7 +138,7 @@ PanelWindow {
                         target: content
                         property: "y"
                         to: -content.height - 24
-                        duration: FigaroStyle.exitMs
+                        duration: FigaroStyle.exitMs + 30
                         easing.type: Easing.InCubic
                     },
                     NumberAnimation {
