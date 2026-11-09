@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { DEFAULTS, loadConfig } from '../../src/config.js';
+import { BARGE_IN_DEFAULTS } from '../../src/voice/asr/barge-in.js';
 
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(HERE, 'fixtures');
@@ -92,7 +93,17 @@ export function makeConfig(overrides = {}) {
   // behaviour (wakeCaptureFallbackMs is a daemon-side ack option).
   // wakeGiveUpMs shortened for test speed (production default is 5000; the
   // dedicated give-up tests override it explicitly).
-  config.asr = { ...asr, hotkey: '', wakeCaptureFallbackMs: 0, wakeGiveUpMs: 1500, ...(overrides.asr ?? {}) };
+  config.asr = {
+    ...asr,
+    hotkey: '',
+    wakeCaptureFallbackMs: 0,
+    wakeGiveUpMs: 1500,
+    // deterministic tests: always start from the module's measured barge-in
+    // defaults (the real user config may have bargeIn.enabled=false from the GUI
+    // and src/config.js may still carry an older minRms/echoFactor)
+    bargeIn: { ...BARGE_IN_DEFAULTS },
+    ...(overrides.asr ?? {}),
+  };
   return config;
 }
 

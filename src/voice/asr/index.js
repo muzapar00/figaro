@@ -39,6 +39,7 @@ import { createHotkey } from './hotkey.js';
 import { createParecSource } from './sources.js';
 import { createMicGainController } from './mic-gain.js';
 import { createWakeScoreTracker } from './wake-score.js';
+import { createBargeInDetector, normalizeBargeInConfig } from './barge-in.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -157,12 +158,9 @@ export function createAsr(opts) {
   let muted = false;
   let wakeGiveUpMs = Number(asrCfg.wakeGiveUpMs ?? 5000);
   if (!Number.isFinite(wakeGiveUpMs) || wakeGiveUpMs < 0) wakeGiveUpMs = 5000;
-  // (muted) barge-in detection: light VAD on the live stream while TTS plays
-  const BARGE_IN_MIN_SPEECH_MS = 250;
-  const BARGE_IN_COOLDOWN_MS = 1000;
-  const bargeRemainder = { buf: new Float32Array(0) };
-  let bargeSpeechMs = 0;
-  let bargeLastFireAt = 0;
+  // (muted) barge-in detection: loudness vs the TTS echo baseline (barge-in.js)
+  const bargeDetector = createBargeInDetector(asrCfg.bargeIn ?? {});
+  let wakePendingUntil = 0;
   const wakeScoreTracker = createWakeScoreTracker({ wakeWords: asrCfg.wakeWords ?? [] });
 
   // GUI self-test state (docs/ipc.md §3.1)
@@ -325,58 +323,6 @@ export function createAsr(opts) {
   // ==========================================================================
   // GUI self-test channels (docs/ipc.md §3.1) + runtime config
   // ==========================================================================
-
-  /**
-   * While muted (TTS playing) we still watch the microphone for a human voice
-   * onset so the daemon can do Siri-style barge-in. Only the onUserSpeech signal
-   * is emitted — no wake word, no capture.
-   */
-  function runBargeInVad(samples) {
-    if (!muted || state !== 'listening' || !vad) return;
-    const windowSize = vad.windowSize ?? 512;
-    let buf;
-    if (bargeRemainder.buf.length) {
-      buf = new Float32Array(bargeRemainder.buf.length + samples.length);
-      buf.set(bargeRemainder.buf, 0);
-      buf.set(samples, bargeRemainder.buf.length);
-    } else {
-      buf = samples;
-    }
-    let off = 0;
-    let consumed = 0;
-    while (off + windowSize <= buf.length) {
-      const win = buf.subarray(off, off + windowSize);
-      let detected = false;
-      try {
-        detected = vad.process(win);
-      } catch { detected = false; }
-      consumed = off + windowSize;
-      if (detected) {
-        bargeSpeechMs += (windowSize / SAMPLE_RATE) * 1000;
-      } else {
-        bargeSpeechMs = 0;
-      }
-      if (bargeSpeechMs >= BARGE_IN_MIN_SPEECH_MS) {
-        bargeSpeechMs = 0;
-        const now = Date.now();
-        if (now - bargeLastFireAt >= BARGE_IN_COOLDOWN_MS) {
-          bargeLastFireAt = now;
-          log(`检测到插话人声（muted 中），onUserSpeech()`);
-          safe(onUserSpeech);
-        }
-        // drain the rest of this buffer without re-triggering
-        break;
-      }
-      off += windowSize;
-    }
-    bargeRemainder.buf = buf.slice(consumed);
-  }
-
-  function resetBargeIn() {
-    bargeSpeechMs = 0;
-    bargeRemainder.buf = new Float32Array(0);
-    try { vad?.reset(); } catch { /* ignore */ }
-  }
 
   function feedMicTest(rms, peak) {
     if (!micTest) return;
@@ -631,6 +577,11 @@ export function createAsr(opts) {
         wakeCooldownMs = Math.max(0, Number(patch.wakeCooldownMs) || 0);
         applied.push(key);
         log(`唤醒冷却时间已热切换为 ${wakeCooldownMs}ms`);
+      } else if (key === 'bargeIn') {
+        const merged = normalizeBargeInConfig(patch.bargeIn ?? {}, bargeDetector.config);
+        bargeDetector.setConfig(merged);
+        applied.push(key);
+        log(`[barge-in] 配置已热切换：${JSON.stringify(merged)}`);
       } else if (key === 'wakeGiveUpMs') {
         const n = Number(patch.wakeGiveUpMs);
         wakeGiveUpMs = Number.isFinite(n) && n > 0 ? n : 5000;
@@ -655,12 +606,19 @@ export function createAsr(opts) {
     monitorMicLevel(samples);
     forEachLevelWindow(samples, (rms) => {
       if (micTest) feedMicTest(rms, lastPeak);
+      if (muted && state === 'listening' && bargeDetector.active) {
+        if (bargeDetector.process(rms)) {
+          const st = bargeDetector.stats;
+          log(`[barge-in] onUserSpeech（rms=${rms.toFixed(3)} > ${st.threshold.toFixed(3)}, baseline=${(st.baseline ?? 0).toFixed(3)}, phase=${st.phase}）`);
+          safe(onUserSpeech);
+        }
+      }
       safe(onLevel, Math.max(0, Math.min(1, rms)));
     });
     pushPreRoll(samples);
     if (state === 'listening' && muted) {
-      // Echo suppression (TTS playing): no wake word, no capture — only barge-in.
-      runBargeInVad(samples);
+      // Echo suppression (TTS playing): no wake word, no capture. The barge-in
+      // detector is fed from the level windows above.
       return;
     }
     if (state === 'listening') {
@@ -745,17 +703,32 @@ export function createAsr(opts) {
    * its own output — measured as the actual cause of the user's false wakes.
    * Capture/levels/self-tests keep working while muted.
    */
-  function setMuted(value) {
+  /**
+   * @param {boolean} value mute/unmute wake-word listening
+   * @param {{phase?: 'ack'|'tts'}} [opts] 'ack' = wake acknowledgement playing
+   *        (stricter barge-in threshold); omitted = auto (ack right after a wake)
+   */
+  function setMuted(value, opts = {}) {
     const next = Boolean(value);
     if (next !== muted) log(`唤醒监听${next ? '已暂停（回声抑制：TTS 播放中）' : '已恢复'}`);
     muted = next;
-    resetBargeIn();
+    if (next) {
+      const autoPhase = Date.now() < wakePendingUntil ? 'ack' : 'tts';
+      const phase = opts.phase === 'ack' || opts.phase === 'tts' ? opts.phase : autoPhase;
+      const armed = bargeDetector.arm({ phase });
+      if (armed) log(`[barge-in] 检测已武装（phase=${phase}）`);
+    } else {
+      bargeDetector.disarm();
+    }
     return muted;
   }
 
   function handleWake(origin) {
     if (state !== 'listening') return;
     lastWakeAt = Date.now();
+    // the daemon plays its acknowledgement during wakeCaptureFallbackMs (or a
+    // short default window): barge-in uses a stricter threshold there
+    wakePendingUntil = Date.now() + Math.max(Number(asrCfg.wakeCaptureFallbackMs) || 0, 1500);
     log(`唤醒（${origin}）`);
     safe(onWake);
     // If the daemon does not call beginCapture() itself (or there is no daemon
@@ -1086,6 +1059,7 @@ export function createAsr(opts) {
     setSensitivity: (name) => applyRuntimeConfig({ sensitivity: name }),
     setWakeCooldownMs: (ms) => applyRuntimeConfig({ wakeCooldownMs: ms }),
     setWakeGiveUpMs: (ms) => applyRuntimeConfig({ wakeGiveUpMs: ms }),
+    setBargeIn: (patch) => applyRuntimeConfig({ bargeIn: patch }),
     setInputGainPercent: (value) => setInputGainPercent(value),
     get sensitivity() {
       return sensitivity;
@@ -1095,6 +1069,9 @@ export function createAsr(opts) {
     },
     get wakeGiveUpMs() {
       return wakeGiveUpMs;
+    },
+    get bargeIn() {
+      return bargeDetector.config;
     },
     get inputGainPercent() {
       return inputGainSetting;
@@ -1131,6 +1108,14 @@ export function createAsr(opts) {
         kwsParams: sensitivityPreset(sensitivity),
         wakeCooldownMs,
         wakeGiveUpMs,
+        bargeIn: bargeDetector.config,
+        bargeInStats: {
+          active: bargeDetector.active,
+          phase: bargeDetector.phase,
+          baseline: bargeDetector.baseline,
+          threshold: bargeDetector.threshold,
+          fired: bargeDetector.stats.fired,
+        },
         inputGainPercent: inputGainSetting,
         lastFinalMs,
         offlineLoaded: Boolean(offline),

@@ -15,6 +15,15 @@ import { makeConfig, modelsAvailable, loadFixture, skipMessage, recorder, concat
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Deterministic RMS-scaled 440 Hz chunk (barge-in needs a real loudness). */
+function pcmAtRms(ms, rms) {
+  const n = Math.round((16000 * ms) / 1000);
+  const amp = Math.min(0.99, rms * Math.SQRT2);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = amp * Math.sin((2 * Math.PI * 440 * i) / 16000);
+  return out;
+}
+
 /** Audio source whose start() does nothing; the test pushes PCM explicitly. */
 function manualSource() {
   let emit = null;
@@ -196,26 +205,27 @@ test('wake give-up: speaking instead of silence keeps the capture alive', async 
   }
 });
 
-test('muted barge-in: VAD onset -> exactly one onUserSpeech per second, no wake / transcription', async (t) => {
+test('muted barge-in: loud voice -> onUserSpeech once per second, echo ignored, no wake/transcription', async (t) => {
   if (!modelsAvailable()) { skipMessage(t); return; }
-  const cmd = loadFixture('cmd-weather');
   const manual = manualSource();
   const { asr, events } = startModule({ source: manual, asrOverrides: { wakeCooldownMs: 0 } });
   await asr.start();
   try {
     asr.setMuted(true);
     assert.equal(asr.muted, true);
-    manual.push(cmd.samples);
+    // 300 ms of echo baseline, then a loud deliberate voice
+    manual.push(pcmAtRms(300, 0.05));
+    manual.push(pcmAtRms(800, 0.35));
     await events.waitFor((e) => e.type === 'userSpeech', 3000, 'onUserSpeech');
     const levels = events.ofType('level').length;
     assert.ok(levels > 0, 'level metering keeps running while muted');
-    // same burst again (still inside the 1 s cooldown) -> no second callback
-    manual.push(cmd.samples);
+    // same loud voice again inside the 1 s cooldown -> no second callback
+    manual.push(pcmAtRms(700, 0.35));
     await sleep(150);
     assert.equal(events.ofType('userSpeech').length, 1, 'cooldown suppresses repeat');
     // after the 1 s cooldown another utterance fires again
     await sleep(1100);
-    manual.push(cmd.samples);
+    manual.push(pcmAtRms(700, 0.35));
     await events.waitFor(
       () => events.ofType('userSpeech').length === 2,
       3000,

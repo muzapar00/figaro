@@ -398,6 +398,69 @@ ASR 侧向 daemon 提供 4 个交互信号，都是 addtive、旧调用方不受
 
 新增回调：`createAsr({ onTap, onGiveUp, onUserSpeech })`（都可选，不传则行为与旧版一致）。
 
+## 插话打断（barge-in）的响度门槛与回声基线
+
+旧实现只要 muted 期间连续 250 ms 人声就回调 `onUserSpeech`，结果 **TTS 自己的
+扬声器回声**也会把回答掐掉（用户反馈"特别容易被打断"）。现在必须同时满足
+"够响 + 明显高于播放回声 + 持续足够长"：
+
+- `setMuted(true)` 后先用播放开始的 **300 ms** 麦克风电平测出回声基线
+  （中位数方式；如果音频停滞最多等 1.6 s）；
+- 普通 TTS 播放期：`rms > max(minRms, echoBaseline * echoFactor)`；
+- 播唤醒应答（waking/ack）期：`rms > max(minRms * 1.3, echoBaseline * 2.5)`，更严格；
+- "持续"= 累计超过阈值 **≥ minMs**（允许 ≤200 ms 的词间停顿，长停顿重新计数）；
+- 触发后 1 s 冷却；muted 期间**不跑 KWS、不唤醒、不转写**，只回调一次 `onUserSpeech()`。
+
+### 配置（`asr.bargeIn`，可热改）
+
+| 字段 | 默认（config.js 建议值） | 说明 |
+|---|---|---|
+| `enabled` | `true` | `false` = 彻底关闭插话检测（`onUserSpeech` 永不回调） |
+| `minRms` | **0.09** | 归一化 RMS 绝对下限（0..1） |
+| `echoFactor` | **2.5** | 还要高于"播放期回声基线"的倍数 |
+| `minMs` | **500** | 超过阈值需累计的时长 |
+
+> 模块内置兜底就是上表数值（`BARGE_IN_DEFAULTS`）；`src/config.js` 目前仍是旧值
+> （0.14/2.0），建议同步改成 0.09/2.5。当前用户 config 里 `bargeIn.enabled=false`
+> （用户手动关掉了），修好后可从 GUI 重新打开。
+
+热改：`applyRuntimeConfig({ bargeIn: { minRms, echoFactor, minMs, enabled } })`
+或 `asr.setBargeIn({...})`；`modelInfo.bargeIn` / `modelInfo.bargeInStats`
+（baseline/threshold/phase/fired）供 GUI/诊断。播放应答阶段更严格由模块自动判断
+（`wakeCaptureFallbackMs` 窗口内视为 ack）；daemon 也可显式传
+`asr.setMuted(true, { phase: 'ack' })`。
+
+### 实测（本机，`scripts/asr-bargein-bench.mjs`）
+
+**真实声学通道**：TTS 由 MiniMax 合成、经默认扬声器播放、用 parec 录麦克风
+（扬声器→麦克风的真实回授；共 12.0 s 回声录音）。
+
+| 条件 | mic RMS 均值 | 中位 | p95 | 最大 |
+|---|---|---|---|---|
+| 仅 TTS 回声（12.0 s，240 windows） | 0.0171 | 0.0147 | 0.0397 | 0.0795 |
+
+**合成说话人（同一真实回声录音 + TTS 命令语音在采样域按目标 mic RMS 混音）**：
+5 条不同命令句/档位，用推荐配置（minRms 0.09 / echoFactor 2.5 / minMs 500）跑真实检测器：
+
+| 用户 mic RMS | 打断触发 | 说明 |
+|---|---|---|
+| 0.06 | 0/5 | 太轻（与回声同量级） |
+| 0.08 | 2/5 | |
+| 0.10 | 2/5 | |
+| 0.12 | 3/5 | |
+| **0.15** | **5/5** | 正常"盖过 TTS 说话"音量 |
+| 0.20 | 5/5 | 明显提高音量 |
+
+- **回声中误触发：0/12.0 s**；**ack 阶段回声误触发：0**；
+- 旧默认（minRms 0.14 / echoFactor 2.0）在用户 mic RMS 0.15 时只有 **2/5** 触发
+  （太钝），所以推荐放宽到 0.09/2.5；实测 `minRms=0.14` 全程回声也都是 0，
+  但在 0.12–0.15 的"正常盖过"音量下不可靠。
+- 参数候选表（回声中误触发全部为 0）：minRms 0.08/9/10/12/14 × echoFactor 2/2.5/3/4，
+  只有 minRms ≤0.09 能在 0.15 mic RMS 达成 5/5。
+- **说明**：真实用户说话无法由 agent 产生，上表"用户"是 TTS 语音经采样域混音
+  （回声部分是真实录制的麦克风信号）；声学回声是真实的。若用户正常说话更轻
+  （mic RMS <0.12），可把 `minRms` 再降到 0.07–0.08；若觉得仍容易被打断，可升到 0.11。
+
 ## 测试与工具
 
 ```bash
