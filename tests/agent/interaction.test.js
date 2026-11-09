@@ -476,6 +476,39 @@ test('checklist 8: after a reply the assistant waits, ignores a quiet room, and 
   await waitFor(() => lastState(messages) === 'idle', { label: 'follow-up window expires', timeoutMs: 3000 });
 });
 
+test('a TTS that reports idle before flush resolves still opens the waiting window', async (t) => {
+  // Regression: TTS onState('idle') used to force the daemon to idle while the
+  // turn runner was still awaiting flush(), so the follow-up window was skipped
+  // and the overlay vanished the moment the reply ended.
+  const tts = makeFakeTts();
+  const originalFactory = tts.factory;
+  const eager = (options) => {
+    const instance = originalFactory(options);
+    const flush = instance.flush.bind(instance);
+    instance.flush = async () => {
+      options.onState?.('speaking');
+      await flush();
+      options.onState?.('idle'); // arrives before flush() resolves below
+      return undefined;
+    };
+    return instance;
+  };
+  const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, {
+    followUpWindowMs: 400,
+    tts: { factory: eager, record: tts.record, playbacks: tts.playbacks },
+  });
+  client.send({ type: 'wake' });
+  await waitFor(() => lastState(messages) === 'waking', { label: 'waking' });
+  const playback = ack.playbacks.at(-1);
+  playback.settleStart();
+  playback.finish();
+  await waitFor(() => lastState(messages) === 'listening', { label: 'listening' });
+
+  deliverFinal(asr, '说一句话');
+  await waitFor(() => agent.record.texts.length === 1, { label: 'turn ran' });
+  await waitFor(() => lastState(messages) === 'waiting', { label: 'waiting window after the reply' });
+});
+
 // ---------------------------------------------------------------- extras
 
 test('waking is debounced: a second wake during the ack is ignored', async (t) => {

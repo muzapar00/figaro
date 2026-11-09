@@ -1160,9 +1160,11 @@ export function createDaemon(options = {}) {
           ttsSpeaking = next === 'speaking';
           // Echo suppression: never listen for the wake word while audio plays.
           setWakeMuted(next === 'speaking');
-          if (next === 'idle' && current === null && state === 'speaking' && !ackActive && !wakeFlowPending) {
-            setState('idle');
-          }
+          // Do NOT move the state machine to idle here. Playback ending is not
+          // the end of the turn: the turn runner still has to decide between the
+          // waiting window and settling, and this callback used to pre-empt it
+          // (state was already idle by the time flush() resolved, which silently
+          // disabled the follow-up window).
         },
         onError: (err) => handleVoiceError('tts', err),
       });
