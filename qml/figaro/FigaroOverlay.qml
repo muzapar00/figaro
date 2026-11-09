@@ -20,12 +20,17 @@ PanelWindow {
     anchors {
         top: true
         left: true
-        right: true
     }
+    // Layer shell has no horizontal centre anchor, so the surface is kept as
+    // narrow as the widest pill and pushed to the centre with a left margin.
+    // A full-width transparent surface costs several times more to composite on
+    // the software renderer (measured: 72% of a core vs ~20%).
+    implicitWidth: 760
     margins {
         top: 6
+        left: Math.round((win.screen ? win.screen.width - win.implicitWidth : 0) / 2)
     }
-    implicitHeight: 470
+    implicitHeight: 400
     exclusiveZone: 0
     color: "transparent"
 
@@ -87,8 +92,8 @@ PanelWindow {
                         target: content
                         property: "y"
                         to: 0
-                        spring: FigaroStyle.appearSpring
-                        damping: FigaroStyle.appearDamping
+                        spring: FigaroStyle.reduceMotion ? 5.5 : FigaroStyle.appearSpring
+                        damping: FigaroStyle.reduceMotion ? 1.0 : FigaroStyle.appearDamping
                         mass: 1.0
                         epsilon: 0.001
                     },
@@ -109,7 +114,7 @@ PanelWindow {
                         target: content
                         property: "y"
                         to: -content.height - 24
-                        duration: 190
+                        duration: FigaroStyle.exitMs
                         easing.type: Easing.InCubic
                     },
                     NumberAnimation {

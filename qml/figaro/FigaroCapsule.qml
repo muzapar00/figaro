@@ -1,17 +1,26 @@
 import QtQuick
 import qs.figaro
+// KOS's compositor glass: the same native declaration the shell's dock and bar
+// use for their liquid-glass finish. KWin paints refraction, glints and noise
+// for the declared shape; the client paints no material of its own.
+import Kos.SurfaceShape 1.0
 
 // The assistant as one morphed object.
 //
-//   idle / waking / listening / finalizing - a ball (FigaroOrb draws it)
+//   idle / waking / listening / finalizing - a ball
 //   thinking / speaking with text           - the ball stretches into a pill:
-//                                             the ball shrinks to the left side
-//                                             and the reply fills the right
+//                                             the ball shrinks to the left end,
+//                                             the reply fills the right
 //
-// Everything below is bound, so the whole morph is a single state change: the
-// capsule's rectangle and the ball's scale/offset ride the same spring, which
-// is what makes it read as one elastic object being pulled into a new shape
-// rather than a pill appearing next to a ball.
+// Apple's motion guideline asks for one purposeful movement rather than several
+// competing ones, and for feedback that follows expectations. So every geometry
+// here is derived from a single animated value, `morphProgress`: the pill's
+// width and height, its corner radius, the ball's scale and slide, and the text
+// slide are all the same curve. It reads as one elastic object being pulled into
+// a new shape, not as a pill appearing next to a ball.
+//
+// Under reduce motion the same progress is critically damped, so shapes still
+// change but never bounce, and text simply cross-fades.
 Item {
     id: shell
 
@@ -24,19 +33,28 @@ Item {
         : state
     readonly property bool hasText: text.length > 0
     readonly property bool morph: hasText && (visualState === "thinking" || visualState === "speaking")
+    readonly property bool reduce: FigaroStyle.reduceMotion
 
-    // Ball size: full size when it is the whole object, smaller once it has to
-    // share the pill with the text.
+    // The one value everything else is derived from.
+    property real morphProgress: morph ? 1 : 0
+    Behavior on morphProgress {
+        SpringAnimation {
+            spring: shell.reduce ? 5.5 : 3.2
+            damping: shell.reduce ? 1.0 : 0.46
+            mass: 1.0
+            epsilon: 0.001
+        }
+    }
+
     readonly property real ballDiameter: 128
-    readonly property real ballScale: morph ? 0.62 : 1.0
+    readonly property real ballScale: 1.0 - (1.0 - 0.62) * Math.max(0, Math.min(1, morphProgress))
+    readonly property real ballBox: ballDiameter * ballScale
 
     readonly property real padH: 14
     readonly property real padV: 12
     readonly property real gap: 12
     readonly property real maxTextW: 400
-    readonly property real ballBox: ballDiameter * ballScale
 
-    // Natural (unwrapped) text width decides whether the pill can shrink-wrap.
     Text {
         id: measure
         visible: false
@@ -46,64 +64,71 @@ Item {
         wrapMode: Text.NoWrap
     }
 
-    readonly property real textW: !morph ? 0 : Math.min(measure.implicitWidth, maxTextW)
-    readonly property real capsuleW: morph ? padH * 2 + ballBox + gap + textW : ballDiameter
-    readonly property real capsuleH: morph
-        ? Math.max(ballBox + padV * 2, label.implicitHeight + padV * 2)
-        : ballDiameter
+    readonly property real targetTextW: Math.min(measure.implicitWidth, maxTextW)
+    readonly property real targetCapsuleW: padH * 2 + ballBox + gap + targetTextW
+    readonly property real targetCapsuleH: Math.max(ballBox + padV * 2, label.implicitHeight + padV * 2)
+
+    readonly property real capsuleW: ballDiameter + (targetCapsuleW - ballDiameter) * Math.max(0, Math.min(1, morphProgress))
+    readonly property real capsuleH: ballDiameter + (targetCapsuleH - ballDiameter) * Math.max(0, Math.min(1, morphProgress))
 
     readonly property color tint: FigaroStyle.colorFor(visualState)
 
     implicitWidth: 760
     implicitHeight: 240
 
-    // The pill. When it is a ball this rectangle is exactly the ball's circle,
-    // so the same item morphs between the two shapes.
+    // Declare the pill's shape to KWin's glass effect: this is the same
+    // declaration the KOS dock and bar use, and it is what makes the capsule
+    // liquid glass rather than a translucent rectangle. The compositor owns
+    // blur, refraction and the rim light for the declared shape; the client
+    // paints only a legibility veil.
+    property var glassShape: SurfaceShape {
+        target: shell.morphProgress > 0.02 ? capsule : null
+        blurSigma: 26
+        effectType: SurfaceShape.Liquid
+        material: SurfaceShape.Regular
+        tintMode: SurfaceShape.NoTint
+        radius: capsule.height / 2
+        exponent: 2.0
+        enabled: shell.morphProgress > 0.02
+    }
+
+    // The pill. At progress 0 this rectangle is exactly the ball's circle, so
+    // the same item is the ball and the pill at once.
     Rectangle {
         id: capsule
         anchors.centerIn: parent
         width: shell.capsuleW
         height: shell.capsuleH
         radius: height / 2
-        color: Qt.rgba(0.05, 0.06, 0.12, shell.morph ? 0.58 : 0.0)
-        border.width: shell.morph ? 1 : 0
+        // The compositor paints the glass; this is only a light darkening
+        // veil so white text stays readable over bright backdrops.
+        color: Qt.rgba(0.03, 0.04, 0.09, 0.18 * shell.morphProgress)
+        // KWin draws the rim; keep only a faint state-tinted inner edge so the
+        // assistant still reads blue / violet / magenta through the glass.
+        border.width: shell.morphProgress > 0.05 ? 1 : 0
         border.color: Qt.rgba(shell.tint.r, shell.tint.g, shell.tint.b,
-                              shell.morph ? 0.28 + shell.level * 0.30 : 0)
-
-        // The bounce of the whole morph lives here: width, height and radius
-        // all ride the same spring, so the pill overshoots and settles as one
-        // elastic body.
-        Behavior on width { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on height { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on radius { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on color { ColorAnimation { duration: 200; easing.type: Easing.OutCubic } }
-        Behavior on border.width { NumberAnimation { duration: 160 } }
+                              0.30 + shell.level * 0.35)
+        Behavior on color { ColorAnimation { duration: FigaroStyle.crossfadeMs; easing.type: Easing.OutCubic } }
     }
 
-    // The ball: same item in both shapes, it only shrinks and slides left.
     FigaroOrb {
         id: ball
         diameter: shell.ballDiameter
         state: shell.visualState
         level: shell.level
 
-        // Position by the *visible* ball centre (the canvas item is larger than
-        // the ball because it also carries the halo).
-        readonly property real centerX: shell.morph
-            ? capsule.x + shell.padH + shell.ballBox / 2
-            : shell.width / 2
+        // Position by the *visible* ball centre: the canvas item is larger than
+        // the ball because it also carries the halo.
+        readonly property real centerX: capsule.x + shell.padH * shell.morphProgress + shell.ballBox / 2
+            + (1 - shell.morphProgress) * (shell.width / 2 - capsule.x - shell.padH / 2 - shell.ballBox / 2)
         readonly property real centerY: capsule.y + capsule.height / 2
         x: centerX - width / 2
         y: centerY - height / 2
         scale: shell.ballScale
-
-        Behavior on x { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on y { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on scale { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
     }
 
-    // The reply, inside the pill on the right. It slides in from under the ball
-    // and fades, on the same spring as everything else.
+    // The reply. Text is being read, so its motion is precise: it slides on the
+    // same progress curve but never overshoots, and it fades rather than scaling.
     Text {
         id: label
         text: shell.text
@@ -111,27 +136,24 @@ Item {
         font.weight: Font.Medium
         color: "#f2f4ff"
         wrapMode: Text.Wrap
-        width: shell.textW
-        x: capsule.x + shell.padH + shell.ballBox + (shell.morph ? shell.gap : 0)
+        width: shell.targetTextW
+        x: capsule.x + shell.padH + shell.ballBox + shell.gap * shell.morphProgress
         y: capsule.y + (capsule.height - height) / 2
-        opacity: shell.morph ? 1 : 0
+        opacity: Math.min(1, shell.morphProgress * 1.2)
         horizontalAlignment: Text.AlignLeft
-
-        Behavior on x { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on y { SpringAnimation { spring: 3.2; damping: 0.46; mass: 1.0 } }
-        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: FigaroStyle.textFadeMs; easing.type: Easing.OutCubic } }
     }
 
     // Click target: the ball, or the whole pill once it exists. Exposed so the
-    // window can mask its input region to exactly this area.
+    // window masks its input region to exactly this area.
     readonly property Item hitItem: hit
 
     MouseArea {
         id: hit
-        x: shell.morph ? capsule.x : ball.centerX - shell.ballDiameter / 2
-        y: shell.morph ? capsule.y : ball.centerY - shell.ballDiameter / 2
-        width: shell.morph ? capsule.width : shell.ballDiameter
-        height: shell.morph ? capsule.height : shell.ballDiameter
+        x: capsule.x
+        y: capsule.y
+        width: capsule.width
+        height: capsule.height
         onClicked: {
             if (shell.state === "idle") FigaroIpc.send({ type: "wake" });
             else FigaroIpc.cancel();

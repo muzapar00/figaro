@@ -46,9 +46,19 @@ Item {
 
     property var pulses: []
 
+    // Apple: "Make motion optional" and "let people cancel motion". When the
+    // desktop asks for reduced motion, the ornaments disappear and only colour
+    // plus a plain fade remain - the state is still readable because the colour
+    // and the audio carry the meaning.
+    readonly property bool reduce: FigaroStyle.reduceMotion
+
+    // A short acknowledge bump when the assistant starts answering a wake.
+    // One 130 ms pop, tied to the ack - reflexive, not decorative.
+    property real pop: 0
+
     property real breath: 0
     SequentialAnimation on breath {
-        running: orb.thinking
+        running: orb.thinking && !orb.reduce
         loops: Animation.Infinite
         NumberAnimation { from: 0; to: 1; duration: 1700; easing.type: Easing.InOutSine }
         NumberAnimation { from: 1; to: 0; duration: 1700; easing.type: Easing.InOutSine }
@@ -101,26 +111,32 @@ Item {
         const body = orb.bodyColor();
 
         // The ball breathes with the voice: elastic swell, springy settle.
-        const scale = (1 + env * 0.10) * (1 + orb.breath * 0.02);
+        const scale = (1 + env * (orb.reduce ? 0.03 : 0.10)) * (1 + orb.breath * 0.02) * (1 + orb.pop * 0.06);
         const r = orb.ballRadius * scale;
         // Capped on purpose: the silhouette should breathe, not turn into
         // an egg. The visible bounce comes from the scale, not from wobble.
-        const amp = 0.14 + Math.min(0.40, env * 0.40);
+        const amp = orb.reduce ? 0.0 : 0.14 + Math.min(0.40, env * 0.40);
 
         ctx.reset();
         ctx.clearRect(0, 0, w, h);
 
-        // 1. Ambient glow.
-        let g = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, r * 1.85);
-        g.addColorStop(0.0, orb.rgba(body.r, body.g, body.b, 0.18 + env * 0.30));
-        g.addColorStop(0.45, orb.rgba(body.r, body.g, body.b, 0.06 + env * 0.14));
-        g.addColorStop(1.0, orb.rgba(body.r, body.g, body.b, 0.0));
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r * 1.85, 0, Math.PI * 2);
-        ctx.fill();
+        // 1. Ambient glow. A stack of flat alpha circles costs a fraction of a
+        // large radial gradient on the software rasteriser (the halo covers
+        // ~10x the ball's area, and it is the single most expensive fill in the
+        // frame). Eight steps are enough for a soft falloff at this size.
+        const glowSteps = 8;
+        for (let i = glowSteps; i >= 1; i--) {
+            const f = i / glowSteps;
+            const a = (0.20 + env * 0.26) * Math.pow(1 - f, 1.7);
+            if (a < 0.004) continue;
+            ctx.fillStyle = orb.rgba(body.r, body.g, body.b, a);
+            ctx.beginPath();
+            ctx.arc(cx, cy, r * (0.9 + (1.85 - 0.9) * f), 0, Math.PI * 2);
+            ctx.fill();
+        }
 
         // 2. The sphere itself, deformed by the current level.
+        let g;
         g = ctx.createRadialGradient(cx - r * 0.10, cy - r * 0.14, r * 0.06, cx, cy, r * 1.02);
         g.addColorStop(0.0, orb.rgba(Math.min(1, body.r + 0.25), Math.min(1, body.g + 0.25), body.b, 1.0));
         g.addColorStop(0.45, orb.rgba(body.r, body.g, body.b, 0.98));
@@ -139,7 +155,7 @@ Item {
             ctx.clip();
             ctx.lineCap = "round";
 
-            const spin = t * 0.001;
+            const spin = orb.reduce ? 0.6 : t * 0.001;
             ctx.lineWidth = r * 0.26;
             ctx.strokeStyle = orb.rgba(0.92, 0.88, 1.0, 0.22 * m);
             ctx.beginPath();
@@ -185,7 +201,7 @@ Item {
             }
             ctx.stroke();
 
-            const ticks = 28;
+            const ticks = orb.reduce ? 0 : 24;
             ctx.lineCap = "round";
             ctx.lineWidth = 2.2;
             for (let i = 0; i < ticks; i++) {
@@ -199,21 +215,6 @@ Item {
                 ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
                 ctx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer);
                 ctx.stroke();
-            }
-        }
-
-        // 6. THINKING: orbiting dots outside the ball: unmistakable rotation.
-        if (orb.thinkMix > 0.01) {
-            const m = orb.thinkMix;
-            const spin = t * 0.001;
-            for (let i = 0; i < 8; i++) {
-                const a = spin * 1.35 + i * (Math.PI * 2 / 8);
-                const rr = r * 1.34;
-                const size = i % 2 === 0 ? 3.4 : 2.2;
-                ctx.fillStyle = orb.rgba(0.86, 0.86, 1.0, (i % 2 === 0 ? 0.85 : 0.45) * m);
-                ctx.beginPath();
-                ctx.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, size, 0, Math.PI * 2);
-                ctx.fill();
             }
         }
 
@@ -236,6 +237,21 @@ Item {
         }
     }
 
+    Connections {
+        target: orb
+        function onStateChanged() {
+            if (orb.state === "waking" && !orb.reduce) {
+                popAnim.restart();
+            }
+        }
+    }
+
+    SequentialAnimation {
+        id: popAnim
+        NumberAnimation { target: orb; property: "pop"; to: 1; duration: FigaroStyle.popMs; easing.type: Easing.OutCubic }
+        NumberAnimation { target: orb; property: "pop"; to: 0; duration: FigaroStyle.popMs * 1.6; easing.type: Easing.OutCubic }
+    }
+
     Canvas {
         id: canvas
         anchors.fill: parent
@@ -247,7 +263,9 @@ Item {
 
     Timer {
         id: frame
-        interval: 16
+        // 30 fps is enough for the slow thinking motion; audio-reactive states
+        // get the full 60.
+        interval: FigaroStyle.frameIntervalFor(orb.state)
         repeat: true
         running: orb.visible && orb.state !== "idle"
         onTriggered: {
@@ -266,7 +284,7 @@ Item {
             if (orb.env < 0) { orb.env = 0; orb.envVel = 0; }
 
             // A pulse on each syllable onset while speaking.
-            if (orb.speakMix > 0.5 && orb.envVel > 0.9 && orb.env > 0.15) {
+            if (!orb.reduce && orb.speakMix > 0.5 && orb.envVel > 0.9 && orb.env > 0.15) {
                 const next = orb.pulses.slice();
                 next.push({ age: 0 });
                 orb.pulses = next.slice(-3);

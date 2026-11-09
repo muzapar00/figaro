@@ -14,6 +14,7 @@ export PATH="$HOME/.local/bin:$PATH"
 # Same software backend as the systemd unit: GL contexts can fail to allocate on
 # this machine while the local LLM holds almost all of the VRAM.
 export QT_QUICK_BACKEND=software
+export QML2_IMPORT_PATH="$HOME/.config/quickshell/kos"
 # Forward a dev socket to the overlay when the caller set one.
 export FIGARO_SOCKET="${FIGARO_SOCKET:-}"
 

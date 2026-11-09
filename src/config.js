@@ -66,9 +66,9 @@ export const DEFAULTS = {
     bargeIn: {
       enabled: true,
       // Absolute floor on normalized RMS (0..1).
-      minRms: 0.14,
+      minRms: 0.09,
       // ...and this many times the echo level measured while TTS is playing.
-      echoFactor: 2.0,
+      echoFactor: 2.5,
       // How long the voice has to hold above the threshold.
       minMs: 500,
     },
