@@ -38,7 +38,8 @@
 
 ```bash
 figaro ask "现在几点？用 bash 看一下"     # 一问一答（默认不出声）
-figaro settings                        # 打开 macOS 风格设置/自测面板（等同应用菜单「费加罗设置」）
+figaro settings                        # 打开 macOS 风格设置/自测面板（应用菜单里叫「费加罗」）
+figaro talk                            # 唤醒一次（不用说话，等同喊「费加罗」）
 figaro ask "讲个笑话" --speak            # 出声
 figaro say "你好，我是费加罗"             # 只朗读
 figaro status                           # 状态/模型/语音能力/最近错误
@@ -50,8 +51,15 @@ journalctl --user -u figaro -f          # 看日志
 - 或者直接说 **「费加罗」** 唤醒，然后说你的问题，静音 0.9s 自动结束；
 - 点一下桌面上的球体可以打断它。
 
-按住说话的键由 `asr.hotkey` 决定（当前 `CTRL+ALT+F5`）。第一次注册会弹一次 KDE 授权框，点「确定」即可；
-取消后模块会自动重试（30s × 2），并保留运行中恢复路径（监听 portal `ShortcutsChanged` + 10s 轮询）。
+**热键**：按住 F9 说话，由 `asr.hotkey` 决定。daemon 以 systemd 用户服务运行时，
+XDG 的 GlobalShortcuts portal 经常拿不到"服务属于哪个应用"而拒绝建会话（`figaro status` 会显示
+`热键: 不可用（unavailable）`）。这种情况有两个可用办法：
+
+1. 让它自己注册：`systemctl --user restart figaro` 后看 `figaro status`，端口会话有时能在重试时建上；
+2. **手动绑一个快捷键**（最稳，任何情况下都可用）：KDE 系统设置 → 快捷键 → 添加 → 命令，
+   命令填 `figaro talk`，按键设为 F9。点一下等于喊了一次「费加罗」，语音唤醒逻辑完全不变。
+
+注意 `figaro talk` 只负责"唤醒一次"，长按/松开这种 push-to-talk 语义仍由语音唤醒路径负责。
 
 **误唤醒**：默认灵敏度 `low`，且 TTS 出声期间会暂停唤醒词监听（否则助手会听见自己说话而反复唤醒——这正是
 最初"一直被触发"的根因）。三档灵敏度的负样本实测见 `src/voice/asr/README.md`：每档 41.8 分钟负样本下真人

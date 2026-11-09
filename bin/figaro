@@ -24,6 +24,7 @@ const USAGE = `用法:
   figaro daemon [--no-tts] [--no-asr]   前台运行守护进程
   figaro ask "问题" [--speak] [--stream] [--no-tts] [--json] [--verbose]
   figaro say "文字"                      只朗读
+  figaro talk                            唤醒一次（等同喊「费加罗」，可绑到桌面快捷键）
   figaro status [--json]                 查看状态与健康
   figaro doctor [--json] [--fix] [--net] 一键体检（服务/模型/麦克风/音频出口/热键/桌面/资源）
   figaro help                            显示帮助
@@ -427,6 +428,24 @@ async function main() {
       child.unref();
       console.log('figaro: 设置面板已启动（应用菜单里的「费加罗」也可以打开）');
       return 0;
+    }
+    case 'talk': {
+      // The reliable hotkey path on a systemd user service: KDE picks the
+      // shortcut itself and runs this command, so nothing depends on the
+      // GlobalShortcuts portal being able to identify our app id.
+      const config = loadConfig();
+      let client;
+      try {
+        client = await tryConnect(config.ui.socket, 1500);
+      } catch (err) {
+        fail(`守护进程未运行（socket: ${config.ui.socket}）：${err?.message || err}`);
+      }
+      client.send({ type: 'wake' });
+      // Give the daemon a moment to open the microphone before we exit.
+      await SLEEP(120);
+      client.close();
+      process.exit(0);
+      break;
     }
     case 'status':
       await commandStatus(flags);
