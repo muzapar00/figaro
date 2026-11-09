@@ -1,211 +1,218 @@
 <div align="center">
 
-<img src="docs/images/icon.png" width="96" alt="费加罗图标" />
+<img src="docs/images/icon.png" width="96" alt="Figaro icon" />
 
-# 费加罗 · Figaro
+# Figaro · 费加罗
 
-**跑在你自己 Linux 桌面上的语音助手：喊一声，它出现；说完事，它退下。**
+**A voice assistant that runs on your own Linux desktop. Say the word — it appears. Finish — it leaves.**
 
 [![License: GPL-3.0+](https://img.shields.io/badge/license-GPL--3.0%2B-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen.svg)](#实测数字)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Wayland%20%C2%B7%20Quickshell-6a5acd.svg)](#快速开始)
-[![Brain](https://img.shields.io/badge/brain-DeepSeek%20%2B%20本地工具-4a7dff.svg)](#架构)
-[![Voice](https://img.shields.io/badge/voice-MiniMax%20流式男声-d75cff.svg)](#架构)
+[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen.svg)](#measured-numbers)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Wayland%20%C2%B7%20Quickshell-6a5acd.svg)](#quick-start)
+[![Brain](https://img.shields.io/badge/brain-DeepSeek%20%2B%20local%20tools-4a7dff.svg)](#architecture)
+[![Voice](https://img.shields.io/badge/voice-MiniMax%20streaming-d75cff.svg)](#architecture)
 
-[中文](README.md) · [English](README.en.md) · [NextKDE 集成计划](docs/nextkde-integration.md) · [IPC 契约](docs/ipc.md) · [语音交互状态机](docs/voice-interaction.md) · [贡献](CONTRIBUTING.md)
+[English](README.md) · [中文](README.zh-CN.md) · [NextKDE integration plan](docs/nextkde-integration.md) · [IPC contract](docs/ipc.md) · [Voice interaction state machine](docs/voice-interaction.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
-![倾听 / 思考 / 回答：同一个对象的三段动作](docs/images/hero.jpg)
+![Listening / thinking / answering: one object, three motions](docs/images/hero.jpg)
 
-费加罗不是"又一个聊天窗口"。它是一个常驻后台的助手进程 + 一块贴在屏幕顶部的浮层：
-**中文喊「费加罗」或英文喊 "figaro" 都会醒**，醒来先应你一句；回答时球会被拉成带字幕的胶囊，
-答完不急着消失，而是停在屏幕上安静等你 7 秒；你说「退下」，它会先把最后一句说完再退。
+Figaro is not another chat window. It is a background daemon plus a small overlay that hugs the top edge of your
+screen: **say "Figaro" in English or 「费加罗」 in Chinese and it wakes**, acknowledges you out loud, then morphs
+the ball into a caption-carrying pill while it answers. When the answer ends it does not vanish — it settles back
+into a ball and quietly waits seven seconds in case you want to follow up. Tell it to stand down and it finishes
+the last sentence, then leaves.
 
-唤醒词与语音识别**全部本地运行**；对话、工具调用走 DeepSeek；声音是 MiniMax 的流式男声。
+Wake-word detection and speech recognition run **entirely on this machine**. Conversation and tool use go through
+DeepSeek; the voice is MiniMax streaming TTS.
 
 ---
 
-## 它现在能做什么
+## What it does today
 
 | | |
 |---|---|
-| 🎙️ **中英双语唤醒** | 中文「费加罗/菲加罗/飞加罗」与英文 "figaro / hey figaro" 同一套模型；误唤醒实测 0（真人语音 10 分钟） |
-| 🗣️ **说完就停、答完等你** | 回答播完停在屏幕顶部 7 秒，期间直接用正常音量接着说即可追问，不用再喊唤醒词；只有够响的人声才算（底噪 0.0023，门槛 0.012） |
-| 🚪 **会自己退下** | 说「退下/休息吧/没事了」→ 先把话说完、语音播完，再收起；也可以点它一下取消 |
-| 🛑 **能被打断** | 回答中你开口（够响且持续）就立刻停声转听，不会把环境音当指令 |
-| 🖥️ **看得见屏幕** | 内置 `screenshot` + `view_image` 工具，问"屏幕上是什么"它真的会看（已修复参数名导致"看图工具坏了"的坑） |
-| 🛠️ **本机工具** | bash、读写文件、glob/grep、网页搜索；都能组合使用 |
-| 🔊 **不抢语音的音效** | 5 个 65–200ms 的轻音效（唤醒/采集结束/答完/退下/错误），比语音低 4–6 dB，独立进程播放，绝不会打断说话 |
-| 🎨 **可调的外观** | 尺寸 0.5–2.0、形状（球↔胶囊 / 始终球 / 一条线）、关闭动画；KDE 上还有 KWin 液态玻璃 |
-| 🧭 **引导式自测** | 设置面板里五步向导：安静检查 → 增益 → 唤醒 → 转写 → 试听，跟着点就行 |
-| 🩺 **一键体检** | `figaro doctor` 检查服务/模型/密钥/麦克风/音频出口/热键/桌面能力/资源 |
+| 🎙️ **Bilingual wake word** | 「费加罗/菲加罗/飞加罗」 and "figaro / hey figaro" on one model; measured 0 false wakes over 10 minutes of real speech |
+| 🗣️ **Stops when you stop, waits when it is done** | After the reply it waits seven seconds; just keep talking to follow up — no wake word needed. Only genuinely loud speech counts (floor 0.0023, gate 0.012) |
+| 🚪 **Leaves on request** | "退下 / 休息吧 / 没事了" finishes the spoken reply first, then dismisses; tap it to cancel instead |
+| 🛑 **Interruptible** | Talk over the answer (loud enough, long enough) and it stops instantly and listens — background noise will not trigger it |
+| 🖥️ **Sees the screen** | Built-in `screenshot` + `view_image` tools: ask what is on screen and it actually looks (a parameter-name mismatch that used to make it report "the image tool is broken" is fixed) |
+| 🛠️ **Local tools** | bash, read/write files, glob/grep, web search — composable |
+| 🔊 **Quiet UI sounds** | Five 65–200 ms earcons (wake, capture end, answer done, dismiss, error), 4–6 dB below the voice, separate processes that can never interrupt speech |
+| 🎨 **Configurable appearance** | Scale 0.5–2.0, shape (ball ↔ pill / always ball / a line), motion off; real KWin liquid glass on KDE |
+| 🧭 **Guided self-test** | A five-step wizard in the settings app: quiet room → gain → wake word → dictation → voice |
+| 🩺 **One-command health check** | `figaro doctor` checks services, models, keys, microphone, audio sink, hotkey, desktop capabilities and resources |
 
-<p align="center"><img src="docs/images/settings-grid.jpg" width="920" alt="设置面板：概览、外观、交互与引导测试" /></p>
+<p align="center"><img src="docs/images/settings-grid.jpg" width="920" alt="Settings: overview, appearance, interaction and the guided test" /></p>
 
 ---
 
-## 快速开始
+## Quick start
 
-**前置**：Linux + Wayland（KDE Plasma 6 实测）、[Quickshell](https://github.com/quickshell-mirror/quickshell)（`qs` 在 PATH）、Node ≥ 22、PipeWire、Python 3。
-KWin 液态玻璃是**可选**的：没有 KOS 插件时会自动退回半透明底，不影响使用。
+**Requirements**: Linux + Wayland (tested on Plasma 6), [Quickshell](https://github.com/quickshell-mirror/quickshell)
+(`qs` on `PATH`), Node ≥ 22, PipeWire, Python 3. KWin liquid glass is **optional** — without the KOS plugin the
+overlay falls back to a translucent fill and keeps working.
 
 ```bash
 git clone https://github.com/muzapar00/figaro.git && cd figaro
 
-# 1. 配置（唯一需要你填的东西）
+# 1. Configuration (the only thing you must fill in)
 mkdir -p ~/.config/figaro
 cp config/config.example.json ~/.config/figaro/config.json
 chmod 600 ~/.config/figaro/config.json
-$EDITOR ~/.config/figaro/config.json      # 填 DeepSeek 与 MiniMax 的 API Key
+$EDITOR ~/.config/figaro/config.json      # DeepSeek and MiniMax API keys
 
-# 2. 依赖 + 本地模型（唤醒词/识别模型不随仓库分发）
+# 2. Dependencies + local models (recognition models are not bundled)
 npm install
 bash scripts/fetch-models.sh
 
-# 3. 安装并启动（浮层 + daemon + 设置页 + 图标 + 快捷键规则）
+# 3. Install and start (overlay + daemon + settings + icon + shortcut rule)
 ./install.sh
 
-# 4. 试试
-figaro ask "现在几点？用 bash 看一下" --speak
+# 4. Try it
+figaro ask "What time is it? Use bash." --speak
 ```
 
-> 设置面板：应用菜单里的 **费加罗**，或 `figaro settings`。
-> 体检：`figaro doctor`；状态：`figaro status`。
+> Settings app: **费加罗** in the application menu, or `figaro settings`.
+> Health check: `figaro doctor`; status: `figaro status`.
 
-**唤醒方式**
-- 直接说 **「费加罗」** 或 **"figaro"**（长按 F9 也支持，见[疑难排查](#疑难排查)）；
-- 说完停顿约 0.9 秒自动结束，也可以再按一次 / 点它取消；
-- 想让它闭嘴说「取消 / 算了 / 别说了」；想让它离开说「退下 / 休息吧 / 没事了」。
+**How to talk to it**
+- Say **"figaro"** (or 「费加罗」); press-and-hold F9 also works, see [Troubleshooting](#troubleshooting).
+- About 0.9 s of silence ends your sentence; tap the overlay or short-press the key to cancel.
+- "取消 / 算了 / 别说了" makes it stop talking; "退下 / 休息吧 / 没事了" dismisses it.
 
 ---
 
-## 交互长什么样（Siri 规则）
+## Interaction (Siri-style state machine)
 
-| 状态 | 触发 | 视觉 | 声音 |
+| State | Trigger | Visual | Sound |
 |---|---|---|---|
-| `idle` | 平时 | 不渲染（0% CPU） | — |
-| `waking` | 唤醒词/热键 | 球从屏幕顶部落下 | 轻音效 + 10 句随机应答（我在/你好/嘿/有何贵干…） |
-| `listening` | 应答同时开麦 | 球随音量呼吸，有电平环 | 你说 |
-| `finalizing` / `thinking` | 停口 0.9s 后 | 紫罗兰光弧旋转 | 极轻的采集结束音 |
-| `speaking` | 回答开始 | 球被拉成胶囊，字幕在右 | 流式男声（逐句合成，边说边播） |
-| `waiting` | 回答播完 | 收成球，停在顶部 7 秒 | 柔和收尾音；听到你说话就回到 `listening` |
-| 退下/取消 | 说「退下」/点它/短按 F9 | 收成球后上收消失 | 下降音 |
+| `idle` | normal | nothing rendered (0% CPU) | — |
+| `waking` | wake word / hotkey | ball drops in from the top edge | earcon + one of 10 random acknowledgements |
+| `listening` | microphone opens together with the ack | ball breathes with the level, level rings | you |
+| `finalizing` / `thinking` | 0.9 s of silence | violet light arcs | very quiet capture-end tick |
+| `speaking` | answer starts | ball stretches into a captioned pill | streaming voice, sentence by sentence |
+| `waiting` | answer finished | ball again, waits seven seconds | warm closing note; resumes on speech |
+| dismiss / cancel | "退下" / tap / short press | collapses into the ball, then withdraws | falling tone |
 
-动效遵循 Apple HIG：同一时刻只有一个主旨动作、可被取消、跟随手势、支持"减弱动态效果"；
-完整规则和实测数字见 [`docs/motion.md`](docs/motion.md)。
+Motion follows Apple's HIG: one idea per state, cancellable, gesture-following, respects reduced motion.
+The full rules and measurements are in [`docs/motion.md`](docs/motion.md).
 
 ---
 
-## 架构
+## Architecture
 
 ```mermaid
 flowchart LR
-    Mic[麦克风 parec] --> KWS[本地 KWS 中英双语]
-    KWS -->|唤醒| D[daemon 状态机]
-    D --> ASR[本地识别 流式+离线]
+    Mic[Microphone parec] --> KWS[Local bilingual KWS]
+    KWS -->|wake| D[daemon state machine]
+    D --> ASR[Local ASR streaming+offline]
     ASR --> D
-    D --> Brain[DeepSeek agent<br/>工具循环]
-    Brain --> Tools[bash / 文件 / 截图 / 网页]
-    Brain -->|逐句文本| TTS[MiniMax 流式 TTS]
+    D --> Brain[DeepSeek agent + tool loop]
+    Brain --> Tools[bash / files / screenshot / web]
+    Brain -->|sentence by sentence| TTS[MiniMax streaming TTS]
     TTS --> Sink[PipeWire sink]
-    D --> SFX[轻音效]
+    D --> SFX[UI earcons]
     SFX --> Sink
-    D -->|NDJSON socket| UI[Quickshell 浮层]
-    D -->|NDJSON socket| Settings[设置 / 自测面板]
+    D -->|NDJSON socket| UI[Quickshell overlay]
+    D -->|NDJSON socket| Settings[Settings / self-test app]
 ```
 
-| 目录 | 内容 |
+| Path | Contents |
 |---|---|
-| `src/daemon.js` | 状态机、唤醒/取消/等待窗口、打断、IPC 服务 |
-| `src/agent/` | DeepSeek 流式客户端、工具循环、系统提示词、8+ 个工具 |
-| `src/voice/asr/` | 常驻唤醒词、VAD、离线/流式识别、热键、增益校准 |
-| `src/voice/tts/` | MiniMax 流式合成、PCM 播放、音色/sink 解析 |
-| `src/voice/sfx/` | UI 音效（短音，不经过 TTS） |
-| `qml/figaro/` | 浮层：球/胶囊/线、液态玻璃、字幕、动效 |
-| `settings/` | macOS 风格设置与自测 GUI（Quickshell） |
-| `docs/` | IPC 契约、语音状态机、动效规则、NextKDE 移植计划 |
+| `src/daemon.js` | state machine, wake/cancel/waiting window, barge-in, IPC server |
+| `src/agent/` | DeepSeek streaming client, tool loop, system prompt, 8+ tools |
+| `src/voice/asr/` | resident wake word, VAD, offline/streaming ASR, hotkey, gain calibration |
+| `src/voice/tts/` | MiniMax streaming synthesis, PCM playback, voice/sink resolution |
+| `src/voice/sfx/` | UI earcons (short, never through the TTS path) |
+| `qml/figaro/` | overlay: ball/pill/line, liquid glass, captions, motion |
+| `settings/` | macOS-style settings and self-test GUI (Quickshell) |
+| `docs/` | IPC contract, voice state machine, motion rules, NextKDE migration plan |
 
-**设计约束**：不依赖任何 `@deepseek-ai/dsh` 运行时包（提示词/工具 schema 是搬用重写）；ASR/TTS 任一缺失就降级，
-纯文本 `ask` 始终可用；密钥只从 `~/.config/figaro/config.json`（600）读，仓库/日志/截图里不出现。
+**Design constraints**: no runtime dependency on any `@deepseek-ai/dsh` package (prompts and tool schemas were
+reimplemented); if ASR or TTS is missing the daemon degrades and plain-text `ask` still works; keys are read only from
+`~/.config/figaro/config.json` (mode 600) and never appear in the repo, logs or screenshots.
 
 ---
 
-## 实测数字
+## Measured numbers
 
-测试机：i7-14700KF / RTX 5070 Ti / PipeWire / Plasma 6.6 / Node 22.22。
+Host: i7-14700KF / RTX 5070 Ti / PipeWire / Plasma 6.6 / Node 22.22.
 
-| 指标 | 数值 |
+| Metric | Value |
 |---|---|
-| 唤醒→应答出声 | ≈0.9s（应答开播的同时麦克风就已打开，比"等应答播完"快约 0.7s） |
-| 说完→首段语音 | 1.2–1.8s（模型首字 0.6–0.9s + TTS 首包 ≈0.35s） |
-| 中英双语唤醒 | 中文 8/8、英文外部 TTS 20/20；检测中位 900ms |
-| 误唤醒 | 真人中文语音 10 分钟 0 次；近音对抗句 2/40（开启两段式校验后 0/40，代价 +600ms/次，默认关） |
-| 唤醒应答 | 10 句随机不重复；启动预合成 10 句 3 并发 1.94s |
-| 回答后等待窗口 | 7s，门槛 0.012 RMS / 180ms（实测底噪 0.0023、正常说话中位 0.036） |
-| 打断（barge-in） | 需响度 ≥0.09 且明显高于回声基线，持续 500ms；回声误触发 0 次 |
-| UI 音效 | 5 个，65–200ms，比语音低 4–6 dB |
-| 浮层开销 | 可见时 GPU 渲染 30fps ≈18% 单核（软件栅格化 35.4%）；隐藏时 0% |
-| 单测 | **316 pass / 0 fail** |
+| Wake word → acknowledgement audible | ≈0.9 s (the microphone opens while the ack is *playing*, ~0.7 s faster than waiting for it) |
+| End of speech → first audio | 1.2–1.8 s (first model token 0.6–0.9 s + TTS first packet ≈0.35 s) |
+| Bilingual wake recall | Chinese 8/8, English external TTS 20/20; median detection 900 ms |
+| False wakes | 0 in 10 minutes of human Chinese speech; 2/40 adversarial near-homophones (0/40 with two-stage verification on, at +600 ms per wake, off by default) |
+| Wake acknowledgements | 10 phrases, random without immediate repeats; 10 pre-synthesised in 1.94 s (3 at a time) |
+| Follow-up window | 7 s, gate 0.012 RMS for 180 ms (measured floor 0.0023, normal speech median 0.036) |
+| Barge-in | requires ≥0.09 RMS and clearly above the playback echo baseline for 500 ms; 0 echo-triggered interruptions |
+| UI earcons | 5 sounds, 65–200 ms, 4–6 dB below the voice |
+| Overlay cost | visible: 30 fps GPU ≈18% of one core (software rasteriser 35.4%); hidden: 0% |
+| Unit tests | **316 pass / 0 fail** |
 
 ---
 
-## 配置速查
+## Configuration cheat sheet
 
-所有可调项都在 `~/.config/figaro/config.json`，也可以直接在设置面板里改（标注了是否热生效）。
+Everything lives in `~/.config/figaro/config.json`, and most of it can also be changed from the settings app
+(which tells you whether a change applied instantly or needs a restart).
 
-| 键 | 默认 | 说明 |
+| Key | Default | Meaning |
 |---|---|---|
-| `asr.sensitivity` | `low` | 唤醒灵敏度三档（实测数据见设置页） |
-| `asr.hotkey` | `F9` | 长按说话 / 短按取消 |
-| `asr.bargeIn` | `{enabled:true, minRms:0.09, echoFactor:2.5, minMs:500}` | 插话打断门槛 |
-| `asr.verifyWake` | `{enabled:false, timeoutMs:1800}` | 两段式唤醒校验（误唤醒压到 0，代价 +600ms） |
-| `asr.modelDir` | `null` | 自定义唤醒/识别模型目录，默认用仓库自带 |
-| `interaction.followUpWindowMs` | `7000` | 回答后等待追问的时长；0 = 答完即退 |
-| `interaction.followUpMinRms` / `MinMs` | `0.012` / `180` | 什么算"你在说话" |
-| `interaction.dismissPhrases` | 退下/休息吧/没事了… | 让它退下的说法 |
-| `interaction.cancelPhrases` | 取消/算了/别说了… | 打断并回到待机 |
-| `tts.voiceId` | `male-qn-jingying` | MiniMax 男声，设置面板可选 5 个实测音色 |
-| `tts.ack.phrases` | 10 句 | 唤醒应答短语，随机不重复 |
-| `sfx.enabled` / `sfx.volume` | `true` / `0.35` | UI 音效开关与音量 |
-| `ui.scale` / `ui.shape` / `ui.motion` | `1.0` / `orb` / `auto` | 外观：尺寸、形状（orb/ball/line）、关动画 |
-| `deepseek.apiKey` / `minimax.apiKey` | — | 只在本地配置文件里；设置里只写不读 |
+| `asr.sensitivity` | `low` | three wake-word sensitivity levels (measured numbers in the settings app) |
+| `asr.hotkey` | `F9` | hold to talk / tap to cancel |
+| `asr.bargeIn` | `{enabled:true, minRms:0.09, echoFactor:2.5, minMs:500}` | how loud a voice must be to interrupt |
+| `asr.verifyWake` | `{enabled:false, timeoutMs:1800}` | two-stage wake verification (0/40 false wakes, +600 ms per wake) |
+| `asr.modelDir` | `null` | custom wake/ASR model directory; bundled models by default |
+| `interaction.followUpWindowMs` | `7000` | how long it waits for a follow-up; 0 = leave immediately |
+| `interaction.followUpMinRms` / `MinMs` | `0.012` / `180` | what counts as "you are talking" |
+| `interaction.dismissPhrases` | 退下 / 休息吧 / 没事了 … | ways to tell it to stand down |
+| `interaction.cancelPhrases` | 取消 / 算了 / 别说了 … | ways to interrupt it |
+| `tts.voiceId` | `male-qn-jingying` | MiniMax voice; five shipped options in the settings app |
+| `tts.ack.phrases` | 10 phrases | wake acknowledgements, random without repeats |
+| `sfx.enabled` / `sfx.volume` | `true` / `0.35` | UI earcons |
+| `ui.scale` / `ui.shape` / `ui.motion` | `1.0` / `orb` / `auto` | appearance: size, shape (orb/ball/line), motion off |
+| `deepseek.apiKey` / `minimax.apiKey` | — | local config only; the settings app writes but never reads them back |
 
 ---
 
-## 疑难排查
+## Troubleshooting
 
-**先跑 `figaro doctor`**——它能查服务、IPC、密钥掩码、模型完整性、麦克风增益/电平/底噪、音频出口与静音、
-热键绑定、KWin 玻璃插件、显存/CPU/磁盘，并在末尾给出可复制的修复命令。
+**Start with `figaro doctor`** — it checks services, IPC, masked keys, model completeness, microphone gain/level/noise
+floor, audio sink and mute state, hotkey binding, the KWin glass plugin, VRAM/CPU/disk, and prints copy-pasteable fixes.
 
-| 症状 | 处理 |
+| Symptom | Fix |
 |---|---|
-| 没声音 | `tts.sink` 指向了被静音/接不到喇叭的 sink；`figaro doctor` 会指出来，或设置里换输出设备。注意：daemon 和音效用同一个 sink |
-| 喊了没反应 | 灵敏度调到 `medium/high`；检查 `asr.inputGainPercent` 与 `figaro doctor` 里的实时电平；确认 KWS 模型已下载 |
-| 经常被电视/音乐误唤醒 | 打开 `asr.verifyWake.enabled`（近音误唤醒 2/40 → 0/40，代价每次唤醒多约 600ms） |
-| F9 用不了 | daemon 作为 systemd 用户服务时 XDG portal 常拿不到 app id。最稳做法：KDE 系统设置 → 快捷键 → 添加命令 `figaro talk`，绑 F9 |
-| 说「退下」不理我 | 检查 `interaction.dismissPhrases`；它需要先把当前回答播完才会退 |
-| 插入耳机后没声 | 换 `tts.sink` 或设空（系统默认）；改完 `figaro settings` 里可直接切换 |
+| No sound | `tts.sink` points at a muted or unconnected sink; `figaro doctor` names it, or pick the output device in settings. The daemon and the earcons share one sink |
+| Wake word does nothing | try `medium/high` sensitivity; check `asr.inputGainPercent` against the live level in `figaro doctor`; make sure the KWS model is downloaded |
+| False wakes from TV or music | enable `asr.verifyWake.enabled` (near-homophone false wakes 2/40 → 0/40, at +600 ms per wake) |
+| F9 does not work | as a systemd user service the XDG portal often cannot resolve the app id. Most reliable: KDE System Settings → Shortcuts → add the command `figaro talk`, bind F9 |
+| It ignores "退下" | check `interaction.dismissPhrases`; it deliberately finishes the current reply before leaving |
+| No sound after plugging in headphones | change `tts.sink` or set it empty (system default); the settings app can switch it live |
 
 ---
 
-## 路线图
+## Roadmap
 
-- **NextKDE / 可移植 UI**：把设置窗口用 `Kos.Ui` 组件重写、作为 NextKDE 应用发布，浮层与 daemon 作为本地
-  sidecar 继续服务。调研与分阶段计划见 [`docs/nextkde-integration.md`](docs/nextkde-integration.md)。
-- 跨发行版打包（AUR / Flathub 可行性）、无 KDE 桌面的材质退化方案。
-- ASR 中英混合识别一键切换、可选的"继续说"（被打断后接上剩余回答）。
+- **NextKDE / portable UI**: rewrite the settings window on the `Kos.Ui` components and ship it as a NextKDE app,
+  with the overlay and daemon as local sidecars. Research and a staged plan in [`docs/nextkde-integration.md`](docs/nextkde-integration.md).
+- Distribution packaging (AUR / Flathub feasibility) and a non-KDE material fallback.
+- One-switch Chinese/English mixed ASR, and an optional "continue" that resumes an interrupted answer.
 
 ---
 
-## 许可证与致谢
+## Licence and credits
 
-- 代码以 **GPL-3.0-or-later** 发布，见 [`LICENSE`](LICENSE)；第三方作品、模型与网络服务的许可说明见
-  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
-- 语音识别/唤醒词模型由 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 发布（Apache-2.0），
-  脚本在 `scripts/fetch-models.sh` 中下载，不随仓库分发。
-- 浮层宿主是 [Quickshell](https://github.com/quickshell-mirror/quickshell)（LGPL-3.0，运行时依赖）。
-- 动效参考了 Apple HIG 与 siriwave（MIT）；音效与图标由仓库内脚本生成。
-- 安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告；参与贡献前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+- Code is released under **GPL-3.0-or-later**, see [`LICENSE`](LICENSE). Third-party code, models and network services
+  are documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+- Wake-word and recognition models are published by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+  (Apache-2.0) and downloaded by `scripts/fetch-models.sh`; they are not bundled.
+- The overlay host is [Quickshell](https://github.com/quickshell-mirror/quickshell) (LGPL-3.0, runtime dependency).
+- Motion was informed by Apple's HIG and by siriwave (MIT); earcons and icons are generated by scripts in this repo.
+- Please report security issues privately as described in [`SECURITY.md`](SECURITY.md); read [`CONTRIBUTING.md`](CONTRIBUTING.md)
+  before contributing.
 
-<div align="center"><sub>费加罗（Figaro）——给愿意自己掌控电脑的人。</sub></div>
+<div align="center"><sub>Figaro — for people who want to keep control of their own computer.</sub></div>

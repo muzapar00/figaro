@@ -11,10 +11,17 @@ bad()  { printf '  ✗ %s\n' "$1"; fail=1; }
 warn() { printf '  ! %s\n' "$1"; }
 
 echo "== 1. licences / notices"
-for f in LICENSE THIRD_PARTY_NOTICES.md SECURITY.md CONTRIBUTING.md README.md; do
+for f in LICENSE THIRD_PARTY_NOTICES.md SECURITY.md CONTRIBUTING.md README.md README.zh-CN.md; do
   [[ -f $f ]] && ok "$f" || bad "缺少 $f"
 done
 grep -q '"license": "GPL-3.0-or-later"' package.json && ok "package.json license" || bad "package.json 缺 license 字段"
+
+# GitHub renders README.md as the landing page: it must be the English one.
+if head -6 README.md | grep -q "Figaro · 费加罗"; then
+  ok "README.md is the English landing page"
+else
+  bad "README.md should be the English landing page (Chinese lives in README.zh-CN.md)"
+fi
 
 echo "== 2. secrets"
 if grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models \

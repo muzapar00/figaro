@@ -9,7 +9,7 @@
    bash scripts/preflight.sh      # 协议文件、密钥、机器路径、模型未入库、测试
    figaro doctor                  # 本机运行状态（有 ✗ 先修）
    ```
-2. **双语 README**：`README.md`（中文）与 `README.en.md`（English）内容同步，语言切换链接都在顶部。
+2. **双语 README**：`README.md`（English，GitHub 首页默认渲染它）与 `README.zh-CN.md`（中文）内容同步，语言切换链接都在顶部。
 3. **版本号**：`package.json` 的 `version` 与 `CHANGELOG.md` 顶部一致；
    `systemd` 模板与 `README` 里的版本引用若出现也同步。
 4. **提交**（提交信息用 `feat(scope): …`，正文英文，勿加 AI 署名）：
