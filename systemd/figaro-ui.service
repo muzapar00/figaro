@@ -15,6 +15,11 @@ Environment=QS_DISABLE_FILE_WATCHER=1
 # 52 threads let glibc open many malloc arenas; each keeps its own freed memory
 # instead of returning it, inflating RSS. Cap the arenas.
 Environment=MALLOC_ARENA_MAX=2
+# This machine runs a 27B local model that occupies ~14 of the 16 GB of VRAM.
+# Asking for a GL context at that point fails with EGL_BAD_ALLOC and Qt then
+# renders the layer surface broken (a dark seam across the top of the screen).
+# The overlay is a few gradients, so rasterize it on the CPU instead.
+Environment=QT_QUICK_BACKEND=software
 ExecStart=/home/mzpr00/.local/bin/qs --no-duplicate -c figaro
 Restart=on-failure
 RestartSec=2
