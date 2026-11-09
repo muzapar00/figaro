@@ -38,6 +38,7 @@ import { createCapture } from './capture.js';
 import { createHotkey } from './hotkey.js';
 import { createParecSource } from './sources.js';
 import { createMicGainController } from './mic-gain.js';
+import { createWakeScoreTracker } from './wake-score.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -61,6 +62,23 @@ function intEnv(name, fallback) {
 const KWS_THREADS = intEnv('FIGARO_ASR_KWS_THREADS', 1);
 const STREAM_THREADS = intEnv('FIGARO_ASR_STREAM_THREADS', 1);
 const OFFLINE_THREADS = intEnv('FIGARO_ASR_OFFLINE_THREADS', 1);
+
+/**
+ * Wake sensitivity presets (measured — see README "灵敏度与误唤醒").
+ * `low` is the default in config because the user was annoyed by false wakes:
+ * it trades a little recall (still 8/8 on the fixture set) for far fewer wakes
+ * from ordinary conversation.
+ */
+export const SENSITIVITY_PRESETS = {
+  low: { keywordsScore: 0.75, keywordsThreshold: 0.55 },
+  medium: { keywordsScore: 1.25, keywordsThreshold: 0.4 },
+  high: { keywordsScore: 1.5, keywordsThreshold: 0.25 },
+};
+
+/** @returns {{keywordsScore: number, keywordsThreshold: number}|null} */
+export function sensitivityPreset(name) {
+  return SENSITIVITY_PRESETS[String(name ?? '').toLowerCase()] ?? null;
+}
 
 function asError(err) {
   return err instanceof Error ? err : new Error(String(err));
@@ -116,13 +134,28 @@ export function createAsr(opts) {
   let mic = null;
   let preRoll = [];
   let preRollSamples = 0;
-  let levelSumSq = 0;
-  let levelCount = 0;
+  const levelWindow = { n: 0, sumSq: 0, peak: 0 };
   let lastAudioAt = 0;
   let tickTimer = null;
   let wakeFallbackTimer = null;
   let finalizePromise = null;
   let hotkeyStarted = false;
+
+  // ---- wake sensitivity / cooldown / runtime config (docs/ipc.md §3.1) ----
+  let sensitivity = sensitivityPreset(asrCfg.sensitivity) ? String(asrCfg.sensitivity).toLowerCase() : 'high';
+  let wakeCooldownMs = Math.max(0, Number(asrCfg.wakeCooldownMs ?? 2500) || 0);
+  let inputGainSetting = asrCfg.inputGainPercent === undefined ? null : asrCfg.inputGainPercent;
+  let lastWakeAt = 0;
+  let lastRms = 0;
+  let lastPeak = 0;
+  let lastFinalMs = null;
+  let muted = false;
+  const wakeScoreTracker = createWakeScoreTracker({ wakeWords: asrCfg.wakeWords ?? [] });
+
+  // GUI self-test state (docs/ipc.md §3.1)
+  let wakeTest = null;
+  let micTest = null;
+  let asrTest = null;
 
   const safe = (fn, ...args) => {
     try { return fn(...args); } catch (err) { /* never let user callbacks kill the loop */ }
@@ -160,23 +193,31 @@ export function createAsr(opts) {
     preRollSamples = 0;
   }
 
-  function emitLevel(samples) {
-    // Emit one RMS value per 50 ms audio window (=> 20 Hz), carrying the
-    // remainder across chunks so the rate is independent of the parec chunk size.
+  /**
+   * Split the PCM stream into 50 ms windows (=> 20 Hz) and hand {rms, peak}
+   * to the callback. Used for onLevel, the GUI microphone test and diagnostics.
+   */
+  function forEachLevelWindow(samples, cb) {
     let off = 0;
     while (off < samples.length) {
-      const take = Math.min(LEVEL_WINDOW_SAMPLES - levelCount, samples.length - off);
+      const take = Math.min(LEVEL_WINDOW_SAMPLES - levelWindow.n, samples.length - off);
       for (let i = 0; i < take; i++) {
         const v = samples[off + i];
-        levelSumSq += v * v;
+        levelWindow.sumSq += v * v;
+        const a = Math.abs(v);
+        if (a > levelWindow.peak) levelWindow.peak = a;
       }
-      levelCount += take;
+      levelWindow.n += take;
       off += take;
-      if (levelCount === LEVEL_WINDOW_SAMPLES) {
-        const rms = Math.sqrt(levelSumSq / LEVEL_WINDOW_SAMPLES);
-        levelSumSq = 0;
-        levelCount = 0;
-        safe(onLevel, Math.max(0, Math.min(1, rms)));
+      if (levelWindow.n === LEVEL_WINDOW_SAMPLES) {
+        const rms = Math.sqrt(levelWindow.sumSq / LEVEL_WINDOW_SAMPLES);
+        const peak = levelWindow.peak;
+        levelWindow.n = 0;
+        levelWindow.sumSq = 0;
+        levelWindow.peak = 0;
+        lastRms = rms;
+        lastPeak = peak;
+        cb(rms, peak);
       }
     }
   }
@@ -268,13 +309,283 @@ export function createAsr(opts) {
     }
   }
 
+  // ==========================================================================
+  // GUI self-test channels (docs/ipc.md §3.1) + runtime config
+  // ==========================================================================
+
+  function feedMicTest(rms, peak) {
+    if (!micTest) return;
+    // `level` is the display value the GUI meter uses (0..1); rms*8 makes normal
+    // speech fill roughly half of the bar without clipping the widget.
+    safe(micTest.onSample, { rms, peak, level: Math.max(0, Math.min(1, rms * 8)) });
+  }
+
+  function stopMicTest() {
+    if (!micTest) return;
+    const t = micTest;
+    micTest = null;
+    if (t.timer) clearTimeout(t.timer);
+    safe(t.onEnd);
+    log('麦克风电平测试结束');
+  }
+
+  function startMicTest({ ms = 4000, onSample, onEnd } = {}) {
+    stopMicTest();
+    const dur = Math.max(200, Number(ms) || 4000);
+    micTest = { onSample, onEnd, timer: setTimeout(() => stopMicTest(), dur) };
+    micTest.timer.unref?.();
+    log(`麦克风电平测试开始（${dur}ms，20Hz）`);
+    return { started: true, ms: dur };
+  }
+
+  function feedWakeTest(samples, hit) {
+    const t = wakeTest;
+    if (!t) return;
+    let score = 0;
+    let keyword = '';
+    if (streaming) {
+      let text = '';
+      try {
+        text = streaming.feed(samples) ?? '';
+      } catch (err) {
+        emitError(new Error(`唤醒测试流式解码失败：${asError(err).message}`, { cause: err }));
+      }
+      const scored = wakeScoreTracker.update(text);
+      score = scored.score;
+      keyword = scored.keyword;
+    }
+    const now = Date.now();
+    if (score > 0) {
+      if (!t.burstStart) t.burstStart = now;
+      t.lastNonZeroAt = now;
+      if (score > t.maxScore) t.maxScore = score;
+      if (now - t.lastScoreAt >= 100) {
+        t.lastScoreAt = now;
+        safe(t.onScore, { score: Math.round(score * 100) / 100, keyword });
+      }
+    } else if (t.burstStart && now - (t.lastNonZeroAt ?? now) > 1200) {
+      // new utterance: reset the latency reference
+      t.burstStart = null;
+    }
+    if (hit) {
+      t.hits += 1;
+      const latencyMs = t.burstStart ? now - t.burstStart : 0;
+      log(`唤醒测试命中：${hit.keyword}（score=${Math.max(score, t.maxScore).toFixed(2)}, ${latencyMs}ms）`);
+      safe(t.onHit, { score: Math.max(score, t.maxScore), latencyMs });
+    }
+  }
+
+  /** @returns {{hits:number, misses:number, falseAlarms:number, maxScore:number, ms:number}|null} */
+  function finishWakeTest({ emit = true } = {}) {
+    if (!wakeTest) return null;
+    const t = wakeTest;
+    wakeTest = null;
+    if (t.timer) clearTimeout(t.timer);
+    if (streaming) { try { streaming.reset(); } catch { /* ignore */ } }
+    wakeScoreTracker.reset();
+    const result = {
+      hits: t.hits,
+      misses: 0, // the module cannot know whether the user intended to wake; GUI/daemon may adjust
+      falseAlarms: 0,
+      maxScore: Math.round(t.maxScore * 100) / 100,
+      ms: Date.now() - t.armedAt,
+    };
+    if (emit) safe(t.onEnd, result);
+    log(`唤醒测试窗口结束：hits=${result.hits} maxScore=${result.maxScore}`);
+    return result;
+  }
+
+  function armWakeTest({ ms = 15000, onScore, onHit, onEnd } = {}) {
+    finishWakeTest();
+    const dur = Math.max(500, Number(ms) || 15000);
+    if (streaming) { try { streaming.reset(); } catch { /* ignore */ } }
+    wakeScoreTracker.reset();
+    wakeTest = {
+      armedAt: Date.now(),
+      timer: setTimeout(() => finishWakeTest(), dur),
+      onScore,
+      onHit,
+      onEnd,
+      hits: 0,
+      maxScore: 0,
+      burstStart: null,
+      lastNonZeroAt: 0,
+      lastScoreAt: 0,
+    };
+    wakeTest.timer.unref?.();
+    log(`唤醒测试窗口开始（${dur}ms）`);
+    return { armed: true, endsAt: wakeTest.armedAt + dur, keywords: wakeScoreTracker.words };
+  }
+
+  function disarmWakeTest() {
+    return finishWakeTest();
+  }
+
+  function feedAsrTest(samples) {
+    const t = asrTest;
+    if (!t) return;
+    t.chunks.push(new Float32Array(samples));
+    t.samples += samples.length;
+    if (streaming) {
+      try {
+        const text = streaming.feed(samples);
+        if (text) t.streamText = text;
+      } catch (err) {
+        safe(t.onError, asError(err));
+      }
+    }
+    const now = Date.now();
+    if (t.streamText && t.streamText !== t.lastPartial && now - t.lastPartialAt >= 100) {
+      t.lastPartial = t.streamText;
+      t.lastPartialAt = now;
+      safe(t.onPartial, t.streamText);
+    }
+  }
+
+  function stopAsrTest() {
+    if (!asrTest) return false;
+    const t = asrTest;
+    asrTest = null;
+    if (t.timer) clearTimeout(t.timer);
+    const pcm = new Float32Array(t.samples);
+    let off = 0;
+    for (const chunk of t.chunks) { pcm.set(chunk, off); off += chunk.length; }
+    const audioMs = Math.round((pcm.length / SAMPLE_RATE) * 1000);
+    const streamingText = streaming ? (() => { try { return streaming.text() ?? ''; } catch { return t.streamText ?? ''; } })() : (t.streamText ?? '');
+    void (async () => {
+      let text = streamingText;
+      let offlineMs = null;
+      try {
+        await ensureOfflineModel();
+        if (offline) {
+          const t0 = Date.now();
+          text = await offline.transcribe(pcm);
+          offlineMs = Date.now() - t0;
+          lastFinalMs = offlineMs;
+        }
+      } catch (err) {
+        safe(t.onError, asError(err));
+      }
+      const result = {
+        text: text ?? '',
+        streamingText: streamingText ?? '',
+        ms: Date.now() - t.startedAt,
+        audioMs,
+      };
+      if (offlineMs !== null) result.offlineMs = offlineMs;
+      log(`ASR 测试完成：audio=${audioMs}ms offline=${offlineMs ?? '-'}ms "${result.text}"`);
+      safe(t.onResult, result);
+      if (streaming) { try { streaming.reset(); } catch { /* ignore */ } }
+    })().catch((err) => emitError(err));
+    return true;
+  }
+
+  function startAsrTest({ ms = 8000, onPartial, onResult, onError } = {}) {
+    stopAsrTest();
+    if (!streaming && !offline) {
+      const err = new Error('ASR 测试不可用：流式/离线模型都未加载');
+      err.code = 'ASR_TEST_UNAVAILABLE';
+      safe(onError, err);
+      return { started: false };
+    }
+    const dur = Math.max(500, Number(ms) || 8000);
+    if (streaming) { try { streaming.reset(); } catch { /* ignore */ } }
+    asrTest = {
+      startedAt: Date.now(),
+      timer: setTimeout(() => stopAsrTest(), dur),
+      chunks: [],
+      samples: 0,
+      streamText: '',
+      lastPartial: '',
+      lastPartialAt: 0,
+      onPartial,
+      onResult,
+      onError,
+    };
+    asrTest.timer.unref?.();
+    log(`ASR 测试录音开始（最多 ${dur}ms）`);
+    return { started: true, ms: dur };
+  }
+
+  // ---- runtime config (config.set 后热改，无需重启) ----
+
+  function rebuildKws() {
+    if (!kws) return;
+    const preset = sensitivityPreset(sensitivity) ?? SENSITIVITY_PRESETS.high;
+    const dirs = models();
+    const next = createKws({
+      modelDir: dirs.kws,
+      wakeWords: asrCfg.wakeWords ?? [],
+      numThreads: KWS_THREADS,
+      keywordsScore: preset.keywordsScore,
+      keywordsThreshold: preset.keywordsThreshold,
+      onLog: log,
+    });
+    try { kws.free(); } catch { /* ignore */ }
+    kws = next;
+  }
+
+  async function setInputGainPercent(value) {
+    const num = value === null || value === undefined ? null : Number(value);
+    // raw ALSA capture gain (0..63; 45 is the known-good value on this machine)
+    inputGainSetting = num === null || !Number.isFinite(num) ? null : Math.max(0, Math.min(63, Math.round(num)));
+    if (!micGain || typeof micGain.setFixedGain !== 'function') return null;
+    let applied = null;
+    try {
+      applied = await micGain.setFixedGain(inputGainSetting);
+    } catch (err) {
+      emitError(asError(err));
+    }
+    if (inputGainSetting === null) void calibrateMicGain();
+    return applied;
+  }
+
+  /**
+   * Apply hot-changeable config without restarting (docs/ipc.md §3.1).
+   * @param {{sensitivity?: string, wakeCooldownMs?: number, inputGainPercent?: number|null}} patch
+   * @returns {{applied: string[], restartRequired: string[]}}
+   */
+  function applyRuntimeConfig(patch = {}) {
+    const applied = [];
+    const restartRequired = [];
+    for (const key of Object.keys(patch ?? {})) {
+      if (key === 'sensitivity') {
+        const name = String(patch.sensitivity ?? '').toLowerCase();
+        if (!sensitivityPreset(name)) { restartRequired.push(key); continue; }
+        sensitivity = name;
+        try {
+          rebuildKws();
+          if (wakeTest) { try { streaming?.reset(); } catch { /* ignore */ } }
+          applied.push(key);
+          log(`灵敏度已热切换为 ${name}（score=${sensitivityPreset(name).keywordsScore}, threshold=${sensitivityPreset(name).keywordsThreshold}）`);
+        } catch (err) {
+          emitError(new Error(`切换灵敏度失败：${asError(err).message}`, { cause: err }));
+          restartRequired.push(key);
+        }
+      } else if (key === 'wakeCooldownMs') {
+        wakeCooldownMs = Math.max(0, Number(patch.wakeCooldownMs) || 0);
+        applied.push(key);
+        log(`唤醒冷却时间已热切换为 ${wakeCooldownMs}ms`);
+      } else if (key === 'inputGainPercent') {
+        void setInputGainPercent(patch.inputGainPercent);
+        applied.push(key);
+      } else {
+        restartRequired.push(key);
+      }
+    }
+    return { applied, restartRequired };
+  }
+
   function handlePcm(samples) {
     if (!samples || samples.length === 0) return;
     if (state === 'stopped' || state === 'failed' || state === 'idle' || state === 'starting') return;
     lastAudioAt = Date.now();
     feedProbes(samples);
     monitorMicLevel(samples);
-    emitLevel(samples);
+    forEachLevelWindow(samples, (rms) => {
+      if (micTest) feedMicTest(rms, lastPeak);
+      safe(onLevel, Math.max(0, Math.min(1, rms)));
+    });
     pushPreRoll(samples);
     if (state === 'listening') {
       if (!kws) return;
@@ -285,7 +596,25 @@ export function createAsr(opts) {
         emitError(new Error(`KWS 解码失败：${asError(err).message}`, { cause: err }));
         return;
       }
-      if (hit) handleWake(`kws:${hit.keyword}`);
+      if (asrTest) {
+        // GUI test recording: no normal wake handling while recording.
+        feedAsrTest(samples);
+      } else if (wakeTest) {
+        // Self-test window: hits go to onHit only, never to daemon/onWake.
+        feedWakeTest(samples, hit);
+      } else if (hit && muted) {
+        dumpHitAudio(hit.keyword);
+        log(`监听暂停中（TTS 回声抑制），忽略命中 ${hit.keyword}`);
+      } else if (hit) {
+        dumpHitAudio(hit.keyword);
+        const now = Date.now();
+        if (now - lastWakeAt < wakeCooldownMs) {
+          log(`唤醒冷却中（剩余 ${wakeCooldownMs - (now - lastWakeAt)}ms），忽略命中 ${hit.keyword}`);
+        } else {
+          lastWakeAt = now;
+          handleWake(`kws:${hit.keyword}`);
+        }
+      }
     } else if (state === 'capturing' && capture) {
       try {
         capture.push(samples);
@@ -295,8 +624,61 @@ export function createAsr(opts) {
     }
   }
 
+  /**
+   * Debug aid for false-wake reports: when FIGARO_ASR_HIT_DUMP_DIR is set, every
+   * KWS hit writes the pre-roll (the ~1.5 s that triggered it) to a wav file so it
+   * can be inspected offline. Off by default; never affects behaviour.
+   */
+  let hitDumpDir = process.env.FIGARO_ASR_HIT_DUMP_DIR ?? null;
+  let hitDumpSeq = 0;
+  function dumpHitAudio(keyword) {
+    if (!hitDumpDir) return;
+    try {
+      fs.mkdirSync(hitDumpDir, { recursive: true });
+      const samples = preRollPcm();
+      const bytes = samples.length * 2;
+      const buf = Buffer.alloc(44 + bytes);
+      buf.write('RIFF', 0, 'ascii');
+      buf.writeUInt32LE(36 + bytes, 4);
+      buf.write('WAVE', 8, 'ascii');
+      buf.write('fmt ', 12, 'ascii');
+      buf.writeUInt32LE(16, 16);
+      buf.writeUInt16LE(1, 20); // PCM
+      buf.writeUInt16LE(1, 22); // mono
+      buf.writeUInt32LE(SAMPLE_RATE, 24);
+      buf.writeUInt32LE(SAMPLE_RATE * 2, 28);
+      buf.writeUInt16LE(2, 32);
+      buf.writeUInt16LE(16, 34);
+      buf.write('data', 36, 'ascii');
+      buf.writeUInt32LE(bytes, 40);
+      for (let i = 0; i < samples.length; i++) {
+        buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32768))), 44 + i * 2);
+      }
+      const file = path.join(hitDumpDir, `hit-${String(++hitDumpSeq).padStart(4, '0')}-${Date.now()}.wav`);
+      fs.writeFileSync(file, buf);
+      log(`KWS 命中音频已保存：${file}（keyword=${keyword}，${(samples.length / SAMPLE_RATE).toFixed(1)}s）`);
+    } catch (err) {
+      log(`KWS 命中音频保存失败：${asError(err).message}`);
+    }
+  }
+
+  /**
+   * Pause/resume wake-word listening (docs/ipc.md §3.1 extension).
+   * The daemon should mute while Figaro's own TTS is speaking: the microphone
+   * hears the assistant's voice ("我是费加罗...") and would otherwise re-wake on
+   * its own output — measured as the actual cause of the user's false wakes.
+   * Capture/levels/self-tests keep working while muted.
+   */
+  function setMuted(value) {
+    const next = Boolean(value);
+    if (next !== muted) log(`唤醒监听${next ? '已暂停（回声抑制：TTS 播放中）' : '已恢复'}`);
+    muted = next;
+    return muted;
+  }
+
   function handleWake(origin) {
     if (state !== 'listening') return;
+    lastWakeAt = Date.now();
     log(`唤醒（${origin}）`);
     safe(onWake);
     // If the daemon does not call beginCapture() itself (or there is no daemon
@@ -349,14 +731,17 @@ export function createAsr(opts) {
     const cap = capture;
     finalizePromise = (async () => {
       let result;
+      const finalizeT0 = Date.now();
       try {
         await ensureOfflineModel();
         result = await cap.end(why);
+        lastFinalMs = Date.now() - finalizeT0;
       } catch (err) {
         emitError(new Error(`转写失败：${asError(err).message}`, { cause: err }));
         result = { text: '', reason: why, stats: {} };
       }
       clearPreRoll();
+      lastWakeAt = Date.now(); // reply TTS follows; keep KWS quiet for wakeCooldownMs
       if (kws) { try { kws.reset(); } catch { /* ignore */ } }
       if (state !== 'stopped') state = 'listening';
       log(`endCapture(${result.reason}) -> onFinal(${JSON.stringify(result.text)})`);
@@ -388,6 +773,9 @@ export function createAsr(opts) {
     state = 'stopped';
     stopTick();
     if (wakeFallbackTimer) { clearTimeout(wakeFallbackTimer); wakeFallbackTimer = null; }
+    if (wakeTest) { clearTimeout(wakeTest.timer); wakeTest = null; }
+    if (micTest) { clearTimeout(micTest.timer); micTest = null; }
+    if (asrTest) { clearTimeout(asrTest.timer); asrTest = null; }
     if (finalizePromise) { try { await finalizePromise; } catch { /* ignore */ } }
     if (hotkeyInst) {
       try { await hotkeyInst.stop(); } catch { /* ignore */ }
@@ -486,10 +874,13 @@ export function createAsr(opts) {
       }
 
       try {
+        const preset = sensitivityPreset(sensitivity) ?? SENSITIVITY_PRESETS.high;
         kws = createKws({
           modelDir: dirs.kws,
           wakeWords: asrCfg.wakeWords ?? [],
           numThreads: KWS_THREADS,
+          keywordsScore: preset.keywordsScore,
+          keywordsThreshold: preset.keywordsThreshold,
           onLog: log,
         });
         streaming = hasStreaming
@@ -501,8 +892,10 @@ export function createAsr(opts) {
         vad = createVad({ modelPath: dirs.vad, numThreads: 1 });
         capture = createCaptureFor();
         log(
-          `模型就绪: kws=${kws.modelFiles.epoch}(${KWS_THREADS}线程) streaming=${streaming ? `yes(${STREAM_THREADS}线程)` : 'no'} ` +
-          `offline=lazy(${hasOffline ? OFFLINE_THREADS : '-'}线程) vad=${vad.kind} keywords=${kws.keywords.lines.length}`,
+          `模型就绪: kws=${kws.modelFiles.epoch}(${KWS_THREADS}线程, 灵敏度=${sensitivity} score=${preset.keywordsScore} threshold=${preset.keywordsThreshold}) ` +
+          `streaming=${streaming ? `yes(${STREAM_THREADS}线程)` : 'no'} ` +
+          `offline=lazy(${hasOffline ? OFFLINE_THREADS : '-'}线程) vad=${vad.kind} keywords=${kws.keywords.lines.length}` +
+          ` cooldown=${wakeCooldownMs}ms`,
         );
       } catch (err) {
         state = 'failed';
@@ -519,6 +912,14 @@ export function createAsr(opts) {
           ? micGainOption
           : createMicGainController({ onLog: log });
         micGain.reset();
+        if (inputGainSetting !== null && typeof micGain.setFixedGain === 'function') {
+          try {
+            const applied = await micGain.setFixedGain(inputGainSetting);
+            log(`[mic] 固定增益 ${inputGainSetting}（raw 0-63，应用值 ${applied ?? '?'}，不自动校准）`);
+          } catch (err) {
+            emitError(new Error(`固定麦克风增益失败：${asError(err).message}`, { cause: err }));
+          }
+        }
       }
 
       // F5 long-press (non-fatal if the portal is unavailable).
@@ -570,8 +971,8 @@ export function createAsr(opts) {
       state = 'listening';
       log('ASR 常驻监听已启动');
       // Run calibration in the background (300-500 ms of audio is enough); it
-      // never blocks start() or the audio loop.
-      void calibrateMicGain();
+      // never blocks start() or the audio loop. Pinned gain skips calibration.
+      if (inputGainSetting === null) void calibrateMicGain();
     },
 
     async stop() {
@@ -581,6 +982,49 @@ export function createAsr(opts) {
     beginCapture,
     endCapture,
 
+    // ---- GUI self-test / runtime config (docs/ipc.md §3.1) ----
+    armWakeTest,
+    disarmWakeTest,
+    startMicTest,
+    stopMicTest,
+    startAsrTest,
+    stopAsrTest,
+    applyRuntimeConfig,
+    setMuted,
+    pauseListening: () => setMuted(true),
+    resumeListening: () => setMuted(false),
+    setSensitivity: (name) => applyRuntimeConfig({ sensitivity: name }),
+    setWakeCooldownMs: (ms) => applyRuntimeConfig({ wakeCooldownMs: ms }),
+    setInputGainPercent: (value) => setInputGainPercent(value),
+    get sensitivity() {
+      return sensitivity;
+    },
+    get wakeCooldownMs() {
+      return wakeCooldownMs;
+    },
+    get inputGainPercent() {
+      return inputGainSetting;
+    },
+    /** diagnostics: {gainPercent, rms, peak} + fixed-gain info (docs/ipc.md §3.1) */
+    get micInfo() {
+      return {
+        available: micGain ? micGain.available : false,
+        gainPercent: micGain?.gain?.gain ?? null,
+        percent: micGain?.gain?.percent ?? null,
+        rms: lastRms,
+        peak: lastPeak,
+        fixed: micGain?.fixed ?? false,
+        fixedPercent: micGain?.fixedTarget ?? inputGainSetting,
+      };
+    },
+    /** duration of the last finalize step (offline transcription), ms */
+    get lastFinalMs() {
+      return lastFinalMs;
+    },
+    get muted() {
+      return muted;
+    },
+
     // ---- diagnostics (not part of the IPC contract) ----
     get state() {
       return state;
@@ -589,6 +1033,11 @@ export function createAsr(opts) {
       const dirs = models();
       return {
         threads: { kws: KWS_THREADS, streaming: STREAM_THREADS, offline: OFFLINE_THREADS },
+        sensitivity,
+        kwsParams: sensitivityPreset(sensitivity),
+        wakeCooldownMs,
+        inputGainPercent: inputGainSetting,
+        lastFinalMs,
         offlineLoaded: Boolean(offline),
         offlineLoadError: offlineLoadError ? offlineLoadError.message : null,
         kwsDir: dirs.kws,

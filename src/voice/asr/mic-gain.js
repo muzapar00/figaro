@@ -30,7 +30,8 @@ export const TARGET_MAX_RMS = 0.15;
 export const TARGET_MIN_RMS = 0.02;
 
 const DOWN_STEPS = [45, 38, 30, 24];
-export const MIN_GAIN = 20; // never mute the microphone
+export const MIN_GAIN = 20; // never mute the microphone (raw ALSA units)
+export const MAX_GAIN = 63; // raw ALSA units of the ALC897 Capture control
 const UP_STEP = 8;
 
 /** Parse `amixer -c N sget Capture` output. Returns {gain, raw, percent} or null. */
@@ -71,6 +72,10 @@ export function createMicGainController(opts = {}) {
   let warned = false;
   let readGainValue = null;
   let adjustedFrom = null;
+  let fixed = false; // inputGainPercent pinned by config/GUI -> never auto-adjust
+  let fixedTarget = null;
+  let lastRms = 0;
+  let lastPeak = 0;
 
   // runtime watchdog state
   let windowSamples = 0;
@@ -97,7 +102,11 @@ export function createMicGainController(opts = {}) {
 
   async function setGain(gain) {
     if (!available) return false;
-    const res = await run('amixer', ['-c', String(card), 'sset', control, `${Math.round(gain)}%`]);
+    // NOTE: pass the raw ALSA value (0..63), not a percentage. On this mixer
+    // `sset Capture 45%` maps to raw 28 while `sset Capture 45` is raw 45 — the
+    // documented/known-good value ("降到 45") is the raw one.
+    const raw = Math.max(0, Math.min(readGainValue?.limits?.max ?? 63, Math.round(Number(gain) || 0)));
+    const res = await run('amixer', ['-c', String(card), 'sset', control, String(raw)]);
     if (!res.ok) { warnOnce(new Error((res.stderr || 'amixer sset failed').trim())); available = false; return false; }
     readGainValue = { ...(readGainValue ?? {}), gain, percent: gain };
     return true;
@@ -115,6 +124,7 @@ export function createMicGainController(opts = {}) {
    * @param {(ms: number) => Promise<{rms: number, peak: number}>} measure
    */
   async function calibrate(measure) {
+    if (fixed) return { adjusted: false, reason: 'fixed' };
     const cur = await read();
     if (!cur) return { adjusted: false, reason: 'unavailable' };
     let gain = cur.gain;
@@ -167,6 +177,8 @@ export function createMicGainController(opts = {}) {
    * condition (caller emits onError). Designed to be called from the PCM loop.
    */
   function observe(rms01, peak01, now = Date.now()) {
+    lastRms = rms01;
+    lastPeak = peak01;
     windowSamples += 1;
     windowRmsSum += rms01;
     if (peak01 > CLIP_PEAK || rms01 > HOT_RMS) windowClipSamples += 1;
@@ -208,6 +220,7 @@ export function createMicGainController(opts = {}) {
    * a MIC_CLIPPING warning.
    */
   async function correctClipping() {
+    if (fixed) return false;
     const cur = await read();
     if (!cur) return false;
     const next = stepDown(cur.gain);
@@ -217,9 +230,42 @@ export function createMicGainController(opts = {}) {
     return true;
   }
 
+  /**
+   * Pin the capture gain to a raw ALSA value (0..63; known-good value is 45).
+   * `null` restores automatic calibration.
+   * Never throws; returns the applied raw gain (or null when amixer is missing).
+   */
+  async function setFixedGain(percent) {
+    if (percent === null || percent === undefined) {
+      fixed = false;
+      fixedTarget = null;
+      onLog('[mic] 恢复自动增益校准');
+      return null;
+    }
+    const value = Math.max(0, Math.min(MAX_GAIN, Number(percent)));
+    if (!Number.isFinite(value)) return null;
+    fixed = true;
+    fixedTarget = value;
+    const before = await read();
+    const ok = await setGain(value);
+    onLog(ok
+      ? `[mic] capture gain 已固定为 ${Math.round(value)}（raw 0-63，原 ${before ? before.gain : '?'}）`
+      : `[mic] 无法固定 capture gain（amixer 不可用），保持 ${before ? before.gain : '?'}`);
+    return ok ? (readGainValue?.gain ?? null) : null;
+  }
+
   return {
     get available() {
       return available;
+    },
+    get fixed() {
+      return fixed;
+    },
+    get fixedTarget() {
+      return fixedTarget;
+    },
+    get stats() {
+      return { rms: lastRms, peak: lastPeak };
     },
     get gain() {
       return readGainValue;
@@ -228,6 +274,7 @@ export function createMicGainController(opts = {}) {
     setGain,
     calibrate,
     correctClipping,
+    setFixedGain,
     observe,
     reset() {
       windowSamples = 0;
@@ -235,6 +282,8 @@ export function createMicGainController(opts = {}) {
       windowClipSamples = 0;
       silentStreakMs = 0;
       lastWarnAt = { clipping: 0, silent: 0 };
+      lastRms = 0;
+      lastPeak = 0;
     },
   };
 }

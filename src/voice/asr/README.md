@@ -156,6 +156,91 @@ KWS 模型是拼音建模单元的小 zipformer，关键词文件格式为
 「费加罗」是中文拼音唤醒词；配置里的 `figaro` 英文写法**无法**被该 KWS 模型
 编码（已跳过并记日志），中文发音的「费加罗」不受影响。
 
+## 灵敏度、误唤醒与回声抑制
+
+### 配置项（GUI 直接读写；默认值）
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `asr.sensitivity` | `"low"` | `low \| medium \| high`，映射到 KWS 的 `keywordsScore` / `keywordsThreshold` |
+| `asr.wakeCooldownMs` | `2500` | 两次唤醒的最小间隔；冷却期内的 KWS 命中直接忽略（debug 日志一行）。`endCapture()` 之后也会重新起算，避免"答完立刻又醒" |
+| `asr.inputGainPercent` | `null` | `null`=自动校准；数字 = **raw ALSA 增益 0–63**（本机已知可用值 **45**）固定且不自动改。⚠️ 不是 amixer 百分比：`sset Capture 45%` 实际是 raw 28，所以 GUI 滑块请用 0–63 或按 `raw = round(% × 63 / 100)` 换算 |
+
+灵敏度实测参数（本机，KWS epoch-99 int8）：
+
+| 档位 | keywordsScore | keywordsThreshold |
+|---|---|---|
+| low（默认） | 0.75 | 0.55 |
+| medium | 1.25 | 0.40 |
+| high | 1.50 | 0.25 |
+
+### 误唤醒专项实测（每档跑同一批负样本，41.8 分钟）
+
+负样本 = 40 句近音干扰（费/非/飞/菲 + 加/家/佳/嘉 组合，如「非法加班」「费用加起来」
+「咖啡加糖」「缴费加紧办理」）+ 10 分钟连续真人语音 + 真实 mic 10 分钟 + 扬声器
+monitor 10 分钟（同一段真实使用环节的录音）。唤醒延迟按真机 100 ms 节奏回放测量。
+
+| 档位 | 唤醒命中 | -12dB 静音命中 | 检测位置 | 真人语音 10min 误触发 | 近音 40 句 | TTS 回声录音 | 合计 |
+|---|---|---|---|---|---|---|---|
+| low | 8/8 | 8/8 | 848 ms | **0** | 3 | 8 | 11 / 41.8min |
+| medium | 8/8 | 8/8 | 848 ms | **0** | 4 | 10 | 14 / 41.8min |
+| high | 8/8 | 8/8 | 848 ms | **0** | 4 | 10 | 14 / 41.8min |
+
+- 三档的唤醒延迟（模块 onWake，含 300 ms 前导静音）：min≈845 / median≈1225 / max≈2215 ms，
+  档位之间无差别（检测都发生在「费加」说完时，约 0.85 s 音频位置）。
+- 相对 high：**low 的实录音误唤醒从 14 降到 11（−21%），唤醒命中/延迟无损失**。
+- **真人语音 10 分钟：三档都是 0 次误触发** —— 说明 KWS 对普通对话/口音并不敏感。
+- 近音句（如「费用*加*起来」「咖啡*加*糖」）确实会命中两字短前缀 `费加/菲加`：low 比 high 少 1 次。
+- **真实录音里的 8~10 次"误唤醒"全部是 Figaro 自己的 TTS 被麦克风录回去**（详见下节），不是灵敏度能解决的。
+
+复测命令：
+
+```bash
+node scripts/gen-wake-negative-audio.mjs     # 生成 40 句近音负样本（TTS，需 key）
+node scripts/asr-wake-sensitivity.mjs        # 三档 × (命中/静音/检测位置/各类误唤醒) 表
+```
+
+### 回声抑制（本次用户"一直被触发"的根因）
+
+用真实 mic + 扬声器录了 10 分钟并定位每次 KWS 命中，**全部是 Figaro 自己播报的
+TTS 被麦克风录回**，例如转写「费伽罗请指示」「费伽罗在的」「费伽罗把音量调到百分之」；
+同一时刻的 speaker monitor 录音也命中同一段，证实是 Speaker→Mic 回授，不是环境噪声
+或灵敏度问题。40 句近音语料 + 10 分钟真人语音是 0 次。
+
+修复由 daemon 侧接线（brain 已完成并生产验证）：TTS/ack 播放期间调用
+
+```js
+asr.setMuted(true)      // 别名 asr.pauseListening()
+asr.setMuted(false)     // 别名 asr.resumeListening()
+```
+
+`muted` 只暂停唤醒词监听；采集、电平、自测窗口都照常。另有内置兜底：
+每次 `endCapture()` 后自动冷却 `wakeCooldownMs`，防止回复刚开始就再醒。
+排障钩子：设置 `FIGARO_ASR_HIT_DUMP_DIR=/some/dir` 后，每次 KWS 命中会写一段
+前 1.5 s 的 wav，下次再出现误唤醒可直接听/转写定位（默认关闭）。
+
+### GUI 自测通道（docs/ipc.md §3.1；daemon 直接转发到这些方法）
+
+```js
+asr.startMicTest({ ms = 4000, onSample({rms, peak, level}), onEnd }); // 20Hz, 0..1
+asr.stopMicTest();
+asr.startAsrTest({ ms = 8000, onPartial(text), onResult({text, streamingText, ms, audioMs, offlineMs}), onError });
+asr.stopAsrTest();
+asr.armWakeTest({ ms = 15000, onScore({score, keyword}), onHit({score, latencyMs}), onEnd({hits, misses, falseAlarms, maxScore, ms}) });
+asr.disarmWakeTest();
+asr.applyRuntimeConfig({ sensitivity, wakeCooldownMs, inputGainPercent }) // -> {applied, restartRequired}
+asr.setSensitivity('low'|'medium'|'high'); asr.setWakeCooldownMs(2500); asr.setInputGainPercent(40|null);
+asr.sensitivity; asr.wakeCooldownMs; asr.inputGainPercent; asr.muted;
+asr.micInfo;   // {available, gainPercent(raw 0-63), percent(amixer%), rms, peak, fixed, fixedPercent}
+asr.lastFinalMs;
+```
+
+- `test.wake.arm` 窗口内命中**只走 onHit/onScore，不会回调 onWake/beginCapture**（单测覆盖）。
+- `score` 是流式识别文本与唤醒词的相似度（0 / 0.33 / 0.67 / 1.0）——sherpa 的
+  KWS 不暴露逐帧分数，这是 GUI 的实时反馈值，真正触发仍由 KWS 决定。
+- `sensitivity` 热切换会重建 KWS（约 0.3 s 阻塞一次），其余项即时生效；
+  `wakeWords` / `hotkey` / `silenceStopMs` 改动需重启 daemon。
+
 ## CPU 与内存（重要）
 
 **坑：onnxruntime 的线程池在「持续推理但间隙很短」时自旋空转。** 常驻 KWS 每

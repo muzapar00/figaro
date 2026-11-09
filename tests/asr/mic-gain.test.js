@@ -20,9 +20,10 @@ function fakeAmixer(initialGain = 63) {
     if (state.fail) return { ok: false, stderr: 'amixer: Control default element not found' };
     if (args[2] === 'sget') return { ok: true, stdout: SGET(state.gain) };
     if (args[2] === 'sset') {
-      const pct = Number(String(args[4] ?? args[3]).replace('%', ''));
-      state.gain = Math.round((pct / 100) * 63);
-      state.sets.push(pct);
+      // raw write (no '%') after the fix; tolerate a '%' for older expectations
+      const raw = Number(String(args[4] ?? args[3]).replace('%', ''));
+      state.gain = raw;
+      state.sets.push(raw);
       return { ok: true, stdout: SGET(state.gain) };
     }
     return { ok: false, stderr: `unexpected: ${cmd} ${args.join(' ')}` };
