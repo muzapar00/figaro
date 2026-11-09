@@ -121,6 +121,17 @@ const HOT_PATHS = [
   'asr.sensitivity',
   'asr.wakeCooldownMs',
   'asr.inputGainPercent',
+  // the real daemon hot-switches barge-in through asr.applyRuntimeConfig
+  'asr.bargeIn.enabled',
+  'asr.bargeIn.minRms',
+  'asr.bargeIn.echoFactor',
+  'asr.bargeIn.minMs',
+  // interaction settings are pure daemon state and re-read instantly
+  'interaction.followUpWindowMs',
+  'interaction.followUpMinRms',
+  'interaction.followUpMinMs',
+  'interaction.dismissPhrases',
+  'interaction.cancelPhrases',
   'tts.sink',
   'tts.model',
   'tts.voiceId',

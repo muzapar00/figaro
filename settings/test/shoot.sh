@@ -53,10 +53,22 @@ shot() { # shot <name>
   local name="$1" target="$out/$1.png" attempt
   rm -f "$target"
   ipc shot "$target" >/dev/null
-  for attempt in $(seq 1 40); do
+  for attempt in $(seq 1 30); do
     [[ -s "$target" ]] && break
     sleep 0.1
   done
+  if [[ ! -s "$target" ]]; then
+    # The window can stop being exposed (occluded/minimized/other virtual
+    # desktop); grabToImage() then never completes. Re-map it and retry once.
+    echo "  note  $name: grab stalled, re-surfacing the window"
+    ipc resurface >/dev/null
+    sleep 0.9
+    ipc shot "$target" >/dev/null
+    for attempt in $(seq 1 40); do
+      [[ -s "$target" ]] && break
+      sleep 0.1
+    done
+  fi
   if [[ -s "$target" ]]; then
     echo "  shot  $target"
   else
@@ -75,7 +87,12 @@ PY
 }
 
 mkdir -p "$out"
-rm -f "$out"/*.png "$out"/status.json
+# Only clear the screenshots this script regenerates; the real-daemon (8/16-19)
+# and legacy-daemon (9) evidence comes from separate runs and must survive.
+for name in 1-overview 2-wake-settings 2b-wake-test-running 2c-wake-test-result 2d-wake-test-stats             3-ambient-test-table 4-mic-settings 4b-mic-level-live 4c-mic-noise-floor             5-voice-tts 6-asr-streaming 6b-asr-result 7-diagnostics 7b-diagnostics-capabilities             10-interaction-bargein 11-interaction-followup 12-interaction-phrases             13-wake-sensitivity 14-wake-words 15-voice-timbre; do
+  rm -f "$out/$name.png"
+done
+rm -f "$out"/status.json
 wait_gui
 echo "[shoot] GUI reachable ($mode mode), writing to $out"
 
@@ -264,8 +281,8 @@ check("daemon readback tts.voiceId = male-qn-qingse", d_tts.get("voiceId") == "m
 # hot-path vs restart-required classification the GUI shows to the user
 check("asr.sensitivity marked applied (hot)", fs.get("asr.sensitivity", {}).get("state") == "applied", str(fs.get("asr.sensitivity")))
 check("tts.voiceId marked applied (hot)", fs.get("tts.voiceId", {}).get("state") == "applied", str(fs.get("tts.voiceId")))
-check("bargeIn marked restart-required", fs.get("asr.bargeIn.minRms", {}).get("state") == "restart", str(fs.get("asr.bargeIn.minRms")))
-check("interaction marked restart-required", fs.get("interaction.followUpWindowMs", {}).get("state") == "restart", str(fs.get("interaction.followUpWindowMs")))
+check("bargeIn hot-applied", fs.get("asr.bargeIn.minRms", {}).get("state") == "applied", str(fs.get("asr.bargeIn.minRms")))
+check("interaction hot-applied", fs.get("interaction.followUpWindowMs", {}).get("state") == "applied", str(fs.get("interaction.followUpWindowMs")))
 check("wakeWords marked restart-required", fs.get("asr.wakeWords", {}).get("state") == "restart", str(fs.get("asr.wakeWords")))
 
 # and the daemon's config file on disk really contains the new values

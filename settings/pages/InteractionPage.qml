@@ -23,8 +23,28 @@ MPageScroll {
     property var dismissPhrases: []
     property var cancelPhrases: []
 
-    readonly property var bargeDiagnostics: (Ipc.diagnostics.asr && Ipc.diagnostics.asr.bargeIn) ? Ipc.diagnostics.asr.bargeIn : null
-    readonly property var followUpDiagnostics: Ipc.diagnostics.interaction ? Ipc.diagnostics.interaction : null
+    // The daemon may report these through diagnostics (fake) or only through
+    // config.get (real daemon today). Both are the daemon's effective values.
+    function bargeEffective() {
+        const diag = (Ipc.diagnostics.asr && Ipc.diagnostics.asr.bargeIn) ? Ipc.diagnostics.asr.bargeIn : null;
+        if (diag) return diag;
+        return {
+            enabled: Ipc.cfg("asr.bargeIn.enabled", true) !== false,
+            minRms: Ipc.cfg("asr.bargeIn.minRms", 0.09),
+            echoFactor: Ipc.cfg("asr.bargeIn.echoFactor", 2.5),
+            minMs: Ipc.cfg("asr.bargeIn.minMs", 500),
+        };
+    }
+
+    function followUpEffective() {
+        const diag = Ipc.diagnostics.interaction ? Ipc.diagnostics.interaction : null;
+        if (diag) return diag;
+        return {
+            followUpWindowMs: Ipc.cfg("interaction.followUpWindowMs", 0),
+            followUpMinRms: Ipc.cfg("interaction.followUpMinRms", 0.012),
+            followUpMinMs: Ipc.cfg("interaction.followUpMinMs", 180),
+        };
+    }
 
     function syncFromConfig() {
         page.bargeEnabled = Ipc.cfg("asr.bargeIn.enabled", true) !== false;
@@ -241,12 +261,14 @@ MPageScroll {
         }
         Text {
             Layout.fillWidth: true
-            text: page.bargeDiagnostics
-                ? "daemon 回读：enabled=" + (page.bargeDiagnostics.enabled ? "true" : "false")
-                    + " · minRms=" + Number(page.bargeDiagnostics.minRms).toFixed(3)
-                    + " · echoFactor=" + Number(page.bargeDiagnostics.echoFactor).toFixed(1)
-                    + " · minMs=" + page.bargeDiagnostics.minMs
-                : "调参建议：打断不灵 → 降低门槛/持续时间；被环境声误打断 → 提高门槛或回声倍数。"
+            text: {
+                const d = page.bargeEffective();
+                return "daemon 当前生效：enabled=" + (d.enabled ? "true" : "false")
+                    + " · minRms=" + Number(d.minRms).toFixed(3)
+                    + " · echoFactor=" + Number(d.echoFactor).toFixed(1)
+                    + " · minMs=" + d.minMs
+                    + " ｜ 调参建议：打断不灵 → 降低门槛/持续时间；被环境声误打断 → 提高门槛或回声倍数。";
+            }
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny
@@ -332,11 +354,13 @@ MPageScroll {
         }
         Text {
             Layout.fillWidth: true
-            text: page.followUpDiagnostics
-                ? "daemon 回读：followUpWindowMs=" + page.followUpDiagnostics.followUpWindowMs
-                    + " · minRms=" + Number(page.followUpDiagnostics.followUpMinRms).toFixed(3)
-                    + " · minMs=" + page.followUpDiagnostics.followUpMinMs
-                : "当前生效：followUpMinRms = 0.012、followUpMinMs = 180。窗口越大越容易“接着聊”，也越容易把环境声当成回答。"
+            text: {
+                const d = page.followUpEffective();
+                return "daemon 当前生效：followUpWindowMs=" + d.followUpWindowMs
+                    + " · minRms=" + Number(d.followUpMinRms).toFixed(3)
+                    + " · minMs=" + d.followUpMinMs
+                    + " ｜ 窗口越大越容易“接着聊”，也越容易把环境声当成回答。";
+            }
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny

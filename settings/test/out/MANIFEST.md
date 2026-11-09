@@ -5,7 +5,12 @@
 > 新增控件验收：`10`–`15` 来自 `shoot.sh` 的 task-8 段落，run 时会通过 `act interaction-demo`
 > / `act wake-demo` / `act voice-demo` 和 `writeB64` 把新字段写进假 daemon 的 config.json，
 > 再用 22 条断言检查「GUI 快照 / 每字段状态 / daemon 回读 / config.json」四处一致
-> （见 shoot.sh 输出 `[shoot] task-8 new config fields`）。真 daemon 的缺口证据见 `16`–`18`。
+> （见 shoot.sh 输出 `[shoot] task-8 new config fields`）。
+>
+> daemon 侧白名单/热路径补齐后，`16`–`19` 是真机正向证据：8 个新字段与 `asr.wakeCooldownMs`
+> 在**生产 daemon** 上全部返回 `applied`、`restartRequired: []`，界面显示绿色「已生效」，
+> daemon 日志打出 `interaction settings reloaded (...)`，且用户 config 的 md5 前后一致
+> （全部按用户当前值写入，不改变真实行为）。
 
 ```bash
 node settings/test/fake-daemon.mjs &                 # 默认 /run/user/1000/figaro-settings-test/sock
@@ -48,10 +53,11 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 | `13-wake-sensitivity.png` | 唤醒（task-8） | 灵敏度三档旁标注实测数字（中文 8/8、英文 20/20、近音 2/40、误唤醒 3/15.2min）与延迟，热改显示「已生效」 |
 | `14-wake-words.png` | 唤醒（task-8） | 中英双语唤醒词 chips 编辑 + 英文唤醒开关 + 当前模型 `zh-en-3M-2025-12-20` 说明 + 写回状态 |
 | `15-voice-timbre.png` | 语音（task-8） | 音色下拉（5 个实测男声候选）+ 试听当前音色 + 首字延迟实测范围；改动显示「已生效」（热生效） |
-| `16-real-daemon-forbidden.png` | 真 daemon（task-8） | 对真 daemon 写 `asr.bargeIn.minRms`：daemon 白名单未开放 → 红字「daemon 未开放此配置」，用户 config.json 未被修改（md5 前后一致） |
-| `17-real-daemon-forbidden-followup.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.followUpMinRms`：同样被白名单拒绝，界面如实显示缺口 |
-| `18-real-daemon-forbidden-phrases.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.dismissPhrases`：同样被白名单拒绝，展示真实配置值 |
-| `19-real-daemon-applied.png` | 真 daemon（task-8） | 对真 daemon 写白名单内的热字段 `asr.wakeCooldownMs`（写入同值 2500，不改变行为）：GUI 显示「已生效」，daemon 回读 2500，`~/.config/figaro/config.json` 由 daemon 原子写回 |
+| `16-real-daemon-applied-bargein.png` | 真 daemon（task-8） | 对真 daemon 写 `asr.bargeIn.enabled/minRms/echoFactor/minMs`（用户当前值）→ 四个控件全部绿色「已生效」，底部显示 daemon 当前生效值（enabled=true · minRms=0.090 · echoFactor=2.5 · minMs=500） |
+| `17-real-daemon-applied-followup.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.followUpMinRms/followUpMinMs`（0.012/180）→ 绿色「已生效」；等待窗口 Segmented 停在 7 秒（7000ms） |
+| `18-real-daemon-applied-phrases.png` | 真 daemon（task-8） | 对真 daemon 写 `interaction.dismissPhrases`（恢复默认 9 条）与 `followUpWindowMs` → 全部绿色「已生效」，chips 与 daemon 回读一致 |
+| `real-daemon-hot-apply.log` | 真 daemon（task-8） | 写配置期间的 daemon 日志：`interaction settings reloaded (followUp 7000ms, gate 0.012/180ms, 9 dismiss phrases)` ×4，证明运行时重读；bargeIn 走 ASR `applyRuntimeConfig({bargeIn})`（无日志行，以 config.set 返回 applied 为准） |
+| `19-real-daemon-applied.png` | 真 daemon（task-8） | 唤醒页热字段 `asr.wakeCooldownMs`（写同值 2500）显示「已生效」。全部 9 次真机写入后 `~/.config/figaro/config.json` 的 md5 与写入前一致（`ac550ed1…`），证明按用户当前值写入、其它配置未被改动 |
 
 ## 数据/日志
 

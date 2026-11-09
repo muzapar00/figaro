@@ -79,19 +79,19 @@ CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 
 | `asr.inputGainPercent` | 麦克风页滑块/校准 | **已生效（热）** | 同上 |
 | `tts.voiceId` / `tts.speed` / `tts.sink` / `tts.model` | 语音页下拉/滑块 | **已生效（热）** | daemon 重建 TTS 连接 |
 | `tts.ack.*` | 语音页 | **已生效（热）** | daemon 重建 ack 缓存 |
-| `asr.bargeIn.enabled/minRms/echoFactor/minMs` | 交互页 | **需重启 daemon** | ASR 模块已有 `applyRuntimeConfig({bargeIn})` 热切换，但 daemon 没接线 |
-| `interaction.followUpWindowMs/followUpMinRms/followUpMinMs` | 交互页 | **需重启 daemon** | daemon 启动时读成常量 |
-| `interaction.dismissPhrases/cancelPhrases` | 交互页 chips | **需重启 daemon** | 同上 |
+| `asr.bargeIn.enabled/minRms/echoFactor/minMs` | 交互页 | **已生效（热）** | daemon 已接线 ASR `applyRuntimeConfig({bargeIn})` |
+| `interaction.followUpWindowMs/followUpMinRms/followUpMinMs` | 交互页 | **已生效（热）** | daemon 改成运行时重读，日志打 `interaction settings reloaded (...)` |
+| `interaction.dismissPhrases/cancelPhrases` | 交互页 chips | **已生效（热）** | 同上 |
 | `asr.wakeWords` / `asr.wakeWordsEn` | 唤醒页 chips | **需重启 daemon** | KWS 关键词文件在模块启动时生成 |
 | `asr.enabled` | 唤醒页开关 | **需重启 daemon** | 设计如此 |
 
-**daemon 侧缺口（不在本 GUI 写作用域，需 Lead/figaro-brain 处理）**
-1. `src/agent/settings.js` 的 `ALLOWED_CONFIG_PATHS` 缺：`asr.bargeIn.enabled|minRms|echoFactor|minMs`、
-   `asr.wakeWordsEn`、`interaction.followUpWindowMs|followUpMinRms|followUpMinMs|dismissPhrases|cancelPhrases`。
-   在此之前真 daemon 会拒绝写入（GUI 显示红字“daemon 未开放此配置”，用户配置不会被改）；假 daemon 已接受并验证全链路。
-2. `src/config.js` 的 `DEFAULTS` 缺 `asr.wakeWordsEn`（ASR 模块有 `['figaro','hey figaro']` 兜底，但示例配置里看不到）。
-3. 若要真正热生效：把 `bargeIn.*` 加进 `ASR_HOT_PATHS` 并在 `applyAsrRuntime` 里映射到
-   `asr.applyRuntimeConfig({bargeIn:{...}})`；`interaction.*` 需要 daemon 提供运行时 setter（或明确保持重启生效）。
+**daemon 侧状态（2026-11-09 已补齐并部署，已验证）**
+- `ALLOWED_CONFIG_PATHS` 已包含 `asr.bargeIn.*`、`asr.wakeWordsEn`、`asr.verifyWake.enabled`、`interaction.*`；
+  其中 `bargeIn.*` 走 ASR 热切换、`interaction.*` 运行时重读，真 daemon 写入返回 `applied`、`restartRequired: []`。
+- 仍按“需重启 daemon”呈现的：`asr.wakeWords`、`asr.wakeWordsEn`（要重建 KWS 关键词表）、`asr.enabled`（设计如此）。
+- 可选后续：`asr.verifyWake.enabled`（两段式唤醒校验）已进白名单且 ASR 模块支持热切换，但 GUI 还没做控件，
+  需要时可加一个唤醒页开关；daemon 若要热生效需把它加进 `ASR_HOT_PATHS`。
+- 真机验证记录：`settings/test/out/16`–`19-real-daemon-applied*.png` + `real-daemon-hot-apply.log`（写入均为用户当前值，config md5 前后一致）。
 
 ## 待 Lead 集成（install.sh）
 

@@ -88,5 +88,13 @@ ShellRoot {
         function quit(): void {
             Qt.quit();
         }
+        // The harness uses grabToImage(); if the compositor stopped exposing the
+        // window (occluded/minimized/other desktop) the grab never completes.
+        // Hiding+showing forces a fresh map so the next shot works.
+        function resurface(): string {
+            win.visible = false;
+            win.visible = true;
+            return "resurfaced";
+        }
     }
 }
