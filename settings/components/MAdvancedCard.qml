@@ -16,7 +16,13 @@ Rectangle {
 
     Layout.fillWidth: true
     implicitWidth: 400
-    implicitHeight: header.height + (root.expanded ? body.implicitHeight + 2 + root.innerPadding : 0)
+    // Body sits at header.bottom + (innerPadding + 4); add the same padding at the
+    // bottom, otherwise the last line (the "daemon 当前生效" note) is clipped
+    // against the card edge with no breathing room.
+    readonly property real bodyTopMargin: root.innerPadding + 4
+    implicitHeight: header.height + (root.expanded
+        ? root.bodyTopMargin + body.implicitHeight + root.innerPadding
+        : 0)
     radius: Theme.radiusCard
     color: Theme.cardBg
 
@@ -110,10 +116,10 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: header.bottom
-        anchors.topMargin: root.innerPadding + 4
+        anchors.topMargin: root.bodyTopMargin
         anchors.leftMargin: root.innerPadding
         anchors.rightMargin: root.innerPadding
-        spacing: 4
+        spacing: 8
 
         Behavior on implicitHeight {
             NumberAnimation { duration: 140 }
