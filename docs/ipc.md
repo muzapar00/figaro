@@ -131,7 +131,7 @@ export function createTts({
 
 | 消息 | 字段 | 说明 |
 |---|---|---|
-| `{type:"state"}` | `state:"idle"\|"listening"\|"thinking"\|"speaking"` | 状态机唯一真源 |
+| `{type:"state"}` | `state:"idle"\|"waking"\|"listening"\|"finalizing"\|"thinking"\|"speaking"` | 状态机唯一真源。`waking`=正在播唤醒应答，`finalizing`=等待离线模型出最终文本 |
 | `{type:"level"}` | `value:0..1` | 电平，listening/speaking 时 10~20Hz |
 | `{type:"partial"}` | `text` | 思考中：已生成的回复文本；倾听中：ASR 中间结果 |
 | `{type:"reply"}` | `text`, `requestId?` | 一轮结束的完整回复 |

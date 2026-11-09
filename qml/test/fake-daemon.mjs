@@ -97,7 +97,7 @@ const holdState = (() => {
 async function runLoop() {
   while (true) {
     setState('listening');
-    broadcast({ type: 'partial', text: '费加罗，把音量调大一点' });
+    broadcast({ type: 'partial', text: '费加罗，帮我看看今天有哪些安排，然后把下午三点的会挪到四点，顺便提醒我带充电器' });
     streamLevels(2.6, 1.0);
     await sleep(2600);
     stopLevels();
@@ -106,7 +106,7 @@ async function runLoop() {
     broadcast({ type: 'tool', name: 'bash', status: 'start', summary: '正在运行 bash…' });
     await sleep(1200);
     broadcast({ type: 'tool', name: 'bash', status: 'end' });
-    broadcast({ type: 'partial', text: '好，已经把音量调高了一档。' });
+    broadcast({ type: 'partial', text: '好，我已经把下午三点的会挪到四点，并且加了一条四点二十分出门前带充电器的提醒。今天还有两件事：十点半的项目同步，和晚上七点跟设计组的评审。' });
     await sleep(900);
     setState('speaking');
     streamLevels(3.2, 0.8);
@@ -120,8 +120,8 @@ async function runLoop() {
 
 if (holdState) {
   setState(holdState);
-  if (holdState === 'listening') { broadcast({ type: 'partial', text: '费加罗，把音量调大一点' }); streamLevels(600, 1.0); }
-  else if (holdState === 'speaking') { broadcast({ type: 'partial', text: '好，已经把音量调高了一档。' }); streamLevels(600, 0.85); }
+  if (holdState === 'listening') { broadcast({ type: 'partial', text: '费加罗，帮我看看今天有哪些安排，然后把下午三点的会挪到四点，顺便提醒我带充电器' }); streamLevels(600, 1.0); }
+  else if (holdState === 'speaking') { broadcast({ type: 'partial', text: '好，我已经把下午三点的会挪到四点，并且加了一条四点二十分出门前带充电器的提醒。今天还有两件事：十点半的项目同步，和晚上七点跟设计组的评审。' }); streamLevels(600, 0.85); }
   else if (holdState === 'thinking') { broadcast({ type: 'tool', name: 'bash', status: 'start', summary: '正在运行 bash…' }); }
 } else if (cycle) {
   runLoop();

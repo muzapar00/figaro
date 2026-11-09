@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import qs.figaro
 
 // The assistant's face, drawn on a Canvas (software renderer friendly).
 //
@@ -100,9 +101,11 @@ Item {
         const body = orb.bodyColor();
 
         // The ball breathes with the voice: elastic swell, springy settle.
-        const scale = (1 + env * 0.12) * (1 + orb.breath * 0.025);
+        const scale = (1 + env * 0.10) * (1 + orb.breath * 0.02);
         const r = orb.ballRadius * scale;
-        const amp = 0.35 + env * 1.5;
+        // Capped on purpose: the silhouette should breathe, not turn into
+        // an egg. The visible bounce comes from the scale, not from wobble.
+        const amp = 0.16 + Math.min(0.55, env * 0.55);
 
         ctx.reset();
         ctx.clearRect(0, 0, w, h);
@@ -255,8 +258,8 @@ Item {
             // Spring-damper envelope: this is what makes the ball bounce
             // instead of simply following the meter.
             const target = orb.state === "idle" ? 0 : Math.min(1, orb.level);
-            const stiffness = 260;
-            const damping = 14;
+            const stiffness = FigaroStyle.springStiffness;
+            const damping = FigaroStyle.springDamping;
             const accel = stiffness * (target - orb.env) - damping * orb.envVel;
             orb.envVel += accel * dt;
             orb.env += orb.envVel * dt;

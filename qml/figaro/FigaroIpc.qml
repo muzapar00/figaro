@@ -24,6 +24,13 @@ Singleton {
 
     readonly property bool active: state !== "idle"
 
+    // The daemon has six states; the overlay draws four kinds of moment.
+    // waking borrows the listening look (the user is about to be heard) and
+    // finalizing borrows the thinking look (transcription is settling).
+    readonly property string visualState: state === "waking" ? "listening"
+        : state === "finalizing" ? "thinking"
+        : state
+
     Socket {
         id: sock
         path: root.socketPath

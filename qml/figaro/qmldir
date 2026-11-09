@@ -1,5 +1,6 @@
 module qs.figaro
 singleton FigaroIpc 1.0 FigaroIpc.qml
+singleton FigaroStyle 1.0 FigaroStyle.qml
 FigaroOrb 1.0 FigaroOrb.qml
+FigaroCaption 1.0 FigaroCaption.qml
 FigaroOverlay 1.0 FigaroOverlay.qml
-SiriWave 1.0 SiriWave.qml

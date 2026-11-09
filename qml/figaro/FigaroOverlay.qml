@@ -5,8 +5,14 @@ import qs.figaro
 
 // A transparent layer-shell surface that exists only while Figaro is awake.
 //
-// One ball, one caption. The window is masked to the ball so the rest of the
-// strip stays click-through, and it never takes keyboard focus.
+// One ball, one caption, one motion language (FigaroStyle). The window is
+// masked to the ball so the rest of the strip stays click-through, and it never
+// takes keyboard focus.
+//
+// Layout note: the orb's canvas is deliberately kept *inside* the window. If it
+// is allowed to cross the surface edge, the software renderer paints a 1px
+// opaque black row along that edge - the "black line" that used to run across
+// the top of the screen.
 PanelWindow {
     id: win
 
@@ -19,7 +25,7 @@ PanelWindow {
     margins {
         top: 6
     }
-    implicitHeight: 300
+    implicitHeight: 470
     exclusiveZone: 0
     color: "transparent"
 
@@ -55,16 +61,13 @@ PanelWindow {
 
     Item {
         id: content
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
-        width: 560
-        height: 280
-        y: 0
+        anchors.fill: parent
         opacity: 1
+        y: 0
 
-        // Appearing is a state change, so it gets a short spring; disappearing
-        // is a dismissal, so it gets a plain ease-out. A bounce on dismissal
-        // reads as "it came back", which is the opposite of calm.
+        // The whole assembly (ball + caption) drops in from above the screen
+        // edge on one spring, and leaves on a plain ease-out. Everything inside
+        // moves with it, which is what keeps it reading as one object.
         states: State {
             name: "hidden"
             when: !win.shown
@@ -80,16 +83,12 @@ PanelWindow {
                 from: "hidden"
                 to: ""
                 animations: [
-                    // The ball drops in from just above the screen edge and
-                    // settles with a small elastic overshoot. A spring is the
-                    // right model here: it is a physical object arriving, not a
-                    // UI panel expanding.
                     SpringAnimation {
                         target: content
                         property: "y"
                         to: 0
-                        spring: 4.4
-                        damping: 0.52
+                        spring: FigaroStyle.appearSpring
+                        damping: FigaroStyle.appearDamping
                         mass: 1.0
                         epsilon: 0.001
                     },
@@ -97,7 +96,7 @@ PanelWindow {
                         target: content
                         property: "opacity"
                         to: 1
-                        duration: 200
+                        duration: FigaroStyle.fadeMs
                         easing.type: Easing.OutCubic
                     }
                 ]
@@ -106,8 +105,6 @@ PanelWindow {
                 from: ""
                 to: "hidden"
                 animations: [
-                    // Leaving: straight up and out, quickly. A spring on the
-                    // way out would bounce it back into view.
                     NumberAnimation {
                         target: content
                         property: "y"
@@ -130,16 +127,15 @@ PanelWindow {
             id: orb
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: parent.top
-            anchors.topMargin: -orb.haloPadding + 4
+            anchors.topMargin: 2
             diameter: 128
-            state: FigaroIpc.state
+            state: FigaroIpc.visualState
             level: FigaroIpc.level
 
             MouseArea {
                 anchors.fill: parent
-                // One button, two meanings, exactly like Siri's orb: tap it
-                // while idle to start listening, tap it while it is busy to
-                // make it stop. The UI never queues anything either.
+                // One button, two meanings, like Siri's orb: tap while idle to
+                // start listening, tap while busy to make it stop.
                 onClicked: {
                     if (FigaroIpc.state === "idle") FigaroIpc.send({ type: "wake" });
                     else FigaroIpc.cancel();
@@ -149,40 +145,16 @@ PanelWindow {
             }
         }
 
-        // Caption: what was heard, or what is being said. A translucent pill
-        // keeps it readable over bright wallpaper, and a single elided line
-        // keeps it from competing with the ball for attention.
-        Rectangle {
-            id: pill
+        // The caption hangs off the ball: the neck starts where the ball's glow
+        // fades, so the two are visually one object.
+        FigaroCaption {
+            id: caption
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.top: orb.bottom
-            anchors.topMargin: -orb.haloPadding + 8
-            width: Math.min(capText.contentWidth + 28, 520)
-            height: capText.implicitHeight + 12
-            radius: height / 2
-            color: Qt.rgba(0.03, 0.04, 0.10, 0.42)
-            visible: capText.text.length > 0
-            opacity: visible ? 1 : 0
-            Behavior on opacity {
-                NumberAnimation {
-                    duration: 160
-                    easing.type: Easing.OutCubic
-                }
-            }
-
-            Text {
-                id: capText
-                width: 492
-                anchors.centerIn: parent
-                text: FigaroIpc.partial
-                color: "#eef1ff"
-                font.pixelSize: 14
-                elide: Text.ElideRight
-                horizontalAlignment: Text.AlignHCenter
-                Behavior on text {
-                    enabled: false
-                }
-            }
+            anchors.top: orb.top
+            anchors.topMargin: orb.haloPadding + orb.diameter - 2
+            text: FigaroIpc.partial
+            state: FigaroIpc.visualState
+            level: FigaroIpc.level
         }
     }
 
