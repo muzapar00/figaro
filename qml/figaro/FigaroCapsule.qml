@@ -3,7 +3,6 @@ import qs.figaro
 // KOS's compositor glass: the same native declaration the shell's dock and bar
 // use for their liquid-glass finish. KWin paints refraction, glints and noise
 // for the declared shape; the client paints no material of its own.
-import Kos.SurfaceShape 1.0
 
 // The assistant as one morphed object.
 //
@@ -137,25 +136,22 @@ Item {
     implicitWidth: 820
     implicitHeight: 320
 
-    // Declare the pill's shape to KWin's glass effect: this is the same
-    // declaration the KOS dock and bar use, and it is what makes the capsule
-    // liquid glass rather than a translucent rectangle. The compositor owns
-    // blur, refraction and the rim light for the declared shape; the client
-    // paints only a legibility veil.
-    property var glassShape: SurfaceShape {
-        target: shell.morphProgress > 0.02 ? capsule : null
-        blurSigma: 26
-        effectType: SurfaceShape.Liquid
-        material: SurfaceShape.Regular
-        // KOS tints its glass the same way: a fixed dark tint keeps white text
-        // readable while the compositor's blur and rim light still show through.
-        tintMode: SurfaceShape.Fixed
-        tintColor: "black"
-        tintOpacity: 0.46
-        radius: capsule.height / 2
-        exponent: 2.0
-        enabled: shell.morphProgress > 0.02
+    // Ask the compositor for real liquid glass through KOS's native plugin.
+    // The declaration lives in FigaroGlass.qml because a missing plugin must not
+    // break the overlay: on machines without KOS the Loader fails, reports it
+    // once, and the capsule keeps its own translucent background.
+    Loader {
+        id: glassLoader
+        source: "FigaroGlass.qml"
+        active: true
+        onStatusChanged: if (status === Loader.Error) console.log("[glass] KOS SurfaceShape unavailable; using the plain background")
+        onLoaded: {
+            item.pill = capsule;
+            item.pillHeight = Qt.binding(function () { return capsule.height; });
+            item.progress = Qt.binding(function () { return shell.morphProgress; });
+        }
     }
+
 
     // The pill. At progress 0 this rectangle is exactly the ball's circle, so
     // the same item is the ball and the pill at once.
