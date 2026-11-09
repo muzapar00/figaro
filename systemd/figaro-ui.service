@@ -20,6 +20,8 @@ Environment=MALLOC_ARENA_MAX=2
 # renders the layer surface broken (a dark seam across the top of the screen).
 # The overlay is a few gradients, so rasterize it on the CPU instead.
 Environment=QT_QUICK_BACKEND=software
+# Kos.SurfaceShape (KOS's compositor-glass plugin) lives in the KOS config dir.
+Environment=QML2_IMPORT_PATH=%h/.config/quickshell/kos
 ExecStart=/home/mzpr00/.local/bin/qs --no-duplicate -c figaro
 Restart=on-failure
 RestartSec=2

@@ -86,7 +86,11 @@ Item {
         blurSigma: 26
         effectType: SurfaceShape.Liquid
         material: SurfaceShape.Regular
-        tintMode: SurfaceShape.NoTint
+        // KOS tints its glass the same way: a fixed dark tint keeps white text
+        // readable while the compositor's blur and rim light still show through.
+        tintMode: SurfaceShape.Fixed
+        tintColor: "black"
+        tintOpacity: 0.46
         radius: capsule.height / 2
         exponent: 2.0
         enabled: shell.morphProgress > 0.02
@@ -100,9 +104,9 @@ Item {
         width: shell.capsuleW
         height: shell.capsuleH
         radius: height / 2
-        // The compositor paints the glass; this is only a light darkening
-        // veil so white text stays readable over bright backdrops.
-        color: Qt.rgba(0.03, 0.04, 0.09, 0.18 * shell.morphProgress)
+        // The compositor owns the glass finish and its tint; keep this
+        // transparent so nothing fights the refraction.
+        color: "transparent"
         // KWin draws the rim; keep only a faint state-tinted inner edge so the
         // assistant still reads blue / violet / magenta through the glass.
         border.width: shell.morphProgress > 0.05 ? 1 : 0
