@@ -682,6 +682,16 @@ export function createSettingsService(options = {}) {
       version: context.getVersion?.() ?? null,
       uptimeMs: context.getUptimeMs?.() ?? 0,
       state: context.getState?.() ?? null,
+      // Interaction settings are daemon-owned (not just a config echo): the
+      // follow-up window and dismissal phrases are re-derivable at runtime, so
+      // the GUI and `figaro status` can show what is actually in force.
+      interaction: {
+        followUpWindowMs: finiteNumber(config.interaction?.followUpWindowMs, 0),
+        followUpMinRms: finiteNumber(config.interaction?.followUpMinRms, null),
+        followUpMinMs: finiteNumber(config.interaction?.followUpMinMs, null),
+        dismissPhrases: Array.isArray(config.interaction?.dismissPhrases) ? config.interaction.dismissPhrases.map(String) : [],
+        cancelPhrases: Array.isArray(config.interaction?.cancelPhrases) ? config.interaction.cancelPhrases.map(String) : [],
+      },
       asr: {
         available: Boolean(asr),
         state: typeof asr?.state === 'string' ? asr.state : null,

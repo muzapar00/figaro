@@ -326,11 +326,17 @@ async function commandStatus(flags) {
     }
     process.exit(1);
   }
+  // One request at a time: the IPC client has a single message handler, so two
+  // concurrent waitFor() calls would steal each other's replies.
   const pending = waitFor(client, (message) => message.type === 'pong', 3000);
   client.send({ type: 'ping' });
   const result = await pending;
+  const diagPending = waitFor(client, (message) => message.type === 'diagnostics', 3000);
+  client.send({ type: 'diagnostics' });
+  const diagResult = await diagPending;
   client.close();
   const pong = result.messages.find((message) => message.type === 'pong');
+  const diag = diagResult.messages.find((message) => message.type === 'diagnostics') ?? null;
   if (!pong) {
     if (flags.has('json')) {
       process.stdout.write(`${JSON.stringify({ running: false, socket: config.ui.socket, error: 'ping timeout' })}\n`);
@@ -355,6 +361,34 @@ async function commandStatus(flags) {
     else if (ack.ready) ackLine = `就绪（${ack.phrases?.length ?? 0} 句：${(ack.phrases ?? []).join('/')}，${ack.voiceId ?? '?'}）`;
     else ackLine = `未就绪${ack.reason ? `（${ack.reason}）` : ''}`;
     console.log(`  唤醒应答: ${ackLine}`);
+  }
+  const asr = diag?.asr;
+  if (asr) {
+    const hotkey = asr.hotkeyState;
+    const hotkeyLine = hotkey?.bound
+      ? `已绑定（${asr.hotkey ?? '?'}）`
+      : `不可用${hotkey?.state ? `（${hotkey.state}${hotkey.error ? `：${hotkey.error}` : ''}）` : ''}，语音唤醒仍可用`;
+    console.log(`  热键: ${hotkeyLine}`);
+    const model = asr.modelInfo;
+    if (model?.model) {
+      const langs = model.hasEnglish ? '中英双语' : '中文';
+      console.log(`  唤醒模型: ${langs}（${model.model}，${(model.wakeWordsEn ?? []).join('/') || '—'}）`);
+    }
+    const barge = model?.bargeIn;
+    if (barge) console.log(`  插话打断: ${barge.enabled ? `开（响度 ≥ ${barge.minRms}，持续 ${barge.minMs}ms）` : '关'}`);
+    const verify = model?.verifyWake;
+    const stats = model?.verifyStats;
+    if (verify?.enabled && stats) {
+      console.log(`  唤醒校验: 开（接受 ${stats.accepted}，误拒 ${stats.rejected}，放行 ${stats.failOpen}）`);
+    }
+  }
+  const interaction = diag?.interaction;
+  if (interaction) {
+    const wait = Number(interaction.followUpWindowMs ?? 0);
+    console.log(`  回答后等待: ${wait > 0 ? `${wait / 1000} 秒（响度 ≥ ${interaction.followUpMinRms}，持续 ${interaction.followUpMinMs}ms）` : '关闭'}`);
+    if (Array.isArray(interaction.dismissPhrases)) {
+      console.log(`  退下短语: ${interaction.dismissPhrases.join('/')}`);
+    }
   }
   console.log(`  运行时长: ${formatDuration(pong.uptimeMs)}`);
   console.log(`  socket: ${pong.socket ?? config.ui.socket}`);
@@ -388,10 +422,10 @@ async function main() {
       const child = spawn(qsPath, ['--no-duplicate', '-c', 'figaro-settings'], {
         detached: true,
         stdio: 'ignore',
-        env: { ...process.env, QT_QUICK_BACKEND: 'software' },
+        env: { ...process.env },
       });
       child.unref();
-      console.log('figaro: 设置面板已启动（应用菜单里的「费加罗设置」也可以打开）');
+      console.log('figaro: 设置面板已启动（应用菜单里的「费加罗」也可以打开）');
       return 0;
     }
     case 'status':
