@@ -42,6 +42,12 @@ if [[ -d "$repo/settings" ]]; then
       install -Dm644 "$repo/assets/icons/figaro-$size.png" \
         "$HOME/.local/share/icons/hicolor/${size}x${size}/apps/figaro.png"
     done
+    # The settings window draws its own macOS-style title bar, so the KWin
+    # decoration has to be turned off or the same three buttons appear twice.
+    if command -v node >/dev/null 2>&1; then
+      node "$repo/scripts/install-kwin-rule.mjs" || echo "   (kwin rule not installed; the window will have a system title bar)"
+      qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
+    fi
     gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
     update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
     echo "   icon installed (speaking orb, figaro.png)"

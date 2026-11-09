@@ -1,0 +1,19 @@
+# KWin window rule for the Figaro settings window.
+#
+# The window draws its own macOS-style title bar (traffic lights on the left,
+# centred title, connection pill). KWin also decorates it by default, so the same
+# three buttons appeared twice and there were two title bars. This rule turns the
+# server-side decoration off for Quickshell windows, leaving the app's own
+# controls as the single set. install.sh merges it into ~/.config/kwinrulesrc.
+[General]
+count=1
+rules=1
+
+[1]
+Description=Figaro settings frameless
+noborder=true
+noborderrule=2
+wmclass=quickshell
+wmclassmatch=2
+wmclasscomplete=false
+types=1
