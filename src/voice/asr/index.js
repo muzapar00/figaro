@@ -1,0 +1,442 @@
+// Figaro ASR module — public entry point (contract: docs/ipc.md §2.1).
+//
+//   createAsr({config, onWake, onLevel, onPartial, onFinal, onVadStart, onError})
+//     -> { start(), stop(), beginCapture(), endCapture(), capturing }
+//
+// Pipeline:
+//   parec (16 kHz mono S16LE) ──► KWS spotter (常驻，听「费加罗」)
+//                                   │ hit
+//                                   ▼
+//                             onWake() ──► beginCapture()
+//                                   │
+//              ┌────────────────────┴───────────────────┐
+//              ▼                                        ▼
+//     streaming ASR -> onPartial()          VAD (silero) tracks speech
+//              │                                        │
+//              └──────────► silenceStopMs / maxCaptureMs ┘
+//                                   │
+//                          offline ASR (final, accurate)
+//                                   │
+//                              onFinal(text)
+//
+// Implemented by the "听觉" owner (figaro-ears). Extra, non-contract options are
+// documented in README.md: `source`, `hotkey`, `onLog`. Extra getters `state` /
+// `modelInfo` / `hotkeyState` are provided for diagnostics/tests.
+//
+// F5 long-press is wired internally (hotkey.js) so the daemon only has to call
+// createAsr()/start()/stop(); if the portal is unavailable the module degrades to
+// wake-word-only and reports a single non-fatal onError.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { createKws, locateKwsModel } from './kws.js';
+import { createStreamingAsr, createOfflineAsr, locateStreamingModel, locateOfflineModel } from './recognizers.js';
+import { createVad } from './vad.js';
+import { createCapture } from './capture.js';
+import { createHotkey } from './hotkey.js';
+import { createParecSource } from './sources.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
+const SAMPLE_RATE = 16000;
+const LEVEL_WINDOW_SAMPLES = Math.round(SAMPLE_RATE * 0.05); // 50 ms => 20 Hz
+const PRE_ROLL_MS = 1500;
+const TICK_MS = 250;
+
+function asError(err) {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+function resolvePath(p, root) {
+  if (!p) return p;
+  return path.isAbsolute(p) ? p : path.resolve(root, p);
+}
+
+/**
+ * @param {object} opts
+ * @param {object} opts.config loadConfig() result
+ * @param {() => void} [opts.onWake]
+ * @param {(rms01: number) => void} [opts.onLevel]
+ * @param {(text: string) => void} [opts.onPartial]
+ * @param {(text: string) => void} [opts.onFinal]
+ * @param {() => void} [opts.onVadStart]
+ * @param {(err: Error) => void} [opts.onError]
+ * @param {(msg: string) => void} [opts.onLog] verbose diagnostics (optional)
+ * @param {Function} [opts.source] audio source factory override (tests: sources.createArraySource)
+ * @param {boolean|object} [opts.hotkey] false disables F5, object injects a fake hotkey (tests)
+ */
+export function createAsr(opts) {
+  const {
+    config,
+    onWake = () => {},
+    onLevel = () => {},
+    onPartial = () => {},
+    onFinal = () => {},
+    onVadStart = () => {},
+    onError = () => {},
+    onLog = () => {},
+    source,
+    hotkey: hotkeyOption,
+  } = opts ?? {};
+  if (!config) throw new TypeError('createAsr: config is required');
+  const asrCfg = config.asr ?? {};
+  const root = config.paths?.root ?? REPO_ROOT;
+
+  let state = 'idle';
+  let kws = null;
+  let streaming = null;
+  let offline = null;
+  let vad = null;
+  let capture = null;
+  let hotkeyInst = null;
+  let mic = null;
+  let preRoll = [];
+  let preRollSamples = 0;
+  let levelSumSq = 0;
+  let levelCount = 0;
+  let lastAudioAt = 0;
+  let tickTimer = null;
+  let finalizePromise = null;
+  let hotkeyStarted = false;
+
+  const safe = (fn, ...args) => {
+    try { return fn(...args); } catch (err) { /* never let user callbacks kill the loop */ }
+    return undefined;
+  };
+  const emitError = (err) => safe(onError, asError(err));
+  const log = (msg) => safe(onLog, msg);
+
+  const preRollMaxSamples = Math.round((SAMPLE_RATE * PRE_ROLL_MS) / 1000);
+
+  function pushPreRoll(samples) {
+    preRoll.push(samples);
+    preRollSamples += samples.length;
+    while (preRollSamples > preRollMaxSamples && preRoll.length > 1) {
+      const dropped = preRoll.shift();
+      preRollSamples -= dropped.length;
+    }
+    // Trim the first chunk if it is far too large (defensive).
+    if (preRollSamples > preRollMaxSamples && preRoll.length === 1) {
+      const only = preRoll[0];
+      preRoll[0] = only.subarray(only.length - preRollMaxSamples);
+      preRollSamples = preRoll[0].length;
+    }
+  }
+
+  function preRollPcm() {
+    const out = new Float32Array(preRollSamples);
+    let off = 0;
+    for (const chunk of preRoll) { out.set(chunk, off); off += chunk.length; }
+    return out;
+  }
+
+  function clearPreRoll() {
+    preRoll = [];
+    preRollSamples = 0;
+  }
+
+  function emitLevel(samples) {
+    // Emit one RMS value per 50 ms audio window (=> 20 Hz), carrying the
+    // remainder across chunks so the rate is independent of the parec chunk size.
+    let off = 0;
+    while (off < samples.length) {
+      const take = Math.min(LEVEL_WINDOW_SAMPLES - levelCount, samples.length - off);
+      for (let i = 0; i < take; i++) {
+        const v = samples[off + i];
+        levelSumSq += v * v;
+      }
+      levelCount += take;
+      off += take;
+      if (levelCount === LEVEL_WINDOW_SAMPLES) {
+        const rms = Math.sqrt(levelSumSq / LEVEL_WINDOW_SAMPLES);
+        levelSumSq = 0;
+        levelCount = 0;
+        safe(onLevel, Math.max(0, Math.min(1, rms)));
+      }
+    }
+  }
+
+  function stopTick() {
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  }
+
+  function startTick() {
+    stopTick();
+    tickTimer = setInterval(() => {
+      if (state !== 'capturing') { stopTick(); return; }
+      // Safety net: if the mic stream stalled (parec hung) do not leave the daemon
+      // stuck in listening forever.
+      if (Date.now() - lastAudioAt > 1500) {
+        log('音频流中断 1.5s，结束采集');
+        endCapture('audio-stall');
+      }
+    }, TICK_MS);
+  }
+
+  function handlePcm(samples) {
+    if (!samples || samples.length === 0) return;
+    if (state === 'stopped' || state === 'failed' || state === 'idle' || state === 'starting') return;
+    lastAudioAt = Date.now();
+    emitLevel(samples);
+    pushPreRoll(samples);
+    if (state === 'listening') {
+      if (!kws) return;
+      let hit = null;
+      try {
+        hit = kws.feed(samples);
+      } catch (err) {
+        emitError(new Error(`KWS 解码失败：${asError(err).message}`, { cause: err }));
+        return;
+      }
+      if (hit) handleWake(`kws:${hit.keyword}`);
+    } else if (state === 'capturing' && capture) {
+      try {
+        capture.push(samples);
+      } catch (err) {
+        emitError(new Error(`采集处理失败：${asError(err).message}`, { cause: err }));
+      }
+    }
+  }
+
+  function handleWake(origin) {
+    if (state !== 'listening') return;
+    log(`唤醒（${origin}）`);
+    safe(onWake);
+    // If the daemon does not call beginCapture() synchronously from onWake (or
+    // there is no daemon at all, e.g. F5 handler), start capture ourselves.
+    queueMicrotask(() => {
+      if (state === 'listening') beginCapture();
+    });
+  }
+
+  function handleMicFatal(err) {
+    if (state === 'stopped') return;
+    state = 'failed';
+    stopTick();
+    emitError(err);
+  }
+
+  function beginCapture() {
+    if (state !== 'listening' || !capture) return;
+    state = 'capturing';
+    lastAudioAt = Date.now();
+    capture.begin(preRollPcm());
+    startTick();
+    log('beginCapture');
+  }
+
+  function endCapture(why = 'manual') {
+    if (state !== 'capturing' || !capture) return;
+    state = 'finalizing';
+    stopTick();
+    const cap = capture;
+    finalizePromise = (async () => {
+      let result;
+      try {
+        result = await cap.end(why);
+      } catch (err) {
+        emitError(new Error(`转写失败：${asError(err).message}`, { cause: err }));
+        result = { text: '', reason: why, stats: {} };
+      }
+      clearPreRoll();
+      if (kws) { try { kws.reset(); } catch { /* ignore */ } }
+      if (state !== 'stopped') state = 'listening';
+      log(`endCapture(${result.reason}) -> onFinal(${JSON.stringify(result.text)})`);
+      safe(onFinal, result.text ?? '');
+    })()
+      .catch((err) => { emitError(err); if (state !== 'stopped') state = 'listening'; })
+      .finally(() => { finalizePromise = null; });
+  }
+
+  function createCaptureFor() {
+    return createCapture({
+      config,
+      streaming,
+      offline,
+      vad,
+      wakeWords: asrCfg.wakeWords ?? [],
+      onPartial: (text) => safe(onPartial, text),
+      onVadStart: () => safe(onVadStart),
+      onAutoEnd: (reason) => {
+        log(`自动结束采集（${reason}）`);
+        endCapture(reason);
+      },
+      onError: (err) => emitError(err),
+    });
+  }
+
+  async function stopInternal() {
+    if (state === 'stopped') return;
+    state = 'stopped';
+    stopTick();
+    if (finalizePromise) { try { await finalizePromise; } catch { /* ignore */ } }
+    if (hotkeyInst) {
+      try { await hotkeyInst.stop(); } catch { /* ignore */ }
+      hotkeyInst = null;
+      hotkeyStarted = false;
+    }
+    if (mic) {
+      try { await mic.stop(); } catch { /* ignore */ }
+      mic = null;
+    }
+    if (capture) { try { capture.reset(); } catch { /* ignore */ } capture = null; }
+    if (kws) { try { kws.free(); } catch { /* ignore */ } kws = null; }
+    if (vad) { try { vad.free(); } catch { /* ignore */ } vad = null; }
+    streaming = null;
+    offline = null;
+    clearPreRoll();
+  }
+
+  const models = () => ({
+    kws: resolvePath(asrCfg.kwsModelDir ?? 'models/kws', root),
+    streaming: resolvePath(asrCfg.streamingModelDir ?? 'models/asr-stream', root),
+    offline: resolvePath(asrCfg.offlineModelDir ?? 'models/asr-offline', root),
+    vad: path.join(path.dirname(resolvePath(asrCfg.kwsModelDir ?? 'models/kws', root)), 'vad', 'silero_vad.onnx'),
+  });
+
+  return {
+    // ---- contract ----
+    get capturing() {
+      return state === 'capturing';
+    },
+
+    async start() {
+      if (state === 'listening' || state === 'capturing' || state === 'starting') return;
+      state = 'starting';
+      const dirs = models();
+
+      // Pre-flight: fail fast & cleanly when models are missing/broken.
+      if (!fs.existsSync(dirs.kws)) {
+        state = 'failed';
+        const err = new Error(`唤醒词模型缺失：${dirs.kws}（先运行 scripts/fetch-models.sh）`);
+        err.code = 'ASR_MODELS_MISSING';
+        emitError(err);
+        throw err;
+      }
+      if (!locateKwsModel(dirs.kws)) {
+        state = 'failed';
+        const err = new Error(`唤醒词模型不完整：${dirs.kws} 需要 encoder/decoder/joiner .onnx + tokens.txt`);
+        err.code = 'ASR_KWS_INCOMPLETE';
+        emitError(err);
+        throw err;
+      }
+      const hasStreaming = Boolean(locateStreamingModel(dirs.streaming));
+      const hasOffline = Boolean(locateOfflineModel(dirs.offline));
+      if (!hasStreaming && !hasOffline) {
+        state = 'failed';
+        const err = new Error(
+          `转写模型缺失：${dirs.streaming} 与 ${dirs.offline} 都不完整（先运行 scripts/fetch-models.sh）`,
+        );
+        err.code = 'ASR_MODELS_MISSING';
+        emitError(err);
+        throw err;
+      }
+
+      try {
+        kws = createKws({
+          modelDir: dirs.kws,
+          wakeWords: asrCfg.wakeWords ?? [],
+          numThreads: 2,
+          onLog: log,
+        });
+        streaming = hasStreaming ? createStreamingAsr({ dir: dirs.streaming, numThreads: 2 }) : null;
+        offline = hasOffline ? createOfflineAsr({ dir: dirs.offline, numThreads: 2 }) : null;
+        vad = createVad({ modelPath: dirs.vad });
+        capture = createCaptureFor();
+        log(
+          `模型就绪: kws=${kws.modelFiles.epoch} streaming=${streaming ? 'yes' : 'no'} ` +
+          `offline=${offline ? offline.kind : 'no'} vad=${vad.kind} keywords=${kws.keywords.lines.length}`,
+        );
+      } catch (err) {
+        state = 'failed';
+        const e = new Error(`加载语音模型失败：${asError(err).message}`, { cause: err });
+        emitError(e);
+        await stopInternal().catch(() => {});
+        state = 'failed';
+        throw e;
+      }
+
+      // F5 long-press (non-fatal if the portal is unavailable).
+      const hotkeyConfigured = String(asrCfg.hotkey ?? '').trim() !== '';
+      const hotkeyWanted = hotkeyOption !== false && (hotkeyConfigured || (hotkeyOption && typeof hotkeyOption === 'object'));
+      if (hotkeyWanted) {
+        if (hotkeyOption && typeof hotkeyOption === 'object') {
+          hotkeyInst = hotkeyOption;
+          hotkeyStarted = false;
+        } else {
+          hotkeyInst = createHotkey({
+            config,
+            onWake: () => handleWake('hotkey'),
+            onEnd: () => endCapture('hotkey-release'),
+            onError: (err) => emitError(err),
+            onLog: log,
+          });
+        }
+        try {
+          await hotkeyInst.start();
+          hotkeyStarted = true;
+        } catch (err) {
+          emitError(new Error(`F5 长按初始化失败（语音唤醒仍可用）：${asError(err).message}`, { cause: err }));
+        }
+      }
+
+      // Microphone.
+      const factory = typeof source === 'function'
+        ? source
+        : createParecSource({ device: asrCfg.device && asrCfg.device !== 'default' ? asrCfg.device : undefined });
+      mic = factory({
+        onPcm: (pcm) => handlePcm(pcm),
+        onError: (err) => emitError(err),
+        onFatal: (err) => handleMicFatal(err),
+      });
+      try {
+        await mic.start();
+      } catch (err) {
+        // Clean failure: release everything and report. The daemon must still run.
+        state = 'failed';
+        const e = new Error(`麦克风不可用：${asError(err).message}`, { cause: err });
+        e.code = 'ASR_MIC_UNAVAILABLE';
+        emitError(e);
+        await stopInternal().catch(() => {});
+        state = 'failed';
+        throw e;
+      }
+      lastAudioAt = Date.now();
+      state = 'listening';
+      log('ASR 常驻监听已启动');
+    },
+
+    async stop() {
+      await stopInternal();
+    },
+
+    beginCapture,
+    endCapture,
+
+    // ---- diagnostics (not part of the IPC contract) ----
+    get state() {
+      return state;
+    },
+    get modelInfo() {
+      const dirs = models();
+      return {
+        kwsDir: dirs.kws,
+        streamingDir: dirs.streaming,
+        offlineDir: dirs.offline,
+        vadModel: dirs.vad,
+        kws: kws?.modelFiles ?? null,
+        keywords: kws?.keywords?.lines ?? [],
+        streaming: Boolean(streaming),
+        offline: offline?.kind ?? null,
+        vad: vad?.kind ?? null,
+      };
+    },
+    get hotkeyState() {
+      return hotkeyInst ? { state: hotkeyInst.state, bound: hotkeyInst.bound, started: hotkeyStarted, session: hotkeyInst.sessionPath } : null;
+    },
+  };
+}
+
+export default createAsr;
