@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "description": "Figaro — a system-level voice assistant with a DeepSeek brain, local wake-word ASR, and MiniMax speech.",
+  "license": "GPL-3.0-or-later",
+  "author": "muzapar00 <mzpr00@163.com>",
+  "homepage": "https://github.com/muzapar00/figaro",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/muzapar00/figaro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/muzapar00/figaro/issues"
+  },
   "bin": {
     "figaro": "./bin/figaro"
   },
@@ -14,6 +24,5 @@
   "dependencies": {
     "sherpa-onnx-node": "^1.12.0",
     "ws": "^8.18.0"
-  },
-  "license": "GPL-3.0-or-later"
+  }
 }

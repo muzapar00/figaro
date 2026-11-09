@@ -51,7 +51,7 @@
 KWin 液态玻璃是**可选**的：没有 KOS 插件时会自动退回半透明底，不影响使用。
 
 ```bash
-git clone <this-repo> figaro && cd figaro
+git clone https://github.com/muzapar00/figaro.git && cd figaro
 
 # 1. 配置（唯一需要你填的东西）
 mkdir -p ~/.config/figaro
