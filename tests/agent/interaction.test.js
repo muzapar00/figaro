@@ -539,3 +539,63 @@ test('all new states are part of the exported state machine', () => {
     assert.ok(STATES.includes(state), `${state} is in STATES`);
   }
 });
+
+// ---------------------------------------------------------------- dismissal
+
+test('dismiss: saying 退下 during the waiting window leaves immediately', async (t) => {
+  const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, {
+    followUpWindowMs: 1500,
+    followUpMinRms: 0.012,
+    followUpMinMs: 120,
+  });
+  client.send({ type: 'wake' });
+  await waitFor(() => lastState(messages) === 'waking', { label: 'waking' });
+  const playback = ack.playbacks.at(-1);
+  playback.settleStart();
+  playback.finish();
+  await waitFor(() => lastState(messages) === 'listening', { label: 'listening' });
+  deliverFinal(asr, '你好');
+  await waitFor(() => lastState(messages) === 'waiting', { label: 'waiting' });
+  const before = agent.record.texts.length;
+
+  // The follow-up voice opens the conversation, then says 退下.
+  for (let i = 0; i < 10; i++) {
+    asr.record.cbs.onLevel(0.10);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await waitFor(() => lastState(messages) === 'listening', { label: 'follow-up listening' });
+  deliverFinal(asr, '退下');
+  await waitFor(() => lastState(messages) === 'idle', { label: 'dismissed -> idle' });
+  assert.equal(agent.record.texts.length, before, 'dismissal never reaches the model');
+});
+
+test('dismiss: a spoken reply is finished before standing down', async (t) => {
+  const heldTts = makeFakeTts({ blockFlush: true });
+  const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, {
+    followUpWindowMs: 1500,
+    followUpMinRms: 0.012,
+    followUpMinMs: 120,
+    tts: { factory: heldTts.factory, record: heldTts.record },
+  });
+  client.send({ type: 'wake' });
+  await waitFor(() => lastState(messages) === 'waking', { label: 'waking' });
+  const playback = ack.playbacks.at(-1);
+  playback.settleStart();
+  playback.finish();
+  await waitFor(() => lastState(messages) === 'listening', { label: 'listening' });
+
+  deliverFinal(asr, '讲个长故事');
+  await waitFor(() => agent.record.texts.length === 1, { label: 'turn ran' });
+  // The reply is being spoken now (flush is held open); a dismissal must not
+  // cut it off.
+  await waitFor(() => lastState(messages) === 'speaking', { label: 'speaking' });
+  const replyCount = messages.filter((message) => message.type === 'reply').length;
+  asr.record.cbs.onFinal('退下', { reason: 'speech-end' });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(lastState(messages), 'speaking', 'still speaking: the dismissal waits');
+  // Playback ends -> it leaves instead of opening the follow-up window.
+  heldTts.record.resolveFlush?.();
+  await waitFor(() => lastState(messages) === 'idle', { label: 'left after the reply finished' });
+  assert.equal(messages.filter((message) => message.type === 'reply').length, replyCount, 'no extra reply');
+  void agent;
+});

@@ -92,8 +92,11 @@ export const DEFAULTS = {
     bargeIn: true,
   },
   interaction: {
-    // Saying any of these instead of a question cancels the turn.
+    // Saying any of these instead of a question cancels the turn (cuts audio).
     cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
+    // "Stand down": finish whatever is being said, then leave without waiting
+    // for a follow-up.
+    dismissPhrases: ['退下', '退下吧', '先退下', '你可以退下了', '可以退下了', '休息吧', '没事了', '结束吧', '关了'],
     // After a spoken reply the assistant stays on screen this long, waiting for
     // a follow-up. 0 disables the window. Only a voice above followUpMinRms for
     // followUpMinMs re-opens the conversation, so room noise cannot do it.

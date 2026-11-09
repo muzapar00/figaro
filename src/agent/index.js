@@ -45,7 +45,9 @@ export function createAgent(options = {}) {
   const fetchImpl = options.fetchImpl;
   const workdir = options.workdir ?? defaultToolWorkdir(config);
 
-  const registry = buildToolRegistry(options.tools ?? createTools({ config, workdir }));
+  const registry = buildToolRegistry(
+    options.tools ?? createTools({ config, workdir, control: options.control }),
+  );
   const maxToolRounds = Number.isFinite(Number(config.deepseek?.maxToolRounds))
     ? Math.max(1, Math.floor(Number(config.deepseek?.maxToolRounds)))
     : DEFAULT_MAX_TOOL_ROUNDS;

@@ -162,6 +162,14 @@ export function createDaemon(options = {}) {
   // After a spoken reply the assistant stays on screen for this long, waiting
   // for a follow-up. Only a voice clearly above the microphone's noise floor
   // re-opens the conversation; quiet speech and background noise are ignored.
+  // "退下/休息/结束" means: stand down. Unlike the cancel phrases this must not
+  // cut a reply that is already being spoken; the assistant finishes talking and
+  // then leaves.
+  const dismissPhrases = (Array.isArray(config.interaction?.dismissPhrases)
+    ? config.interaction.dismissPhrases
+    : ['退下', '退下吧', '先退下', '你可以退下了', '可以退下了', '休息吧', '没事了', '结束吧', '关了']
+  ).map((value) => String(value ?? '').replace(/[\s，。！？、,.!?~～…—\-]/g, '').toLowerCase())
+    .filter((value) => value.length > 0);
   const followUpMinRms = Math.max(0.004, Number(config.interaction?.followUpMinRms ?? 0.012) || 0.012);
   const followUpMinMs = Math.max(80, Number(config.interaction?.followUpMinMs ?? 180) || 180);
   const followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
@@ -179,6 +187,7 @@ export function createDaemon(options = {}) {
   let ipc = null;
   let agent = null;
   let state = 'idle';
+  let dismissRequested = false;
   let startedAt = 0;
   let stopping = false;
   let lastError = null;
@@ -495,6 +504,30 @@ export function createDaemon(options = {}) {
     giveUpTimer.unref?.();
   }
 
+  /** Does a transcript mean "stand down"? (退下/休息/结束...) */
+  function isDismissPhrase(text) {
+    const normalized = String(text ?? '').replace(/[\s，。！？、,.!?~～…—\-]/g, '').toLowerCase();
+    if (normalized.length === 0 || normalized.length > 12) return false;
+    return dismissPhrases.some((phrase) => normalized.includes(phrase));
+  }
+
+  /**
+   * Stand down. If the assistant is currently speaking, the reply is allowed to
+   * finish first - the user asked for that explicitly - and the dismissal then
+   * happens instead of the follow-up window.
+   */
+  function requestDismiss(reason = 'dismissed') {
+    if (state === 'speaking' || ttsSpeaking) {
+      dismissRequested = true;
+      log.info(`dismiss requested (${reason}); finishing the spoken reply first`);
+      return;
+    }
+    dismissRequested = false;
+    cancelCurrent('dismissed');
+    stopCaptureForBargeIn();
+    settleTurn('dismissed');
+  }
+
   /** Does a transcript mean "stop"? (取消/算了/别说了/...) */
   function isCancelPhrase(text) {
     const normalize = (value) => String(value ?? '').replace(/[\s，。！？、,.!?~～…—\-]/g, '').toLowerCase();
@@ -519,6 +552,7 @@ export function createDaemon(options = {}) {
    */
   function settleTurn(reason) {
     wakeFlowPending = false;
+    dismissRequested = false;
     clearGiveUpTimer();
     clearFollowUpTimer();
     clearWaitingTimer();
@@ -677,6 +711,11 @@ export function createDaemon(options = {}) {
     if (isCancelPhrase(transcript)) {
       log.info(`cancel phrase heard: "${transcript}" -> idle (no LLM call)`);
       cancelTurn('cancel-phrase');
+      return;
+    }
+    if (isDismissPhrase(transcript)) {
+      log.info(`dismiss phrase heard: "${transcript}" -> stand down`);
+      requestDismiss('dismiss-phrase');
       return;
     }
     if (ackActive) {
@@ -1060,8 +1099,16 @@ export function createDaemon(options = {}) {
       // If a wake/cancel already took over during playback, it owns the state
       // machine now; do not stomp its state from this (finished) turn.
       if (turn.cancelled || state !== 'speaking') return;
+      if (dismissRequested) {
+        dismissRequested = false;
+        settleTurn('dismissed-after-reply');
+        return;
+      }
       if (followUpWindowMs > 0 && turn.fromVoice) startFollowUpWindow();
       else settleTurn('reply-done');
+    } else if (dismissRequested) {
+      dismissRequested = false;
+      settleTurn('dismissed-after-reply');
     } else if (followUpWindowMs > 0 && turn.fromVoice) {
       startFollowUpWindow();
     } else {
@@ -1537,6 +1584,9 @@ export function createDaemon(options = {}) {
       onToolEvent: handleToolEvent,
       onError: handleAgentError,
       onState: () => {},
+      // Lets the model stand down on paraphrases the deterministic phrase list
+      // does not cover ("你可以去休息了").
+      control: { dismiss: () => requestDismiss('tool') },
     });
     ipc = createIpcServer({
       socketPath,
