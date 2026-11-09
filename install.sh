@@ -35,6 +35,16 @@ if [[ -d "$repo/settings" ]]; then
     mkdir -p "$HOME/.local/share/applications"
     install -Dm644 "$repo/systemd/figaro-settings.desktop" "$HOME/.local/share/applications/figaro-settings.desktop"
     echo "   desktop entry installed"
+
+    # The brand icon is the assistant's speaking orb, rendered from the real
+    # QML (assets/icons), installed into the hicolor theme the desktop reads.
+    for size in 512 256 128 64 48 32; do
+      install -Dm644 "$repo/assets/icons/figaro-$size.png" \
+        "$HOME/.local/share/icons/hicolor/${size}x${size}/apps/figaro.png"
+    done
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+    echo "   icon installed (speaking orb, figaro.png)"
   fi
 fi
 
