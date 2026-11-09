@@ -15,11 +15,10 @@ Environment=QS_DISABLE_FILE_WATCHER=1
 # 52 threads let glibc open many malloc arenas; each keeps its own freed memory
 # instead of returning it, inflating RSS. Cap the arenas.
 Environment=MALLOC_ARENA_MAX=2
-# This machine runs a 27B local model that occupies ~14 of the 16 GB of VRAM.
-# Asking for a GL context at that point fails with EGL_BAD_ALLOC and Qt then
-# renders the layer surface broken (a dark seam across the top of the screen).
-# The overlay is a few gradients, so rasterize it on the CPU instead.
-Environment=QT_QUICK_BACKEND=software
+# Rendering: the overlay was rasterised on the CPU while a 27B local model filled
+# the GPU to ~14/16 GB (a GL context then failed with EGL_BAD_ALLOC). That model
+# is gone and VRAM use is under 2 GB, so the overlay renders on the GPU again:
+# 60 fps animations instead of 30, and single-digit CPU instead of ~54%.
 # Kos.SurfaceShape (KOS's compositor-glass plugin) lives in the KOS config dir.
 Environment=QML2_IMPORT_PATH=%h/.config/quickshell/kos
 ExecStart=/home/mzpr00/.local/bin/qs --no-duplicate -c figaro

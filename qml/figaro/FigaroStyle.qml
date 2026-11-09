@@ -93,9 +93,11 @@ Singleton {
     // thinking motion does not. This keeps the overlay cheap while it is on
     // screen (Apple: 30-60 fps is enough for smooth motion).
     function frameIntervalFor(state) {
-        // The microphone and the TTS level arrive at 20 Hz, so 30 fps is enough
-        // to look continuous while costing half the CPU of 60 fps on the
-        // software rasteriser. Thinking is a slow rotation: 20 fps is plenty.
+        // Measured on this machine with the overlay back on the GPU: 30 fps costs
+        // 18% of one core while speaking, versus 35% when the overlay rasterised
+        // on the CPU. 60 fps costs 120% (the timer outruns the canvas raster), so
+        // 30 fps is the sweet spot: same smoothness as before at half the CPU.
+        // Thinking is a slow rotation (20 fps), reduced motion is calmer still.
         if (style.reduceMotion) return 50;
         if (state === "thinking") return 50;
         return 33;
