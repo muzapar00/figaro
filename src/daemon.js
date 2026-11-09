@@ -162,8 +162,8 @@ export function createDaemon(options = {}) {
   // After a spoken reply the assistant stays on screen for this long, waiting
   // for a follow-up. Only a voice clearly above the microphone's noise floor
   // re-opens the conversation; quiet speech and background noise are ignored.
-  const followUpMinRms = Math.max(0.01, Number(config.interaction?.followUpMinRms ?? 0.10) || 0.10);
-  const followUpMinMs = Math.max(100, Number(config.interaction?.followUpMinMs ?? 250) || 250);
+  const followUpMinRms = Math.max(0.01, Number(config.interaction?.followUpMinRms ?? 0.06) || 0.06);
+  const followUpMinMs = Math.max(100, Number(config.interaction?.followUpMinMs ?? 200) || 200);
   const followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
     ? Number(config.interaction.followUpWindowMs)
     : 0;
@@ -208,6 +208,8 @@ export function createDaemon(options = {}) {
   let followUpActive = false;
   let followUpLoudMs = 0;
   let followUpLastAt = 0;
+  let followUpPeak = 0;
+  let followUpPeakAt = 0;
   let waitingTimer = null;
   // True while a wake is taking over the state machine: suppresses the transient
   // idle state that TTS.stop() would otherwise emit between speaking and waking.
@@ -565,6 +567,8 @@ export function createDaemon(options = {}) {
     followUpActive = true;
     followUpLoudMs = 0;
     followUpLastAt = Date.now();
+    followUpPeak = 0;
+    followUpPeakAt = Date.now();
     setState('waiting');
     armWaitingTimer();
     log.info(`waiting ${followUpWindowMs}ms for a follow-up (loudness gate rms>=${followUpMinRms}, ${followUpMinMs}ms)`);
@@ -595,6 +599,14 @@ export function createDaemon(options = {}) {
     const now = Date.now();
     const dt = now - followUpLastAt;
     followUpLastAt = now;
+    // Diagnostics: the peak during the window is what tells us whether the gate
+    // matches this microphone. One line per second, only while waiting.
+    followUpPeak = Math.max(followUpPeak, lastMicRms);
+    if (now - followUpPeakAt > 1000) {
+      log.info(`waiting: peak rms ${followUpPeak.toFixed(3)} (gate ${followUpMinRms}, need ${followUpMinMs}ms)`);
+      followUpPeak = lastMicRms;
+      followUpPeakAt = now;
+    }
     if (lastMicRms >= followUpMinRms) followUpLoudMs += Math.min(dt, 200);
     else followUpLoudMs = Math.max(0, followUpLoudMs - dt * 2);
     if (followUpLoudMs >= followUpMinMs) continueFromFollowUp(lastMicRms);
