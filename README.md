@@ -57,6 +57,26 @@ journalctl --user -u figaro -f          # 看日志
 最初"一直被触发"的根因）。三档灵敏度的负样本实测见 `src/voice/asr/README.md`：每档 41.8 分钟负样本下真人
 语音 0 次误触发；真实录音中的误唤醒全部是 TTS 回声，现已从根上消除。
 
+## 体检：`figaro doctor`
+
+出问题时先跑这一条，不用翻日志：
+
+```bash
+figaro doctor            # 只读体检，中文 ✓/✗/! 报告 + 末尾可复制修复命令
+figaro doctor --json     # 机器可读（给脚本/设置面板用）
+figaro doctor --fix      # 只做安全修复：重启 figaro/figaro-ui、解除 sink 静音、config chmod 600
+figaro doctor --net      # 额外做一次 DeepSeek /models 与 MiniMax 极短合成，测真实连通性（默认不联网）
+```
+
+检查 10 组，都是本机真实踩过的坑：服务（active/PID/单实例、残留 overlay 抢占）、IPC socket 握手、
+配置权限与**掩码后的**密钥、KWS/离线/流式/VAD 模型完整性（自动识别 zh-en 双语 vs legacy 中文）、
+麦克风 ALSA Capture 增益（过低/削顶/静音/底噪/parec 取流）、音频出口（tts.sink 是否存在、mute/volume、
+pw-cat）、可选网络连通性、KDE 热键绑定（kglobalshortcutsrc）、桌面能力（KOS `SurfaceShape`、
+unit 里的 `QML2_IMPORT_PATH`、`qs`/`spectacle`/`ffmpeg`）、资源（显存/overlay CPU/磁盘）。
+
+退出码：有 `✗` 时为 1（便于 `figaro doctor || systemctl --user restart figaro` 之类的脚本），
+只有 `!` 警告时为 0。密钥始终只打印掩码（如 `sk-…abcd`），任何情况下都不会输出全文。
+
 ## 设置/自测面板
 
 `qs -c figaro-settings`（或应用菜单里的「费加罗设置」）提供六个分区：

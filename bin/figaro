@@ -25,6 +25,7 @@ const USAGE = `用法:
   figaro ask "问题" [--speak] [--stream] [--no-tts] [--json] [--verbose]
   figaro say "文字"                      只朗读
   figaro status [--json]                 查看状态与健康
+  figaro doctor [--json] [--fix] [--net] 一键体检（服务/模型/麦克风/音频出口/热键/桌面/资源）
   figaro help                            显示帮助
 
 ask 默认不朗读；--speak 让守护进程同时朗读。
@@ -396,6 +397,16 @@ async function main() {
     case 'status':
       await commandStatus(flags);
       break;
+    case 'doctor': {
+      const { runDoctor } = await import('../src/doctor.js');
+      const code = await runDoctor({
+        json: flags.has('json'),
+        fix: flags.has('fix'),
+        net: flags.has('net'),
+      });
+      process.exitCode = code;
+      break;
+    }
     case 'help':
       console.log(USAGE);
       break;
