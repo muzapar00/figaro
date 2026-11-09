@@ -154,7 +154,7 @@ async function startTestDaemon(t, overrides = {}) {
 const states = (messages) => messages.filter((m) => m.type === 'state').map((m) => m.state);
 const replies = (messages) => messages.filter((m) => m.type === 'reply');
 
-test('wake → ack plays → only then beginCapture(), ending in listening', async (t) => {
+test('wake → ack starts → capture opens in parallel → listening when the ack ends', async (t) => {
   const asr = makeFakeAsr();
   const tts = makeFakeTts();
   const texts = [];
@@ -170,13 +170,17 @@ test('wake → ack plays → only then beginCapture(), ending in listening', asy
   client.send({ type: 'wake' });
   await waitFor(() => states(messages).includes('waking'), { label: 'ack waking state' });
   assert.equal(record.plays, 1, 'ack was played once');
-  assert.equal(asr.record.begin, 0, 'capture must not start while the ack plays');
+  assert.equal(asr.record.begin, 0, 'capture starts only once the ack is audible');
 
+  // The microphone opens as soon as the acknowledgement starts, so the user can
+  // speak while it is still playing (Siri does the same).
   await ack.startSettled();
+  await waitFor(() => asr.record.begin === 1, { label: 'beginCapture when the ack starts' });
+  assert.equal(asr.record.capturing, true, 'capturing while the ack is still playing');
+
   ack.finish({ ok: true, phrase: '我在', durationMs: 400 });
-  await waitFor(() => asr.record.begin === 1, { label: 'beginCapture after ack' });
-  assert.equal(states(messages).at(-1), 'listening');
-  assert.equal(asr.record.capturing, true);
+  await waitFor(() => states(messages).at(-1) === 'listening', { label: 'listening after ack' });
+  assert.equal(asr.record.begin, 1, 'capture is not restarted when the ack ends');
 });
 
 test('ack unavailable (play returns null) degrades to immediate capture', async (t) => {

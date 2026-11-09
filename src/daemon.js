@@ -202,6 +202,10 @@ export function createDaemon(options = {}) {
   let ackActive = null; // current ack playback handle
   let ackPrepared = false;
   let pendingAckFinal = ''; // transcript captured while the ack was playing
+  // Capture can begin while the acknowledgement is still playing (Siri does the
+  // same): waiting for "我在" to finish before opening the microphone added
+  // ~700ms to every wake. Ack echo is stripped from the transcript.
+  let ackCaptureStarted = false;
   let lastAckEndedAt = 0;
   let captureRetryCount = 0;
   let suppressFinalOnce = false;
@@ -566,6 +570,7 @@ export function createDaemon(options = {}) {
   function settleTurn(reason) {
     wakeFlowPending = false;
     dismissRequested = false;
+    ackCaptureStarted = false;
     clearGiveUpTimer();
     clearFollowUpTimer();
     clearWaitingTimer();
@@ -853,7 +858,7 @@ export function createDaemon(options = {}) {
       log.info(`wake (${origin}) ignored during a settings test${counted ? ' (counted as false alarm)' : ''}`);
       return;
     }
-    if (state === 'waking') {
+    if (state === 'waking' || ackActive) {
       log.info(`wake (${origin}) ignored: wake acknowledgement already playing (debounce)`);
       return;
     }
@@ -898,6 +903,13 @@ export function createDaemon(options = {}) {
     playback.started.then(() => {
       startedSeen = true;
       clearTimeout(startTimer);
+      if (ackActive !== playback || ackCaptureStarted) return;
+      // The acknowledgement is audible now, so the user can already be talking:
+      // open the microphone in parallel and let the echo stripper deal with the
+      // tail of the ack.
+      ackCaptureStarted = true;
+      log.info('wake: ack started, opening the microphone in parallel');
+      beginListeningCapture({ reason: 'ack-started', keepPendingAckFinal: true });
     }).catch(() => {});
     playback.done.then((info) => {
       clearTimeout(startTimer);
@@ -934,10 +946,20 @@ export function createDaemon(options = {}) {
     }
     const pending = pendingAckFinal;
     pendingAckFinal = '';
+    const captureAlreadyRunning = ackCaptureStarted;
+    ackCaptureStarted = false;
     if (pending.length > 0) {
       log.info(`wake: processing transcript captured during ack (${pending.length} chars)`);
       clearGiveUpTimer();
       enqueueTurn(() => processAsk({ text: pending, speak: true, fromVoice: true }, null));
+      return;
+    }
+    if (captureAlreadyRunning) {
+      // The microphone has been open since the ack began; do not restart it or
+      // the user's first words would be dropped.
+      clearGiveUpTimer();
+      armGiveUpTimer(wakeGiveUpMs, reason);
+      if (state !== 'listening') setState('listening');
       return;
     }
     beginListeningCapture({ reason });
@@ -952,8 +974,8 @@ export function createDaemon(options = {}) {
     }
   }
 
-  function beginListeningCapture({ giveUpMs = wakeGiveUpMs, reason = 'wake' } = {}) {
-    pendingAckFinal = '';
+  function beginListeningCapture({ giveUpMs = wakeGiveUpMs, reason = 'wake', keepPendingAckFinal = false } = {}) {
+    if (!keepPendingAckFinal) pendingAckFinal = '';
     setState('listening');
     beginCaptureNow();
     armGiveUpTimer(giveUpMs, reason);
