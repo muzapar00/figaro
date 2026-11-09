@@ -1,0 +1,6 @@
+node_modules/
+models/*
+!models/.gitkeep
+config/config.json
+*.log
+tmp/

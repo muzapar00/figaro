@@ -1,0 +1,109 @@
+// Figaro configuration loader.
+// Single source of truth for tunables shared by the daemon, voice modules and UI bridge.
+// Owned by the Lead: do not change the exported shape without asking.
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+export const CONFIG_DIR =
+  process.env.FIGARO_CONFIG_DIR || path.join(os.homedir(), '.config', 'figaro');
+export const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+
+export const DEFAULTS = {
+  deepseek: {
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-flash',
+    // Optional extra request body fields (e.g. effort level).
+    requestOptions: {},
+    maxToolRounds: 24,
+    temperature: 0.6,
+  },
+  minimax: {
+    baseUrl: 'https://api.minimax.cn',
+    wsUrl: 'wss://api.minimax.cn/ws/v1/t2a_v2',
+    model: 'speech-2.6-turbo',
+    voiceId: 'male-qn-jingying',
+    speed: 1.0,
+    volume: 1.0,
+    pitch: 0,
+    sampleRate: 32000,
+    format: 'pcm',
+    endpointTimeoutMs: 8000,
+  },
+  asr: {
+    // wake phrase list, matched against normalized Chinese text
+    wakeWords: ['费加罗', '菲加罗', '飞加罗', 'figaro', '费加'],
+    // sherpa-onnx streaming / offline model dirs (filled by model fetch script)
+    kwsModelDir: 'models/kws',
+    streamingModelDir: 'models/asr-stream',
+    offlineModelDir: 'models/asr-offline',
+    device: 'default',
+    // push-to-talk / capture behaviour
+    silenceStopMs: 900,
+    maxCaptureMs: 15000,
+    minCaptureMs: 350,
+    // hotkey (XDG GlobalShortcuts portal); empty => disabled
+    hotkey: 'F5',
+    longPressMs: 260,
+  },
+  tts: {
+    enabled: true,
+    // start speaking after this many sentences are buffered (1 => lowest latency)
+    minSentencesBeforeStart: 1,
+    maxBufferChars: 220,
+    bargeIn: true,
+  },
+  ui: {
+    socket: null, // resolved => $XDG_RUNTIME_DIR/figaro/sock
+  },
+  agent: {
+    // extra system prompt lines appended to the dsh-derived prompt
+    name: '费加罗',
+  },
+};
+
+function isPlainObject(v) {
+  return v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function deepMerge(base, override) {
+  if (!isPlainObject(base) || !isPlainObject(override)) {
+    return override === undefined ? base : override;
+  }
+  const out = { ...base };
+  for (const [k, v] of Object.entries(override)) {
+    out[k] = k in base ? deepMerge(base[k], v) : v;
+  }
+  return out;
+}
+
+export function loadConfigFile() {
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw new Error(`cannot read ${CONFIG_PATH}: ${err.message}`);
+  }
+}
+
+export function loadConfig() {
+  const cfg = deepMerge(DEFAULTS, loadConfigFile());
+  // Secrets may also come from the environment (preferred for CI/headless use).
+  cfg.deepseek.apiKey =
+    process.env.FIGARO_DEEPSEEK_API_KEY || cfg.deepseek.apiKey || process.env.DEEPSEEK_API_KEY || '';
+  cfg.minimax.apiKey =
+    process.env.FIGARO_MINIMAX_API_KEY || cfg.minimax.apiKey || process.env.MINIMAX_API_KEY || '';
+  cfg.ui.socket =
+    cfg.ui.socket ||
+    process.env.FIGARO_SOCKET ||
+    path.join(process.env.XDG_RUNTIME_DIR || '/tmp', 'figaro', 'sock');
+  cfg.paths = {
+    configDir: CONFIG_DIR,
+    root: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+  };
+  return cfg;
+}
+
+export default loadConfig;
