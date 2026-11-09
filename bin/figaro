@@ -380,6 +380,19 @@ async function main() {
     case 'say':
       await commandSay(flags, positional);
       break;
+    case 'settings': {
+      // Launch the macOS-style settings/self-test panel.
+      const { spawn } = await import('node:child_process');
+      const qsPath = process.env.FIGARO_QS || `${process.env.HOME}/.local/bin/qs`;
+      const child = spawn(qsPath, ['--no-duplicate', '-c', 'figaro-settings'], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, QT_QUICK_BACKEND: 'software' },
+      });
+      child.unref();
+      console.log('figaro: 设置面板已启动（应用菜单里的「费加罗设置」也可以打开）');
+      return 0;
+    }
     case 'status':
       await commandStatus(flags);
       break;
