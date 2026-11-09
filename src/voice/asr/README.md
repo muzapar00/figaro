@@ -66,19 +66,20 @@ parec ──16k mono s16le──► 常驻 KWS 关键词检测（听「费加罗
 
 | 目录 | 模型 | 体积 |
 |---|---|---|
-| `models/kws` | `sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01`（int8） | 10 MB |
+| `models/kws` | `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`（中英双语，int8 + `en.phone`） | 8.4 MB |
 | `models/asr-stream` | `sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23`（int8） | 25 MB |
 | `models/asr-offline` | `sherpa-onnx-paraformer-zh-2023-09-14`（int8） | 243 MB |
 | `models/vad` | `silero_vad.onnx` | 0.6 MB |
 
-说明：ModelScope 只镜像了 KWS 的 epoch-12 导出，GitHub release 包里有更新的
-epoch-99 导出。脚本默认 ModelScope 优先（国内快）；想让 KWS 用 epoch-99：
+KWS 模型现在是**中英双语**导出（同时含中文拼音 token 和英文 CMU 音素 token），
+唤醒词「费加罗」和 "figaro" 都能触发。下载顺序：`gh release download`（最稳，需装
+GitHub CLI）→ curl GitHub release tar（带重试/续传）→ HuggingFace 逐文件。
+旧的中文-only 3.3M 模型已被取代，如需对比可：
 
 ```bash
-FIGARO_MIRROR=github ./scripts/fetch-models.sh --force --only=kws
+FIGARO_FETCH_KWS_LEGACY=1 ./scripts/fetch-models.sh --force --only=kws
+# 装到 models/kws-legacy-zh/，默认不再使用
 ```
-
-两个导出都实测可用（见下表），模块会自动选择目录里可用的 epoch。
 
 ## 首次运行 F5：需要用户点一次「允许」
 
@@ -112,7 +113,8 @@ F5 走 XDG Desktop Portal 的 `org.freedesktop.portal.GlobalShortcuts` v2。
 
 | 配置 | 默认 | 行为 |
 |---|---|---|
-| `wakeWords` | `费加罗/菲加罗/飞加罗/figaro/费加` | 生成 KWS 关键词 + 转写后去掉开头唤醒词 |
+| `wakeWords` | `费加罗/菲加罗/飞加罗/figaro/费加` | 生成中文 KWS 关键词 + 转写后去掉开头唤醒词（`figaro` 无拼音映射会被跳过；英文由 `wakeWordsEn` 走音素） |
+| `wakeWordsEn` | `["figaro","hey figaro"]` | 英文唤醒词（中英双语 KWS 模型 + `en.phone` 音素查表；显示为 `FIGARO`/`HEY_FIGARO`） |
 | `kwsModelDir` / `streamingModelDir` / `offlineModelDir` | `models/kws` 等 | 相对仓库根目录（`config.paths.root`） |
 | `device` | `default` | `parec --device=`；`default` 表示系统默认输入 |
 | `silenceStopMs` | 900 | 说话结束后静音这么久 → 自动 `endCapture()` |
@@ -133,13 +135,28 @@ F5 走 XDG Desktop Portal 的 `org.freedesktop.portal.GlobalShortcuts` v2。
 `onLevel` 每 50 ms 音频推一次 RMS（0..1，约 20 Hz）；`onPartial` 在采集期间
 随流式识别结果更新（约 10 Hz，去重后）。
 
-## 唤醒词实现与实测
+## 唤醒词实现与实测（中英双语）
 
-KWS 模型是拼音建模单元的小 zipformer，关键词文件格式为
-`<声母/韵母 token> @<显示文本>`，例如 `f èi j iā l uó @费加罗`。
-`pinyin.js` 按 `wakeWords` 生成关键词，并额外生成**两字短前缀**
-（`费加`、`菲加`）：实测只给三字全词时该模型对孤立短句只有 3/8 命中，
-加上两字前缀后 8/8（epoch-12 与 epoch-99 都是 8/8），而误唤醒仍为 0。
+KWS 模型是中英双语 zipformer：`tokens.txt` 里同时有中文拼音 token
+（`f`/`èi`/`iā`/`uó`…）和 CMU 英文音素 token（`F`/`IH1`/`G`/`ER0`/`OW2`…），
+并附带 `en.phone` 发音词典。关键词文件格式仍是
+`<token 序列> @<显示文本>`：
+
+```
+f èi j iā l uó @费加罗          ← 中文（pinyin.js）
+F IH1 G ER0 OW2 @FIGARO        ← 英文（en.phone 查表 + 发音变体）
+```
+
+- 中文：`pinyin.js` 按 `wakeWords` 生成，并额外生成**两字短前缀**（`费加`、`菲加`）：
+  只给三字全词时模型对孤立短句只有 3/8 命中，加前缀后 8/8。
+- 英文：`english-phones.js` 用 `en.phone` 把 `figaro` 查成 `F IH1 G ER0 OW2`，
+  并附带一组**发音变体**（英文 fi-GAIR-oh / fi-GAR-oh / 意大利式 fee-GAR-oh 等，
+  实测单发音只能覆盖部分音色，6 个 FIGARO 变体 + 3 个 HEY_FIGARO 变体后
+  英文原生音色 12/12、中文口音英文 8/8）。显示文本不带空格（`HEY_FIGARO`）。
+  词典里没有的词会跳过并 warn（不编造音素）；中文唤醒词 `figaro` 谐音仍由
+  中文「费加罗/菲加罗」覆盖。
+- 因为英文多个变体同时竞争解码路径，有英文关键词时 `maxActivePaths` 提到 16
+  （4 条路径只能覆盖约 40% 英文音色，16 条覆盖 12/12）；纯中文时仍为 4。
 
 实测（本机，合成音频，见 `scripts/asr-bench.mjs`）：
 
@@ -153,8 +170,8 @@ KWS 模型是拼音建模单元的小 zipformer，关键词文件格式为
 | 模型加载 + 启动 | 约 1.2 s |
 | 常驻内存（单实例 RSS） | 约 540 MB（含 280 MB 模型 + onnxruntime） |
 
-「费加罗」是中文拼音唤醒词；配置里的 `figaro` 英文写法**无法**被该 KWS 模型
-编码（已跳过并记日志），中文发音的「费加罗」不受影响。
+「费加罗」走中文拼音 token；"figaro" 走英文 CMU 音素 token（模型自带 `en.phone`）。
+两种语言可同时唤醒，默认灵敏度 low 实测中文 8/8、英文 20/20（见下表）。
 
 ## 灵敏度、误唤醒与回声抑制
 
@@ -166,38 +183,55 @@ KWS 模型是拼音建模单元的小 zipformer，关键词文件格式为
 | `asr.wakeCooldownMs` | `2500` | 两次唤醒的最小间隔；冷却期内的 KWS 命中直接忽略（debug 日志一行）。`endCapture()` 之后也会重新起算，避免"答完立刻又醒" |
 | `asr.inputGainPercent` | `null` | `null`=自动校准；数字 = **raw ALSA 增益 0–63**（本机已知可用值 **45**）固定且不自动改。⚠️ 不是 amixer 百分比：`sset Capture 45%` 实际是 raw 28，所以 GUI 滑块请用 0–63 或按 `raw = round(% × 63 / 100)` 换算 |
 
-灵敏度实测参数（本机，KWS epoch-99 int8）：
+灵敏度实测参数（本机，中英双语 KWS `zh-en-3M-2025-12-20` int8 + `en.phone`）：
 
 | 档位 | keywordsScore | keywordsThreshold |
 |---|---|---|
-| low（默认） | 0.75 | 0.55 |
-| medium | 1.25 | 0.40 |
-| high | 1.50 | 0.25 |
+| low（默认） | 1.5 | 0.15 |
+| medium | 1.5 | 0.12 |
+| high | 2.0 | 0.10 |
 
-### 误唤醒专项实测（每档跑同一批负样本，41.8 分钟）
+> 英文需要更大的 `maxActivePaths`（有英文关键词时自动 16，纯中文 4）：6 个 FIGARO
+> 发音变体 + 3 个 HEY_FIGARO 变体同时竞争解码路径，4 条路径只能覆盖约 40% 英文音色。
 
-负样本 = 40 句近音干扰（费/非/飞/菲 + 加/家/佳/嘉 组合，如「非法加班」「费用加起来」
-「咖啡加糖」「缴费加紧办理」）+ 10 分钟连续真人语音 + 真实 mic 10 分钟 + 扬声器
-monitor 10 分钟（同一段真实使用环节的录音）。唤醒延迟按真机 100 ms 节奏回放测量。
+### 中英双语唤醒实测（`scripts/asr-bilingual-bench.mjs`，/usr/bin/node v22）
 
-| 档位 | 唤醒命中 | -12dB 静音命中 | 检测位置 | 真人语音 10min 误触发 | 近音 40 句 | TTS 回声录音 | 合计 |
+正样本：中文 8 条已提交 fixtures；英文 3 条已提交 fixtures + 20 条外部 TTS
+（6 个英文原生音色 × "Figaro"/"Hey Figaro" = 12 条，4 个中文音色说英文 8 条）。
+负样本共 **15.2 分钟**（40 句近音 + 44 句普通中文 TTS + 10 分钟真人中文语音 +
+10 条英文干扰句 + 6 段英文长段落）。
+
+| 档位 | 中文唤醒 | 英文夹具 | 英文外部 TTS | 近音 40 句 | 真人中文 10min | 英文长/短负样本 | 合计误唤醒 |
 |---|---|---|---|---|---|---|---|
-| low | 8/8 | 8/8 | 848 ms | **0** | 3 | 8 | 11 / 41.8min |
-| medium | 8/8 | 8/8 | 848 ms | **0** | 4 | 10 | 14 / 41.8min |
-| high | 8/8 | 8/8 | 848 ms | **0** | 4 | 10 | 14 / 41.8min |
+| low | **8/8** | **3/3** | **20/20** | 2 | **0** | **0** | 3 / 15.2min |
+| medium | **8/8** | **3/3** | **20/20** | 2 | **0** | **0** | 3 / 15.2min |
+| high | **8/8** | **3/3** | 19/20 | 5 | **0** | **0** | 6 / 15.2min |
 
-- 三档的唤醒延迟（模块 onWake，含 300 ms 前导静音）：min≈845 / median≈1225 / max≈2215 ms，
-  档位之间无差别（检测都发生在「费加」说完时，约 0.85 s 音频位置）。
-- 相对 high：**low 的实录音误唤醒从 14 降到 11（−21%），唤醒命中/延迟无损失**。
-- **真人语音 10 分钟：三档都是 0 次误触发** —— 说明 KWS 对普通对话/口音并不敏感。
-- 近音句（如「费用*加*起来」「咖啡*加*糖」）确实会命中两字短前缀 `费加/菲加`：low 比 high 少 1 次。
-- **真实录音里的 8~10 次"误唤醒"全部是 Figaro 自己的 TTS 被麦克风录回去**（详见下节），不是灵敏度能解决的。
+- 中文检测位置中位 **900 ms**（「费加」说完时）；英文同量级。
+- 模块 onWake 延迟（真机 100 ms 节奏回放，含 300 ms 前导静音）：
+  中文 min/median/max ≈ **862/1249/1552 ms**；英文 ≈ **843/1435/1489 ms**。
+- 3 次误唤醒中 1 次是 bench 语料里本身含「播放费加罗的咏叹调」（真唤醒，非误报）；
+  另 2 次是近音干扰句（「非加强管理」「咖啡加糖」等），命中两字短前缀 `菲加`。
+  英文 15 条负样本 / 3 分钟长段落 **0 次**误唤醒（英文词更常见但音素匹配很严）。
+- 中文近音句是两字短前缀换来的代价（只给三字全词时中文召回只有 3/8），属已知权衡；
+  真人日常对话 10 分钟 0 次。
+
+### 资源（中英双语模型，相对旧中文模型）
+
+| 版本 | 模型文件 | 启动 | 空闲 CPU | 空闲 RSS | 唤醒延迟中位 |
+|---|---|---|---|---|---|
+| 旧中文-only 3.3M | 9.7 MB | 786 ms | 7.35%（同机同条件） | ~163 MB | — |
+| 新中英双语 3M | **8.4 MB**（+ en.phone 3.3MB） | 778–1113 ms | 6.7–8.05%（同量级，无退化） | ~163–167 MB | 中 1249 / 英 1435 ms |
+
+（CPU 数字含当前机器 daemon/其它进程背景；KWS 推理本身 RTF≈0.01，双语/多路径未测出
+明显差异。）
 
 复测命令：
 
 ```bash
 node scripts/gen-wake-negative-audio.mjs     # 生成 40 句近音负样本（TTS，需 key）
-node scripts/asr-wake-sensitivity.mjs        # 三档 × (命中/静音/检测位置/各类误唤醒) 表
+node scripts/asr-wake-sensitivity.mjs        # 中文三档 × (命中/静音/检测位置/各类误唤醒) 表
+node scripts/asr-bilingual-bench.mjs         # 中英双语三档 × 命中/误唤醒/延迟/CPU/RSS 表
 ```
 
 ### 回声抑制（本次用户"一直被触发"的根因）
@@ -238,8 +272,11 @@ asr.lastFinalMs;
 - `test.wake.arm` 窗口内命中**只走 onHit/onScore，不会回调 onWake/beginCapture**（单测覆盖）。
 - `score` 是流式识别文本与唤醒词的相似度（0 / 0.33 / 0.67 / 1.0）——sherpa 的
   KWS 不暴露逐帧分数，这是 GUI 的实时反馈值，真正触发仍由 KWS 决定。
+- `armWakeTest()` 返回的 `keywords` 现在同时包含中文唤醒词和英文
+  `wakeWordsEn`；`onHit({keyword, lang})` 的 `keyword` 可能是 `费加罗/费加/菲加`
+  或 `FIGARO/HEY_FIGARO`（英文命中直接来自 KWS，GUI 显示原词即可）。
 - `sensitivity` 热切换会重建 KWS（约 0.3 s 阻塞一次），其余项即时生效；
-  `wakeWords` / `hotkey` / `silenceStopMs` 改动需重启 daemon。
+  `wakeWords` / `wakeWordsEn` / `hotkey` / `silenceStopMs` 改动需重启 daemon。
 
 ## CPU 与内存（重要）
 
@@ -256,16 +293,16 @@ FIGARO_ASR_STREAM_THREADS=1   # 默认 1
 FIGARO_ASR_OFFLINE_THREADS=1  # 默认 1（2 => 41-60ms/句，但会多 2 个线程）
 ```
 
-**内存：离线模型 233 MB 懒加载。** 启动只加载 KWS(10MB)+streaming(25MB)+VAD；
+**内存：离线模型 233 MB 懒加载。** 启动只加载 KWS(8.4MB)+streaming(25MB)+VAD；
 首次 `beginCapture()` 时在 worker 线程上异步加载离线模型（`OfflineRecognizer.createAsync`，
 约 0.58 s，与用户说话重叠，不阻塞 daemon 事件循环），`endCapture()` 里 await。
-所以「只听唤醒词、还没唤醒过」时很轻：
+所以「只听唤醒词、还没唤醒过」时很轻（中英双语模型实测 ~163–167 MB）：
 
 | 状态 | CPU（空闲） | 线程 | RSS |
 |---|---|---|---|
 | 常驻监听、未唤醒过 | **3–7%** | 7 | **~166 MB** |
 | 首次唤醒并转写过一句后 | **~0.1%** | 11 | ~570–630 MB（233MB 模型 + ORT arena 常驻） |
-| 模型加载+启动耗时 | — | — | 约 0.6 s |
+| 模型加载+启动耗时 | — | — | 约 0.8–1.1 s |
 
 （daemon 侧实测：重启后 `top` 平均 9.7%、RSS ~600 MB，之前是 **200%+**。）
 
@@ -464,7 +501,7 @@ ASR 侧向 daemon 提供 4 个交互信号，都是 addtive、旧调用方不受
 ## 测试与工具
 
 ```bash
-node --test 'tests/asr/*.test.js'   # 44 个测试，约 9 s，不需要麦克风
+node --test 'tests/asr/*.test.js'   # 93 个测试，约 30 s，不需要麦克风
 node scripts/asr-selftest.mjs       # 冒烟：唤醒/转写/不误唤醒
 node scripts/asr-bench.mjs          # 验收指标（命中率/延迟/CER/误唤醒/内存）
 node scripts/asr-bench.mjs --live=120   # 追加真实麦克风监听 120 s
@@ -473,15 +510,17 @@ node scripts/gen-test-audio.mjs     # 重新生成 tests/asr/fixtures（MiniMax 
 ```
 
 测试音频是 MiniMax TTS 合成的 16 kHz 单声道 WAV（已提交在
-`tests/asr/fixtures/`，20 条）。密钥只从 `~/.config/figaro/config.json`
+`tests/asr/fixtures/`，25 条：中文唤醒 8 + 中文干扰 7 + 采集/转写 5 +
+英文唤醒 3 + 英文干扰 2）。密钥只从 `~/.config/figaro/config.json`
 读取，绝不打印/写盘。
 
 ## 已知限制与风险
 
 1. **F5 首次需要用户点一次弹窗**（KDE 安全设计，无法代替用户点）。未确认前
    只有语音唤醒；模块不会因此崩溃。
-2. KWS 模型只支持**中文拼音**唤醒词；英文唤醒词需要换模型（如
-   `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01`）或改用 ASR 文本匹配。
+2. 英文唤醒词依赖模型自带的 `en.phone`；若换回中文-only 模型，英文词会被跳过并
+   warn（中文不受影响）。"figaro" 的非标准发音（如中国口音念成「费加罗」）由中文
+   关键词覆盖，实测 8/8；纯英文变体由 9 条音素关键词覆盖。
 3. 唤醒词含两字短前缀「费加」以保证召回；理论上以「费加…」开头的普通词可能
    误触发。13.2 分钟真实音频 + 7 条干扰句实测为 0 次；更长时间的数据集未测。
 4. 合成音频的唤醒延迟数字包含 TTS 片段的前导静音，真实用户说话时感知更快；
