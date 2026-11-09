@@ -145,27 +145,38 @@ PanelWindow {
             }
         }
 
-        // Caption: what was heard, or what is being said. One line, elided —
-        // a paragraph under the ball competes with it instead of supporting it.
-        Text {
-            id: caption
+        // Caption: what was heard, or what is being said. A translucent pill
+        // keeps it readable over bright wallpaper, and a single elided line
+        // keeps it from competing with the ball for attention.
+        Rectangle {
+            id: pill
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: orb.bottom
             anchors.topMargin: 8
-            width: Math.min(implicitWidth, 520)
-            text: FigaroIpc.partial
-            color: "#eef1ff"
-            font.pixelSize: 14
-            elide: Text.ElideRight
-            horizontalAlignment: Text.AlignHCenter
-            visible: text.length > 0
-            style: Text.Raised
-            styleColor: Qt.rgba(0, 0, 0, 0.55)
+            width: Math.min(capText.contentWidth + 28, 520)
+            height: capText.implicitHeight + 12
+            radius: height / 2
+            color: Qt.rgba(0.03, 0.04, 0.10, 0.42)
+            visible: capText.text.length > 0
             opacity: visible ? 1 : 0
             Behavior on opacity {
                 NumberAnimation {
                     duration: 160
                     easing.type: Easing.OutCubic
+                }
+            }
+
+            Text {
+                id: capText
+                width: 492
+                anchors.centerIn: parent
+                text: FigaroIpc.partial
+                color: "#eef1ff"
+                font.pixelSize: 14
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignHCenter
+                Behavior on text {
+                    enabled: false
                 }
             }
         }
