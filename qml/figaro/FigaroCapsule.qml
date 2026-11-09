@@ -50,6 +50,13 @@ Item {
     readonly property real ballScale: 1.0 - (1.0 - 0.62) * Math.max(0, Math.min(1, morphProgress))
     readonly property real ballBox: ballDiameter * ballScale
 
+    // The ball never moves: it is the anchor the pill grows out of. The pill's
+    // left edge is placed so that at progress 0 the pill *is* the ball's circle,
+    // and at progress 1 the ball sits inside its left end. This is what stops
+    // the ball and the glass from drifting apart mid-transition.
+    readonly property real ballCX: width / 2
+    readonly property real ballCY: height / 2
+
     readonly property real padH: 14
     readonly property real padV: 12
     readonly property real gap: 12
@@ -64,12 +71,16 @@ Item {
         wrapMode: Text.NoWrap
     }
 
+    readonly property real p: Math.max(0, Math.min(1, morphProgress))
     readonly property real targetTextW: Math.min(measure.implicitWidth, maxTextW)
-    readonly property real targetCapsuleW: padH * 2 + ballBox + gap + targetTextW
-    readonly property real targetCapsuleH: Math.max(ballBox + padV * 2, label.implicitHeight + padV * 2)
+    readonly property real targetBallBox: ballDiameter * 0.62
+    readonly property real targetCapsuleW: padH * 2 + targetBallBox + gap + targetTextW
+    readonly property real targetCapsuleH: Math.max(targetBallBox + padV * 2, label.implicitHeight + padV * 2)
 
-    readonly property real capsuleW: ballDiameter + (targetCapsuleW - ballDiameter) * Math.max(0, Math.min(1, morphProgress))
-    readonly property real capsuleH: ballDiameter + (targetCapsuleH - ballDiameter) * Math.max(0, Math.min(1, morphProgress))
+    readonly property real capsuleW: ballDiameter + (targetCapsuleW - ballDiameter) * p
+    readonly property real capsuleH: ballDiameter + (targetCapsuleH - ballDiameter) * p
+    readonly property real capsuleX: ballCX - padH * p - ballBox / 2
+    readonly property real capsuleY: ballCY - capsuleH / 2
 
     readonly property color tint: FigaroStyle.colorFor(visualState)
 
@@ -93,8 +104,8 @@ Item {
     readonly property real jellyScaleX: 1 + jelly * 0.035
     readonly property real jellyScaleY: 1 - jelly * 0.045
 
-    implicitWidth: 760
-    implicitHeight: 240
+    implicitWidth: 960
+    implicitHeight: 320
 
     // Declare the pill's shape to KWin's glass effect: this is the same
     // declaration the KOS dock and bar use, and it is what makes the capsule
@@ -120,7 +131,8 @@ Item {
     // the same item is the ball and the pill at once.
     Rectangle {
         id: capsule
-        anchors.centerIn: parent
+        x: shell.capsuleX
+        y: shell.capsuleY
         transform: Scale {
             origin.x: capsule.width / 2
             origin.y: capsule.height / 2
@@ -144,20 +156,12 @@ Item {
     FigaroOrb {
         id: ball
         diameter: shell.ballDiameter
-        // The ball is being pulled by the pill, so it follows a slightly softer
-        // spring: it lags a few frames behind, which reads as weight.
-        Behavior on x { SpringAnimation { spring: 2.5; damping: 0.40; mass: 1.0 } }
-        Behavior on y { SpringAnimation { spring: 2.5; damping: 0.40; mass: 1.0 } }
         state: shell.visualState
         level: shell.level
 
-        // Position by the *visible* ball centre: the canvas item is larger than
-        // the ball because it also carries the halo.
-        readonly property real centerX: capsule.x + shell.padH * shell.morphProgress + shell.ballBox / 2
-            + (1 - shell.morphProgress) * (shell.width / 2 - capsule.x - shell.padH / 2 - shell.ballBox / 2)
-        readonly property real centerY: capsule.y + capsule.height / 2
-        x: centerX - width / 2
-        y: centerY - height / 2
+        // The ball is the anchor: its centre is the shell's centre, always.
+        x: shell.ballCX - width / 2
+        y: shell.ballCY - height / 2
         scale: shell.ballScale
     }
 
@@ -171,9 +175,12 @@ Item {
         color: "#f2f4ff"
         wrapMode: Text.Wrap
         width: shell.targetTextW
-        x: capsule.x + shell.padH + shell.ballBox + shell.gap * shell.morphProgress
+        x: capsule.x + shell.padH * shell.p + shell.ballBox + shell.gap * shell.p
         y: capsule.y + (capsule.height - height) / 2
-        opacity: Math.min(1, shell.morphProgress * 1.2)
+        // Text only starts after the pill has opened: it can never be drawn on
+        // top of the ball, because both its position and its opacity follow the
+        // same progress value.
+        opacity: Math.max(0, Math.min(1, (shell.p - 0.45) / 0.4))
         horizontalAlignment: Text.AlignLeft
         Behavior on opacity { NumberAnimation { duration: FigaroStyle.textFadeMs; easing.type: Easing.OutCubic } }
         Behavior on y { NumberAnimation { duration: FigaroStyle.textSlideMs; easing.type: Easing.OutCubic } }
