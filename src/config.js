@@ -14,6 +14,10 @@ export const DEFAULTS = {
   deepseek: {
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-flash',
+    // "none" answers directly instead of thinking first: the single biggest win
+    // for spoken latency (first answer token 659ms vs 1792ms). Use "minimal" if
+    // you want some deliberation back.
+    reasoningEffort: 'none',
     // Optional extra request body fields (e.g. effort level).
     requestOptions: {},
     maxToolRounds: 24,

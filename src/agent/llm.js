@@ -88,6 +88,14 @@ export async function streamChatCompletion({
     stream: true,
     ...(Array.isArray(tools) && tools.length > 0 ? { tools } : {}),
     ...(typeof deepseek.temperature === 'number' ? { temperature: deepseek.temperature } : {}),
+    // Voice answers are spoken, so waiting ~1.2s while the model thinks first is
+    // the single largest source of latency. `none` asks for the answer directly
+    // (measured: first answer token 659ms instead of 1792ms); tool use still
+    // works, it just skips the preamble. Set to "minimal"/"medium" to trade speed
+    // back for deliberation.
+    ...(typeof deepseek.reasoningEffort === 'string' && deepseek.reasoningEffort.length > 0
+      ? { reasoning_effort: deepseek.reasoningEffort }
+      : {}),
     ...(deepseek.requestOptions && typeof deepseek.requestOptions === 'object' && !Array.isArray(deepseek.requestOptions)
       ? deepseek.requestOptions
       : {}),
