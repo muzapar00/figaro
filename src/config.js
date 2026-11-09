@@ -58,6 +58,8 @@ export const DEFAULTS = {
     wakeCooldownMs: 2500,
     // null = let the module calibrate the ALSA capture gain; a number pins it.
     inputGainPercent: null,
+    // Waking and then saying nothing for this long exits quietly.
+    wakeGiveUpMs: 5000,
     longPressMs: 260,
   },
   tts: {
@@ -76,6 +78,12 @@ export const DEFAULTS = {
     minSentencesBeforeStart: 1,
     maxBufferChars: 220,
     bargeIn: true,
+  },
+  interaction: {
+    // Saying any of these instead of a question cancels the turn.
+    cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
+    // 0 disables "keep listening after a reply" (Siri's follow-up window).
+    followUpWindowMs: 0,
   },
   ui: {
     socket: null, // resolved => $XDG_RUNTIME_DIR/figaro/sock

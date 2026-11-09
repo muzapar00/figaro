@@ -137,9 +137,13 @@ PanelWindow {
 
             MouseArea {
                 anchors.fill: parent
-                // The ball is the stop button: the one place a person already
-                // looks when they want the assistant to be quiet.
-                onClicked: FigaroIpc.cancel()
+                // One button, two meanings, exactly like Siri's orb: tap it
+                // while idle to start listening, tap it while it is busy to
+                // make it stop. The UI never queues anything either.
+                onClicked: {
+                    if (FigaroIpc.state === "idle") FigaroIpc.send({ type: "wake" });
+                    else FigaroIpc.cancel();
+                }
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
             }
