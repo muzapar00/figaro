@@ -177,8 +177,8 @@ async function startInteractionDaemon(t, overrides = {}) {
     interaction: {
       cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
       followUpWindowMs: overrides.followUpWindowMs ?? 0,
-      followUpMinRms: overrides.followUpMinRms ?? 0.10,
-      followUpMinMs: overrides.followUpMinMs ?? 250,
+      followUpMinRms: overrides.followUpMinRms ?? 0.012,
+      followUpMinMs: overrides.followUpMinMs ?? 180,
     },
   };
   const asr = overrides.asr ?? makeFakeAsr();
@@ -429,7 +429,7 @@ test('checklist 7: every cancel/error path ends idle, mic unmuted, wake word wor
 test('checklist 8: after a reply the assistant waits, ignores a quiet room, and only continues on a loud voice', async (t) => {
   const { client, messages, asr, ack, agent } = await startInteractionDaemon(t, {
     followUpWindowMs: 700,
-    followUpMinRms: 0.10,
+    followUpMinRms: 0.012,
     followUpMinMs: 120,
   });
   client.send({ type: 'wake' });
@@ -453,7 +453,7 @@ test('checklist 8: after a reply the assistant waits, ignores a quiet room, and 
 
   // A quiet room must not open the conversation again.
   for (let i = 0; i < 12; i++) {
-    asr.record.cbs.onLevel(0.03);
+    asr.record.cbs.onLevel(0.004);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   await new Promise((resolve) => setTimeout(resolve, 80));

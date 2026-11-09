@@ -162,8 +162,8 @@ export function createDaemon(options = {}) {
   // After a spoken reply the assistant stays on screen for this long, waiting
   // for a follow-up. Only a voice clearly above the microphone's noise floor
   // re-opens the conversation; quiet speech and background noise are ignored.
-  const followUpMinRms = Math.max(0.01, Number(config.interaction?.followUpMinRms ?? 0.06) || 0.06);
-  const followUpMinMs = Math.max(100, Number(config.interaction?.followUpMinMs ?? 200) || 200);
+  const followUpMinRms = Math.max(0.004, Number(config.interaction?.followUpMinRms ?? 0.012) || 0.012);
+  const followUpMinMs = Math.max(80, Number(config.interaction?.followUpMinMs ?? 180) || 180);
   const followUpWindowMs = Number.isFinite(Number(config.interaction?.followUpWindowMs)) && Number(config.interaction.followUpWindowMs) > 0
     ? Number(config.interaction.followUpWindowMs)
     : 0;
@@ -210,6 +210,11 @@ export function createDaemon(options = {}) {
   let followUpLastAt = 0;
   let followUpPeak = 0;
   let followUpPeakAt = 0;
+  // Rolling noise floor. Measured on this machine: a quiet room sits around
+  // 0.002-0.005, normal speech has a median of ~0.036 and quiet syllables reach
+  // ~0.012. The gate is the larger of the configured floor and 3x this ambient
+  // estimate, so a noisy room raises it automatically instead of misfiring.
+  let ambientEma = 0.003;
   let waitingTimer = null;
   // True while a wake is taking over the state machine: suppresses the transient
   // idle state that TTS.stop() would otherwise emit between speaking and waking.
@@ -603,11 +608,13 @@ export function createDaemon(options = {}) {
     // matches this microphone. One line per second, only while waiting.
     followUpPeak = Math.max(followUpPeak, lastMicRms);
     if (now - followUpPeakAt > 1000) {
-      log.info(`waiting: peak rms ${followUpPeak.toFixed(3)} (gate ${followUpMinRms}, need ${followUpMinMs}ms)`);
+      log.info(`waiting: peak rms ${followUpPeak.toFixed(4)} (gate ${Math.max(followUpMinRms, ambientEma * 3).toFixed(4)}, floor ${ambientEma.toFixed(4)}, need ${followUpMinMs}ms)`);
       followUpPeak = lastMicRms;
       followUpPeakAt = now;
     }
-    if (lastMicRms >= followUpMinRms) followUpLoudMs += Math.min(dt, 200);
+    if (lastMicRms < followUpMinRms) ambientEma = ambientEma * 0.98 + lastMicRms * 0.02;
+    const gate = Math.max(followUpMinRms, ambientEma * 3);
+    if (lastMicRms >= gate) followUpLoudMs += Math.min(dt, 200);
     else followUpLoudMs = Math.max(0, followUpLoudMs - dt * 2);
     if (followUpLoudMs >= followUpMinMs) continueFromFollowUp(lastMicRms);
   }

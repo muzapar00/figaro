@@ -98,8 +98,8 @@ export const DEFAULTS = {
     // a follow-up. 0 disables the window. Only a voice above followUpMinRms for
     // followUpMinMs re-opens the conversation, so room noise cannot do it.
     followUpWindowMs: 0,
-    followUpMinRms: 0.06,
-    followUpMinMs: 200,
+    followUpMinRms: 0.012,
+    followUpMinMs: 180,
   },
   ui: {
     socket: null, // resolved => $XDG_RUNTIME_DIR/figaro/sock
