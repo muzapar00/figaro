@@ -27,6 +27,17 @@ echo "== overlay -> $qs_cfg"
 mkdir -p "$qs_cfg"
 rsync -a --delete "$repo/qml/" "$qs_cfg/" --exclude test --exclude ctl.sh
 
+if [[ -d "$repo/settings" ]]; then
+  echo "== settings app -> $qs_cfg-settings"
+  mkdir -p "${qs_cfg}-settings"
+  rsync -a --delete "$repo/settings/" "${qs_cfg}-settings/" --exclude test --exclude '*.sh'
+  if [[ -f "$repo/systemd/figaro-settings.desktop" ]]; then
+    mkdir -p "$HOME/.local/share/applications"
+    install -Dm644 "$repo/systemd/figaro-settings.desktop" "$HOME/.local/share/applications/figaro-settings.desktop"
+    echo "   desktop entry installed"
+  fi
+fi
+
 echo "== systemd units"
 mkdir -p "$unit_dir"
 ln -sfn "$repo/systemd/figaro.service" "$unit_dir/figaro.service"
