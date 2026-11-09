@@ -48,9 +48,10 @@ export function createCapture(opts) {
   // "speech ended -> endCapture" latency stays around silenceStopMs.
   const vadHangoverMs = vad?.minSilenceDurationMs ?? 0;
   const effectiveSilenceMs = Math.max(120, silenceStopMs - vadHangoverMs);
-  // When the user woke us but says nothing, give them a bit more than silenceStopMs
-  // before cancelling (waking and then drawing breath is normal).
-  const initialWaitMs = Math.max(silenceStopMs, 1500);
+  // Waking and then saying nothing for wakeGiveUpMs exits quietly (Siri-style
+  // give-up). 0/negative falls back to the old conservative initial wait.
+  let wakeGiveUpMs = Number(asrCfg.wakeGiveUpMs ?? 5000);
+  if (!Number.isFinite(wakeGiveUpMs) || wakeGiveUpMs <= 0) wakeGiveUpMs = Math.max(silenceStopMs, 1500);
 
   let active = false;
   let reason = null;
@@ -137,7 +138,7 @@ export function createCapture(opts) {
       return stripWakePrefix(streamText, wakeWords).trim();
     },
     get stats() {
-      return { active, reason, postMs, audioPosMs, lastSpeechAt, speechSeen, vadKind: vad?.kind ?? 'none' };
+      return { active, reason, postMs, audioPosMs, lastSpeechAt, speechSeen, wakeGiveUpMs, vadKind: vad?.kind ?? 'none' };
     },
 
     /**
@@ -188,8 +189,8 @@ export function createCapture(opts) {
       let nextReason = null;
       if (lastSpeechAt >= 0 && audioPosMs - lastSpeechAt >= effectiveSilenceMs) {
         nextReason = 'silence';
-      } else if (lastSpeechAt < 0 && postMs >= initialWaitMs) {
-        nextReason = 'no-speech';
+      } else if (lastSpeechAt < 0 && postMs >= wakeGiveUpMs) {
+        nextReason = 'give-up';
       }
       if (!nextReason && postMs >= maxCaptureMs) nextReason = 'max-duration';
       if (nextReason) {
@@ -234,6 +235,15 @@ export function createCapture(opts) {
       const cleaned = stripWakePrefix(text, wakeWords).trim();
       const stats = { ...capture.stats, totalMs: (pcm.length / SAMPLE_RATE) * 1000, wallMs: silenceNow() - startedAt };
       return { text: cleaned, reason, stats };
+    },
+
+    /** Hot-apply config.asr.wakeGiveUpMs for the next capture. */
+    setWakeGiveUpMs(ms) {
+      const n = Number(ms);
+      wakeGiveUpMs = Number.isFinite(n) && n > 0 ? n : Math.max(silenceStopMs, 1500);
+    },
+    get wakeGiveUpMs() {
+      return wakeGiveUpMs;
     },
 
     reset() {

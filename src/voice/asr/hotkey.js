@@ -190,6 +190,7 @@ function triggerFor(hotkey) {
  * @param {object} opts
  * @param {object} opts.config full config (uses config.asr.hotkey / longPressMs)
  * @param {() => void} opts.onWake long press reached the threshold
+ * @param {() => void} [opts.onTap] short press (below longPressMs) -> cancel, no capture
  * @param {() => void} [opts.onEnd] released after a long press -> endCapture()
  * @param {(err: Error) => void} [opts.onError] non-fatal problem (also used for "需要用户确认")
  * @param {(msg: string) => void} [opts.onLog] verbose progress log
@@ -203,6 +204,7 @@ export function createHotkey(opts) {
   const {
     config,
     onWake = () => {},
+    onTap = () => {},
     onEnd = () => {},
     onError = () => {},
     onLog = () => {},
@@ -242,7 +244,10 @@ export function createHotkey(opts) {
       try { onEnd(); } catch (err) { onError(err instanceof Error ? err : new Error(String(err))); }
     },
     onTap: ({ heldMs }) => {
-      onLog(`short tap ${Math.round(heldMs)}ms (< ${longPressMs}ms) ignored`);
+      // Siri-style "tap to shut up": a short press is a cancel signal, never a
+      // wake (it must not start a capture).
+      onLog(`short tap ${Math.round(heldMs)}ms (< ${longPressMs}ms) -> onTap（取消）`);
+      try { onTap(); } catch (err) { onError(err instanceof Error ? err : new Error(String(err))); }
     },
   });
 

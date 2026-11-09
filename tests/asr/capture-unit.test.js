@@ -107,17 +107,41 @@ test('capture: maxCaptureMs bounds a never-ending utterance', async () => {
   assert.deepEqual(autoEnds, ['max-duration']);
 });
 
-test('capture: no speech at all cancels after the initial wait', async () => {
-  const { capture, autoEnds } = makeCapture({ silenceStopMs: 800 });
+test('capture: no speech at all gives up after wakeGiveUpMs', async () => {
+  const { capture, autoEnds } = makeCapture({ silenceStopMs: 800, wakeGiveUpMs: 1500 });
   capture.begin(new Float32Array(0));
   let res = null;
   for (let i = 0; i < 30 && !res?.autoEnd; i++) res = capture.push(zeros(100));
   assert.ok(res?.autoEnd, 'silence-only capture must auto end');
-  // initialWaitMs = max(silenceStopMs, 1500) = 1500 ms
-  assert.equal(res.reason, 'no-speech');
-  assert.deepEqual(autoEnds, ['no-speech']);
-  const out = await capture.end('no-speech');
+  assert.equal(res.reason, 'give-up');
+  assert.deepEqual(autoEnds, ['give-up']);
+  const out = await capture.end('give-up');
   assert.equal(out.text, '', 'no speech -> empty transcript');
+});
+
+test('capture: give-up window defaults to 5000ms and does not clash with maxCaptureMs', async () => {
+  const { capture, autoEnds } = makeCapture({ wakeGiveUpMs: 5000, maxCaptureMs: 15000, silenceStopMs: 900 });
+  capture.begin(new Float32Array(0));
+  let endedAt = null;
+  for (let i = 0; i < 80; i++) {
+    const res = capture.push(zeros(100));
+    if (res.autoEnd) { endedAt = capture.stats.postMs; break; }
+  }
+  assert.ok(endedAt !== null, 'give-up must fire');
+  assert.ok(endedAt >= 4900 && endedAt <= 5200, `give-up at ${endedAt}ms (expected ~5000)`);
+  assert.deepEqual(autoEnds, ['give-up']);
+});
+
+test('capture: speech onset cancels the give-up timer', async () => {
+  const { capture, autoEnds } = makeCapture({ wakeGiveUpMs: 1000, silenceStopMs: 800 });
+  capture.begin(new Float32Array(0));
+  let res = null;
+  for (let i = 0; i < 5; i++) res = capture.push(tone(100));
+  assert.ok(!res.autoEnd, 'speech onset must prevent give-up');
+  // after speech, only silenceStopMs applies
+  for (let i = 0; i < 10 && !res?.autoEnd; i++) res = capture.push(zeros(100));
+  assert.equal(res?.reason, 'silence');
+  assert.deepEqual(autoEnds, ['silence']);
 });
 
 test('capture: below minCaptureMs is discarded as empty', async () => {

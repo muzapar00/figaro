@@ -112,8 +112,13 @@ export function createAsr(opts) {
     onVadStart = () => {},
     onError = () => {},
     onLog = () => {},
+    // docs/voice-interaction.md interaction signals
+    onTap = () => {},
+    onGiveUp = null,
+    onUserSpeech = () => {},
     source,
     hotkey: hotkeyOption,
+    hotkeyConnectFn,
     micGain: micGainOption,
   } = opts ?? {};
   if (!config) throw new TypeError('createAsr: config is required');
@@ -150,6 +155,14 @@ export function createAsr(opts) {
   let lastPeak = 0;
   let lastFinalMs = null;
   let muted = false;
+  let wakeGiveUpMs = Number(asrCfg.wakeGiveUpMs ?? 5000);
+  if (!Number.isFinite(wakeGiveUpMs) || wakeGiveUpMs < 0) wakeGiveUpMs = 5000;
+  // (muted) barge-in detection: light VAD on the live stream while TTS plays
+  const BARGE_IN_MIN_SPEECH_MS = 250;
+  const BARGE_IN_COOLDOWN_MS = 1000;
+  const bargeRemainder = { buf: new Float32Array(0) };
+  let bargeSpeechMs = 0;
+  let bargeLastFireAt = 0;
   const wakeScoreTracker = createWakeScoreTracker({ wakeWords: asrCfg.wakeWords ?? [] });
 
   // GUI self-test state (docs/ipc.md §3.1)
@@ -312,6 +325,58 @@ export function createAsr(opts) {
   // ==========================================================================
   // GUI self-test channels (docs/ipc.md §3.1) + runtime config
   // ==========================================================================
+
+  /**
+   * While muted (TTS playing) we still watch the microphone for a human voice
+   * onset so the daemon can do Siri-style barge-in. Only the onUserSpeech signal
+   * is emitted — no wake word, no capture.
+   */
+  function runBargeInVad(samples) {
+    if (!muted || state !== 'listening' || !vad) return;
+    const windowSize = vad.windowSize ?? 512;
+    let buf;
+    if (bargeRemainder.buf.length) {
+      buf = new Float32Array(bargeRemainder.buf.length + samples.length);
+      buf.set(bargeRemainder.buf, 0);
+      buf.set(samples, bargeRemainder.buf.length);
+    } else {
+      buf = samples;
+    }
+    let off = 0;
+    let consumed = 0;
+    while (off + windowSize <= buf.length) {
+      const win = buf.subarray(off, off + windowSize);
+      let detected = false;
+      try {
+        detected = vad.process(win);
+      } catch { detected = false; }
+      consumed = off + windowSize;
+      if (detected) {
+        bargeSpeechMs += (windowSize / SAMPLE_RATE) * 1000;
+      } else {
+        bargeSpeechMs = 0;
+      }
+      if (bargeSpeechMs >= BARGE_IN_MIN_SPEECH_MS) {
+        bargeSpeechMs = 0;
+        const now = Date.now();
+        if (now - bargeLastFireAt >= BARGE_IN_COOLDOWN_MS) {
+          bargeLastFireAt = now;
+          log(`检测到插话人声（muted 中），onUserSpeech()`);
+          safe(onUserSpeech);
+        }
+        // drain the rest of this buffer without re-triggering
+        break;
+      }
+      off += windowSize;
+    }
+    bargeRemainder.buf = buf.slice(consumed);
+  }
+
+  function resetBargeIn() {
+    bargeSpeechMs = 0;
+    bargeRemainder.buf = new Float32Array(0);
+    try { vad?.reset(); } catch { /* ignore */ }
+  }
 
   function feedMicTest(rms, peak) {
     if (!micTest) return;
@@ -566,6 +631,12 @@ export function createAsr(opts) {
         wakeCooldownMs = Math.max(0, Number(patch.wakeCooldownMs) || 0);
         applied.push(key);
         log(`唤醒冷却时间已热切换为 ${wakeCooldownMs}ms`);
+      } else if (key === 'wakeGiveUpMs') {
+        const n = Number(patch.wakeGiveUpMs);
+        wakeGiveUpMs = Number.isFinite(n) && n > 0 ? n : 5000;
+        if (capture && typeof capture.setWakeGiveUpMs === 'function') capture.setWakeGiveUpMs(wakeGiveUpMs);
+        applied.push(key);
+        log(`唤醒 give-up 时间已热切换为 ${wakeGiveUpMs}ms`);
       } else if (key === 'inputGainPercent') {
         void setInputGainPercent(patch.inputGainPercent);
         applied.push(key);
@@ -587,6 +658,11 @@ export function createAsr(opts) {
       safe(onLevel, Math.max(0, Math.min(1, rms)));
     });
     pushPreRoll(samples);
+    if (state === 'listening' && muted) {
+      // Echo suppression (TTS playing): no wake word, no capture — only barge-in.
+      runBargeInVad(samples);
+      return;
+    }
     if (state === 'listening') {
       if (!kws) return;
       let hit = null;
@@ -673,6 +749,7 @@ export function createAsr(opts) {
     const next = Boolean(value);
     if (next !== muted) log(`唤醒监听${next ? '已暂停（回声抑制：TTS 播放中）' : '已恢复'}`);
     muted = next;
+    resetBargeIn();
     return muted;
   }
 
@@ -716,6 +793,7 @@ export function createAsr(opts) {
     if (wakeFallbackTimer) { clearTimeout(wakeFallbackTimer); wakeFallbackTimer = null; }
     state = 'capturing';
     lastAudioAt = Date.now();
+    if (typeof capture.setWakeGiveUpMs === 'function') capture.setWakeGiveUpMs(wakeGiveUpMs);
     capture.begin(preRollPcm());
     startTick();
     log('beginCapture');
@@ -744,6 +822,13 @@ export function createAsr(opts) {
       lastWakeAt = Date.now(); // reply TTS follows; keep KWS quiet for wakeCooldownMs
       if (kws) { try { kws.reset(); } catch { /* ignore */ } }
       if (state !== 'stopped') state = 'listening';
+      if (result.reason === 'give-up' && typeof onGiveUp === 'function') {
+        // Siri-style: the user woke us and said nothing -> quiet idle, no final
+        // (daemon can distinguish "no speech" from "empty command").
+        log('endCapture(give-up) -> onGiveUp()（唤醒后未检测到语音）');
+        safe(onGiveUp);
+        return;
+      }
       log(`endCapture(${result.reason}) -> onFinal(${JSON.stringify(result.text)})`);
       safe(onFinal, result.text ?? '');
     })()
@@ -933,9 +1018,14 @@ export function createAsr(opts) {
           hotkeyInst = createHotkey({
             config,
             onWake: () => handleWake('hotkey'),
+            onTap: () => {
+              log('热键短按（tap）-> onTap（取消，不采集）');
+              safe(onTap);
+            },
             onEnd: () => endCapture('hotkey-release'),
             onError: (err) => emitError(err),
             onLog: log,
+            connectFn: typeof hotkeyConnectFn === 'function' ? hotkeyConnectFn : undefined,
           });
         }
         try {
@@ -995,12 +1085,16 @@ export function createAsr(opts) {
     resumeListening: () => setMuted(false),
     setSensitivity: (name) => applyRuntimeConfig({ sensitivity: name }),
     setWakeCooldownMs: (ms) => applyRuntimeConfig({ wakeCooldownMs: ms }),
+    setWakeGiveUpMs: (ms) => applyRuntimeConfig({ wakeGiveUpMs: ms }),
     setInputGainPercent: (value) => setInputGainPercent(value),
     get sensitivity() {
       return sensitivity;
     },
     get wakeCooldownMs() {
       return wakeCooldownMs;
+    },
+    get wakeGiveUpMs() {
+      return wakeGiveUpMs;
     },
     get inputGainPercent() {
       return inputGainSetting;
@@ -1036,6 +1130,7 @@ export function createAsr(opts) {
         sensitivity,
         kwsParams: sensitivityPreset(sensitivity),
         wakeCooldownMs,
+        wakeGiveUpMs,
         inputGainPercent: inputGainSetting,
         lastFinalMs,
         offlineLoaded: Boolean(offline),

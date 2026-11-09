@@ -375,6 +375,29 @@ FIGARO_ASR_OFFLINE_THREADS=1  # 默认 1（2 => 41-60ms/句，但会多 2 个线
 - 不换更大模型（FireRedASR 等 1–2 GB、CPU RTF 高）在“桌面语音助手 + 噪声通道”
   场景收益不抵成本。
 
+## 交互信号（docs/voice-interaction.md，方案 A 已实现）
+
+ASR 侧向 daemon 提供 4 个交互信号，都是 addtive、旧调用方不受影响：
+
+1. **热键短按 = 取消（Siri 点一下让它闭嘴）**
+   `createAsr({ onTap })`：热键按下后**未达** `longPressMs`(260) 就松开 → `onTap()`，
+   **不会**唤醒、不会开始采集；长按（≥`longPressMs`）仍是 `onWake()` + `beginCapture()`，
+   松开 → `endCapture()`。tap 时若已有采集在跑，模块**不会自己结束它**（是否取消由 daemon 决定）。
+2. **唤醒后 give-up（沉默退出）**
+   `beginCapture()` 之后 `wakeGiveUpMs`（默认 5000）内 VAD 没检测到语音起点 →
+   模块自动 `endCapture('give-up')`；传了 `onGiveUp` 时**只回调 `onGiveUp()`、不发 `onFinal`**，
+   没传时保持旧行为（`onFinal('')`）。有语音则走正常 `silenceStopMs` 路径，二者不冲突；
+   超过 `maxCaptureMs` 仍照常截断 finalize。`wakeGiveUpMs` 支持 `applyRuntimeConfig` /
+   `setWakeGiveUpMs()` 热改。
+3. **muted 期间插话检测（barge-in）**
+   `setMuted(true)`（TTS/ack 播放中）只暂停唤醒词：不跑 KWS、不会唤醒、不会开始转写，
+   但仍跑电平与轻量 Silero VAD；连续人声 ≥250 ms → `onUserSpeech()`（1 秒冷却，只发信号）。
+   daemon 收到即可实现"播放中说话 → 停 TTS → ack → listening"。
+4. `wakeGiveUpMs` 与既有 `sensitivity / wakeCooldownMs / inputGainPercent` 一样可热改：
+   `applyRuntimeConfig({ wakeGiveUpMs })` → `{applied:['wakeGiveUpMs'], restartRequired:[]}`。
+
+新增回调：`createAsr({ onTap, onGiveUp, onUserSpeech })`（都可选，不传则行为与旧版一致）。
+
 ## 测试与工具
 
 ```bash

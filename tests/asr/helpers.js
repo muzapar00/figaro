@@ -90,7 +90,9 @@ export function makeConfig(overrides = {}) {
   const asr = { ...DEFAULTS.asr, ...(config.asr ?? {}) };
   // Tests never touch the user's portal/mixer and use the immediate-capture
   // behaviour (wakeCaptureFallbackMs is a daemon-side ack option).
-  config.asr = { ...asr, hotkey: '', wakeCaptureFallbackMs: 0, ...(overrides.asr ?? {}) };
+  // wakeGiveUpMs shortened for test speed (production default is 5000; the
+  // dedicated give-up tests override it explicitly).
+  config.asr = { ...asr, hotkey: '', wakeCaptureFallbackMs: 0, wakeGiveUpMs: 1500, ...(overrides.asr ?? {}) };
   return config;
 }
 
