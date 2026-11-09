@@ -43,8 +43,10 @@ export const DEFAULTS = {
     silenceStopMs: 900,
     maxCaptureMs: 15000,
     minCaptureMs: 350,
-    // hotkey (XDG GlobalShortcuts portal); empty => disabled
-    hotkey: 'F5',
+    // Push-to-talk key (XDG GlobalShortcuts portal); empty => disabled.
+    // Not F5: that is refresh in every browser and IDE, and a global grab on it
+    // fights the applications.
+    hotkey: 'F9',
     // When > 0, the ASR waits this long for the daemon to start capture after a
     // wake (the daemon plays its acknowledgement first), then starts it anyway.
     wakeCaptureFallbackMs: 0,
