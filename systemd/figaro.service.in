@@ -1,18 +1,32 @@
 [Unit]
 Description=Figaro voice assistant daemon (DeepSeek brain + local voice IO)
 Documentation=file://@REPO@/docs/ipc.md
-After=default.target
+# The daemon owns a PipeWire microphone stream and a portal-backed global
+# shortcut, both of which belong to the graphical session. Without this it
+# survived logout holding the old session's devices, so the next login looked
+# like "Figaro did not start": the overlay came back, the microphone and the
+# F9 hotkey did not.
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=@NODE@ @REPO@/bin/figaro daemon
 WorkingDirectory=@REPO@
 Environment=HOME=@HOME@
-Environment=XDG_RUNTIME_DIR=/run/user/1000
+# %t is the per-user runtime dir; a hard-coded /run/user/1000 breaks every other account.
+Environment=XDG_RUNTIME_DIR=%t
 Environment=PATH=@NODE_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
 # A missing or broken voice module degrades to text; it is not a crash loop.
 Restart=on-failure
 RestartSec=3
+# PipeWire and the portal are ready a few seconds after login. Starting before
+# them makes the global shortcut report "portal CreateSession timeout", so wait
+# for the microphone device and for the GlobalShortcuts backend to answer
+# (asking for its version is the cheapest real response test). Bounded to 40s;
+# after that the daemon starts anyway and its own retry loop takes over.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 200); do [ -S "${XDG_RUNTIME_DIR}/pipewire-0" ] && busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.DBus.Properties Get ss org.freedesktop.portal.GlobalShortcuts version >/dev/null 2>&1 && exit 0; sleep 0.2; done; exit 0'
 KillMode=mixed
 TimeoutStopSec=10
 SyslogIdentifier=figaro
@@ -20,4 +34,7 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
+# default.target keeps it available for text use after login; the graphical
+# target link is what actually brings it back after a logout/login cycle.
 WantedBy=default.target
+WantedBy=graphical-session.target

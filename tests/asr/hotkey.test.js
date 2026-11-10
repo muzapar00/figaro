@@ -345,3 +345,84 @@ test('hotkey module: bind cancel retries twice (dialog needs a user click) then 
     await hotkey.stop();
   }
 });
+
+test('hotkey module: a slow portal (CreateSession timeout) is retried, not given up on', async () => {
+  // After a logout/login the unit starts before xdg-desktop-portal answers.
+  // The old code degraded to "unavailable" for the whole session; a retry must
+  // recover as soon as the portal wakes up.
+  let createAttempts = 0;
+  const handlers = [];
+  const calls = [];
+  const emit = (iface, member, sigPath, args) => {
+    for (const h of [...handlers]) {
+      if (h.interface !== iface || h.member !== member) continue;
+      h.fn({ path: sigPath, sender: ':1.1', args });
+    }
+  };
+  const sessionHandle = '/org/freedesktop/portal/desktop/session/1_4242/figaro1';
+  const shortcuts = [['shortcuts', {
+    signature: 'a(sa{sv})',
+    value: [[SHORTCUT_ID, [
+      ['description', { signature: 's', value: '按住说话' }],
+      ['trigger_description', { signature: 's', value: 'F5' }],
+    ]]],
+  }]];
+  const conn = {
+    uniqueName: ':1.4242',
+    closed: false,
+    onSignal({ interface: iface, member }, fn) {
+      const h = { interface: iface, member, fn };
+      handlers.push(h);
+      return () => {
+        const i = handlers.indexOf(h);
+        if (i >= 0) handlers.splice(i, 1);
+      };
+    },
+    async addMatch() {},
+    async call(opts) {
+      calls.push(opts.member);
+      if (opts.member === 'Register') return [];
+      if (opts.member === 'CreateSession') {
+        createAttempts += 1;
+        const reqPath = `/req/create${createAttempts}`;
+        if (createAttempts === 1) return [reqPath]; // portal never answers -> timeout
+        setImmediate(() => emit('org.freedesktop.portal.Request', 'Response', reqPath, [
+          0,
+          [['session_handle', { signature: 's', value: sessionHandle }]],
+        ]));
+        return [reqPath];
+      }
+      if (opts.member === 'BindShortcuts') {
+        const reqPath = '/req/bind1';
+        setImmediate(() => emit('org.freedesktop.portal.Request', 'Response', reqPath, [0, shortcuts]));
+        return [reqPath];
+      }
+      if (opts.member === 'ListShortcuts') return ['/req/list'];
+      throw new Error('unexpected portal call: ' + opts.member);
+    },
+    close() { this.closed = true; },
+  };
+  const errors = [];
+  const logs = [];
+  const hotkey = createHotkey({
+    config: { asr: { hotkey: 'F5', longPressMs: 50 } },
+    onWake: () => {},
+    onError: (err) => errors.push(err.message),
+    onLog: (m) => logs.push(m),
+    connectFn: async () => conn,
+    bindTimeoutMs: 0,
+    sessionTimeoutMs: 40,
+    sessionRetryDelaysMs: [30],
+  });
+  try {
+    await hotkey.start();
+    const t0 = Date.now();
+    while (hotkey.state !== 'bound' && Date.now() - t0 < 3000) await sleep(10);
+    assert.equal(createAttempts, 2, 'the timed-out CreateSession was attempted again');
+    assert.equal(hotkey.state, 'bound');
+    assert.ok(errors.some((line) => /后重试/.test(line)), 'the retry is surfaced to the UI');
+    assert.ok(errors.some((line) => /超时/.test(line)), 'the timeout is still reported to the UI');
+  } finally {
+    await hotkey.stop();
+  }
+});

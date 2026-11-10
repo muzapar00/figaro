@@ -199,6 +199,10 @@ function triggerFor(hotkey) {
  * @param {number} [opts.bindTimeoutMs] 0 = wait forever for the user's dialog
  * @param {number} [opts.recheckIntervalMs] ListShortcuts poll while not bound (default 10000)
  * @param {number} [opts.maxBindRetries] transient D-Bus bind failures to retry (default 2)
+ * @param {number} [opts.sessionTimeoutMs] CreateSession/BindShortcuts response wait (default 15000)
+ * @param {number[]} [opts.sessionRetryDelaysMs] delays before retrying a slow portal session
+ * @param {number} [opts.sessionRecheckDelayMs] after giving up, how often to try again (0 = never)
+ * @param {number} [opts.maxSessionRechecks] upper bound of those periodic attempts
  */
 export function createHotkey(opts) {
   const {
@@ -215,6 +219,15 @@ export function createHotkey(opts) {
     maxBindRetries = 2,
     maxCancelRetries = 2,
     cancelRetryDelayMs = 30000,
+    // A logout/login cycle starts this unit before xdg-desktop-portal and the
+    // KDE shortcut backend are ready: CreateSession then times out. The old code
+    // gave up after 16s, so the hotkey stayed dead for the whole session even
+    // though the portal recovered a few seconds later. Keep trying for ~50s,
+    // then re-check periodically so a slow login heals itself.
+    sessionTimeoutMs = 15000,
+    sessionRetryDelaysMs = [2000, 3000, 5000, 8000, 12000, 20000],
+    sessionRecheckDelayMs = 60000,
+    maxSessionRechecks = 10,
     longPressMs: longPressOverride,
   } = opts;
   const asrCfg = config?.asr ?? {};
@@ -230,6 +243,9 @@ export function createHotkey(opts) {
   let retryTimer = null;
   let bindRetries = 0;
   let cancelRetries = 0;
+  let sessionRetries = 0;
+  let sessionRecheckTimer = null;
+  let sessionRecheckCount = 0;
   let recheckInFlight = false;
   let seq = 0;
 
@@ -293,6 +309,8 @@ export function createHotkey(opts) {
 
   function stopRecheck() {
     if (recheckTimer) { clearInterval(recheckTimer); recheckTimer = null; }
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    if (sessionRecheckTimer) { clearTimeout(sessionRecheckTimer); sessionRecheckTimer = null; }
   }
 
   /**
@@ -352,21 +370,21 @@ export function createHotkey(opts) {
         member: 'CreateSession',
         signature: 'a{sv}',
         body: [{ handle_token: variant('s', token), session_handle_token: variant('s', token) }],
-        timeoutMs: 15000,
+        timeoutMs: sessionTimeoutMs,
       });
-      const response = await waitResponse(reply[0], 15000);
+      const response = await waitResponse(reply[0], sessionTimeoutMs);
       if (!response) {
-        fail('portal CreateSession 超时（xdg-desktop-portal 未响应），F5 长按暂不可用', { code: 'HOTKEY_SESSION_TIMEOUT' }, { recoverable: true });
+        retrySession('portal CreateSession 超时（xdg-desktop-portal 未就绪）', 'HOTKEY_SESSION_TIMEOUT');
         return;
       }
       const [code, rawResults] = response;
       if (code !== 0) {
-        fail(`portal CreateSession 被拒绝 (code=${code})，F5 长按暂不可用`, { code: 'HOTKEY_SESSION_DENIED' }, { recoverable: true });
+        retrySession(`portal CreateSession 被拒绝 (code=${code})`, 'HOTKEY_SESSION_DENIED');
         return;
       }
       session = dictToObject(rawResults).session_handle;
       if (!session) {
-        fail('portal CreateSession 未返回 session handle，F5 长按暂不可用', { code: 'HOTKEY_SESSION_EMPTY' }, { recoverable: true });
+        retrySession('portal CreateSession 未返回 session handle', 'HOTKEY_SESSION_EMPTY');
         return;
       }
       sessionPath = session;
@@ -451,6 +469,43 @@ export function createHotkey(opts) {
     setState('denied');
     onLog('portal 返回成功但未包含 figaro-talk，继续轮询绑定状态…');
     startRecheck();
+  }
+
+  /** Retry a portal session that is not ready yet (login race). */
+  function retrySession(message, code) {
+    if (stopped) return;
+    sessionRetries += 1;
+    if (sessionRetries > sessionRetryDelaysMs.length) {
+      fail(`${message}（已重试 ${sessionRetryDelaysMs.length} 次，F5 长按暂不可用；语音唤醒仍可用，稍后会自动再试）`, { code }, { recoverable: true });
+      scheduleSessionRecheck();
+      return;
+    }
+    const delay = Math.max(0, Number(sessionRetryDelaysMs[sessionRetries - 1]) || 0);
+    const err = new Error(`${message}；${Math.round(delay / 1000)}s 后重试（${sessionRetries}/${sessionRetryDelaysMs.length}）`);
+    err.code = code;
+    setState('unavailable');
+    try { onError(err); } catch { /* ignore */ }
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void createSessionAndBind();
+    }, delay);
+    retryTimer.unref?.();
+  }
+
+  /** After the retry burst is exhausted, keep a slow periodic attempt running. */
+  function scheduleSessionRecheck() {
+    if (stopped || sessionRecheckTimer || sessionRecheckDelayMs <= 0) return;
+    if (sessionRecheckCount >= maxSessionRechecks) return;
+    sessionRecheckTimer = setTimeout(() => {
+      sessionRecheckTimer = null;
+      sessionRecheckCount += 1;
+      if (stopped || state === 'bound') return;
+      sessionRetries = 0;
+      onLog(`portal 快捷键恢复巡检（${sessionRecheckCount}/${maxSessionRechecks}）：重新尝试创建会话`);
+      void createSessionAndBind();
+    }, sessionRecheckDelayMs);
+    sessionRecheckTimer.unref?.();
   }
 
   function retryBind(message, code) {

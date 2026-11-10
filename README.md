@@ -189,7 +189,8 @@ floor, audio sink and mute state, hotkey binding, the KWin glass plugin, VRAM/CP
 | No sound | `tts.sink` points at a muted or unconnected sink; `figaro doctor` names it, or pick the output device in settings. The daemon and the earcons share one sink |
 | Wake word does nothing | try `medium/high` sensitivity; check `asr.inputGainPercent` against the live level in `figaro doctor`; make sure the KWS model is downloaded |
 | False wakes from TV or music | enable `asr.verifyWake.enabled` (near-homophone false wakes 2/40 → 0/40, at +600 ms per wake) |
-| F9 does not work | as a systemd user service the XDG portal often cannot resolve the app id. Most reliable: KDE System Settings → Shortcuts → add the command `figaro talk`, bind F9 |
+| F9 does not work | the portal is still starting, or the session predates the login. The daemon retries for ~50 s and then re-checks every minute, so give it a moment or restart `figaro`. If it never binds, the portal cannot resolve the app id: KDE System Settings → Shortcuts → add the command `figaro talk`, bind F9 |
+| Nothing happens after logging out and back in | expected for a couple of seconds: the units follow `graphical-session.target`, so the daemon stops on logout and comes back once PipeWire and the portal are ready (≈3–10 s). `systemctl --user status figaro figaro-ui`, then `systemctl --user restart figaro figaro-ui` if it is still down |
 | It ignores "退下" | check `interaction.dismissPhrases`; it deliberately finishes the current reply before leaving |
 | No sound after plugging in headphones | change `tts.sink` or set it empty (system default); the settings app can switch it live |
 

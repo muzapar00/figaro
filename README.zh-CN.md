@@ -181,6 +181,7 @@ flowchart LR
 | 症状 | 处理 |
 |---|---|
 | 没声音 | `tts.sink` 指向了被静音/接不到喇叭的 sink；`figaro doctor` 会指出来，或设置里换输出设备。注意：daemon 和音效用同一个 sink |
+| 注销再登录后没反应 | 正常要等 3–10 秒：两个服务都跟着图形会话走，注销时停、登录后等 PipeWire 和 portal 就绪再起。先 `systemctl --user status figaro figaro-ui`，还没起来就 `systemctl --user restart figaro figaro-ui` |
 | 喊了没反应 | 灵敏度调到 `medium/high`；检查 `asr.inputGainPercent` 与 `figaro doctor` 里的实时电平；确认 KWS 模型已下载 |
 | 经常被电视/音乐误唤醒 | 打开 `asr.verifyWake.enabled`（近音误唤醒 2/40 → 0/40，代价每次唤醒多约 600ms） |
 | F9 用不了 | daemon 作为 systemd 用户服务时 XDG portal 常拿不到 app id。最稳做法：KDE 系统设置 → 快捷键 → 添加命令 `figaro talk`，绑 F9 |
