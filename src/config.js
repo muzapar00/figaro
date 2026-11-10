@@ -93,6 +93,11 @@ export const DEFAULTS = {
       phrases: ['我在', '在的', '你好', '嘿', '有何贵干', '来了', '听着呢', '请讲', '久等了', '你说'],
       avoidRepeat: true,
       synthConcurrency: 3,
+      // MiniMax allows 20 RPM. When pre-synthesis at startup hits the limit the
+      // phrase is retried after these delays, and a limited batch gets a later
+      // background pass instead of staying unavailable until a restart.
+      rateLimitRetryMs: [4000, 12000],
+      reviveDelayMs: 30000,
       timeoutMs: 800,
     },
     // start speaking after this many sentences are buffered (1 => lowest latency)

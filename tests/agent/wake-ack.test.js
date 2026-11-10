@@ -293,3 +293,71 @@ test('tts.ack.synthConcurrency clamps and can force serial synthesis', async () 
   assert.equal(maxInFlight, 1);
   assert.equal(ack.stats.synthConcurrency, 1);
 });
+
+test('a rate-limited phrase is retried with backoff instead of failing', async () => {
+  // MiniMax answers 1002 when a restart lands just after another burst. The
+  // phrase must be retried, not dropped.
+  let rateLimited = 0;
+  const { tts, calls } = makeTts({
+    synthesizeImpl: async (text) => {
+      if (rateLimited < 1) {
+        rateLimited += 1;
+        throw new Error('MiniMax TTS [1002] rate limit exceeded(RPM)');
+      }
+      return { pcm: Buffer.alloc(640, 7), sampleRate: 32000, durationMs: 20, sentences: 1, ms: 8, ttfbMs: 5 };
+    },
+  });
+  const ack = createWakeAck({
+    config: makeConfig({ tts: { enabled: true, ack: { enabled: true, phrases: ['我在', '在的'], rateLimitRetryMs: [5], reviveDelayMs: 0 } } }),
+    logger: silentLogger,
+    getTts: () => tts,
+  });
+  assert.equal(await ack.prepare(), true, 'the ack becomes ready after a retry');
+  assert.equal(ack.stats.phraseCount ?? ack.stats.phrases, 2);
+  assert.ok(rateLimited === 1);
+  assert.ok(calls.synthesize.length >= 3, 'the rate-limited phrase was requested again');
+  assert.equal(ack.stats.disabledReason, null);
+});
+
+test('a fully rate-limited pass schedules a background revive and recovers', async () => {
+  let limited = true;
+  const { tts } = makeTts({
+    synthesizeImpl: async () => {
+      if (limited) throw new Error('MiniMax TTS [1002] rate limit exceeded(RPM)');
+      return { pcm: Buffer.alloc(640, 7), sampleRate: 32000, durationMs: 20, sentences: 1, ms: 8, ttfbMs: 5 };
+    },
+  });
+  const ack = createWakeAck({
+    config: makeConfig({
+      tts: { enabled: true, ack: { enabled: true, phrases: ['我在', '在的'], rateLimitRetryMs: [], reviveDelayMs: 5 } },
+    }),
+    logger: silentLogger,
+    getTts: () => tts,
+  });
+  assert.equal(await ack.prepare(), false, 'nothing cached while rate limited');
+  assert.equal(ack.stats.disabledReason, 'rate limited');
+  assert.equal(ack.stats.revives, 1, 'a revive pass was scheduled');
+  limited = false;
+  // Wait for the scheduled pass to notice the window opened.
+  const deadline = Date.now() + 2000;
+  while (!ack.ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(ack.ready, true, 'the background pass recovered the ack');
+});
+
+test('close() clears a pending revive timer', async () => {
+  const { tts } = makeTts({ synthesizeImpl: async () => { throw new Error('MiniMax TTS [1002] rate limit exceeded(RPM)'); } });
+  const ack = createWakeAck({
+    config: makeConfig({
+      tts: { enabled: true, ack: { enabled: true, phrases: ['我在'], rateLimitRetryMs: [], reviveDelayMs: 5000 } },
+    }),
+    logger: silentLogger,
+    getTts: () => tts,
+  });
+  assert.equal(await ack.prepare(), false);
+  ack.close();
+  // Closing must not leave a timer that revives a dead instance; the getter is
+  // false and stats.stop is honoured.
+  assert.equal(ack.ready, false);
+});

@@ -17,6 +17,10 @@ qs="${FIGARO_QS:-$(command -v qs || echo "$HOME/.local/bin/qs")}"
 # the units are generated at install time instead of pointing at one machine.
 render() {
   local src="$1" dst="$2"
+  # A previous install may have left a symlink here (older versions linked the
+  # unit straight out of the checkout). Writing through it would recreate files
+  # inside the repo and leave systemd with a dangling link, so drop it first.
+  rm -f "$dst"
   sed -e "s|@REPO@|$repo|g" \
       -e "s|@NODE@|$node|g" \
       -e "s|@NODE_BIN_DIR@|$node_bin_dir|g" \

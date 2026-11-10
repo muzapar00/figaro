@@ -66,6 +66,18 @@ export function createWakeAck(options = {}) {
   // Avoid playing the same phrase twice in a row (the user heard "在的" twice and
   // thought only one phrase existed).
   const avoidRepeat = ackCfg.avoidRepeat !== false;
+  // MiniMax rate-limits at 20 RPM. A daemon restart right after another burst
+  // (for example a package upgrade plus a reboot) can hit 1002 and previously
+  // left the wake ack permanently unavailable until the next restart. Rate
+  // limited phrases are retried with backoff, and if the whole batch is limited
+  // a background pass tries again later.
+  const retryDelaysMs = (Array.isArray(ackCfg.rateLimitRetryMs) ? ackCfg.rateLimitRetryMs : [4000, 12000])
+    .map((value) => Math.max(0, Number(value) || 0))
+    .filter((value, index, all) => Number.isFinite(value) && all.indexOf(value) === index);
+  const reviveDelayMs = Number.isFinite(Number(ackCfg.reviveDelayMs)) && Number(ackCfg.reviveDelayMs) >= 0
+    ? Number(ackCfg.reviveDelayMs)
+    : 30000;
+  const maxRevives = 2;
   const synthConcurrency = Math.min(
     MAX_SYNTH_CONCURRENCY,
     Math.max(1, Number.isFinite(Number(ackCfg.synthConcurrency))
@@ -94,10 +106,14 @@ export function createWakeAck(options = {}) {
     lastPlayDurationMs: null,
     avoidRepeat,
     synthConcurrency,
+    revives: 0,
+    reviveScheduledAt: null,
     phraseMs: {}, // phrase -> synthesis wall time (ms), for latency diagnostics
     disabledReason: enabled ? null : 'tts disabled',
   };
   let preparePromise = null;
+  let reviveTimer = null;
+  let reviveCount = 0;
   let closed = false;
   let active = null; // {phrase, startedAt, settled, resolveDone, timer}
   let lastPickedPhrase = null;
@@ -107,6 +123,41 @@ export function createWakeAck(options = {}) {
     stats.disabledReason = String(reason);
     stats.errors.push(stats.disabledReason);
     log.warn(`wake-ack unavailable: ${stats.disabledReason}`);
+  }
+
+  const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  const isRateLimit = (err) => /1002|rate limit|rpm/i.test(String(err?.message || err));
+
+  /** Synthesize one phrase, retrying when MiniMax answers with a rate limit. */
+  async function synthesizeWithRetry(tts, phrase) {
+    let lastError = null;
+    for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+      if (closed) throw new Error('closed');
+      try {
+        return await tts.synthesize(phrase);
+      } catch (err) {
+        lastError = err;
+        if (!isRateLimit(err) || attempt === retryDelaysMs.length) break;
+        const delay = retryDelaysMs[attempt];
+        log.info(`wake-ack: phrase "${phrase}" hit the MiniMax rate limit; retrying in ${delay}ms`);
+        await sleep(delay);
+      }
+    }
+    throw lastError ?? new Error(`synthesis failed for "${phrase}"`);
+  }
+
+  /** If a whole pass was rate limited, try again later instead of staying off. */
+  function scheduleRevive() {
+    if (closed || reviveTimer || reviveCount >= maxRevives || reviveDelayMs <= 0) return;
+    reviveCount += 1;
+    stats.revives = reviveCount;
+    stats.reviveScheduledAt = Date.now();
+    log.info(`wake-ack: retrying pre-synthesis in ${reviveDelayMs}ms (attempt ${reviveCount}/${maxRevives})`);
+    reviveTimer = setTimeout(() => {
+      reviveTimer = null;
+      if (closed) return;
+      void prepare();
+    }, reviveDelayMs);
   }
 
   /** Pre-synthesize every configured phrase. Safe to call multiple times. */
@@ -129,6 +180,7 @@ export function createWakeAck(options = {}) {
       }
       const startedAt = performance.now();
       let failures = 0;
+      let rateLimited = 0;
       // Finite concurrency: 10 short phrases at 3 at a time turns a ~2s serial
       // warm-up into ~2.5s for ten phrases (a single phrase costs ~0.6-0.7s of
       // MiniMax round-trip). Failures are per phrase: one bad phrase must not
@@ -142,7 +194,7 @@ export function createWakeAck(options = {}) {
           const phrase = phrases[index];
           const phraseStartedAt = performance.now();
           try {
-            const result = await tts.synthesize(phrase);
+            const result = await synthesizeWithRetry(tts, phrase);
             const pcm = result?.pcm;
             if (!Buffer.isBuffer(pcm) || pcm.length < MIN_PCM_BYTES) {
               throw new Error(`synthesis returned no usable PCM for "${phrase}"`);
@@ -152,6 +204,7 @@ export function createWakeAck(options = {}) {
             stats.phraseMs[phrase] = Math.round(performance.now() - phraseStartedAt);
           } catch (err) {
             failures += 1;
+            if (isRateLimit(err)) rateLimited += 1;
             stats.errors.push(String(err?.message || err));
             log.warn(`wake-ack: phrase "${phrase}" failed: ${err?.message || err}`);
           }
@@ -165,7 +218,13 @@ export function createWakeAck(options = {}) {
       stats.voiceId = ttsStats.voiceId ?? config.minimax?.voiceId ?? null;
       stats.sampleRate = ttsStats.sampleRate ?? sampleRate;
       stats.ready = cache.size > 0;
-      if (!stats.ready) stats.disabledReason = failures > 0 ? 'synthesis failed' : 'no phrases cached';
+      if (stats.ready) {
+        stats.disabledReason = null;
+      } else {
+        stats.disabledReason = rateLimited > 0 ? 'rate limited' : failures > 0 ? 'synthesis failed' : 'no phrases cached';
+        // Recover on its own instead of staying silent until the next restart.
+        if (rateLimited > 0) scheduleRevive();
+      }
       return stats.ready;
     })()
       .catch((err) => {
@@ -320,6 +379,10 @@ export function createWakeAck(options = {}) {
     stop: () => stopActive('stop'),
     close() {
       closed = true;
+      if (reviveTimer) {
+        clearTimeout(reviveTimer);
+        reviveTimer = null;
+      }
       stopActive('close');
     },
     get ready() {
