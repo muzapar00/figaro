@@ -233,3 +233,10 @@ jobs:
             release-assets/**/*.src.tar.gz
             release-assets/**/*.SRCINFO
             release-assets/SHA256SUMS
+      - name: publish the human release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # action-gh-release updates an existing release's assets but does not
+          # reliably replace its body on re-runs; set it explicitly.
+          gh release edit "${{ github.ref_name }}"             --title "费加罗 ${{ github.ref_name }}"             --notes-file docs/v1.0.0-release-notes.md
