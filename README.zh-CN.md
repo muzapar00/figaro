@@ -43,7 +43,7 @@
 | 🌐 **三语 + 引导设置** | 设置与 9 步新手引导支持 **简体中文 / 繁體中文 / English**；引导用大字通俗说明"费加罗是什么、要做什么"、隐私、语言/地区、API key 与自检 |
 | 🔌 **自带 LLM** | DeepSeek、OpenAI、Gemini，或任意 OpenAI 兼容端点（含本地 Ollama/vLLM）；可在设置里切换 provider/模型并测试连接，旧 `deepseek.*` 配置继续兼容 |
 | 🌏 **按地区选模型源** | 中国大陆自动走国内源（ModelScope / hf-mirror / ghproxy，失败自动回退）；中国港澳台/海外走官方。`scripts/fetch-models.sh --probe --region …` 可查看实际源 |
-| 📦 **Linux 安装包** | deb（Ubuntu/Kubuntu/KDE neon）、AUR（Arch）、rpm（Fedora/openSUSE），CI 在每次 release tag 自动构建；见 [平台支持](docs/platform-support.md) |
+| 📦 **Linux 安装包** | deb（Ubuntu/Kubuntu/KDE neon）、AUR 就绪的 Arch 包、rpm（Fedora/openSUSE），CI 在每次 release tag 自动构建；见 [平台支持](docs/platform-support.md) |
 | 🔒 **隐私优先** | 无遥测、无账号、没有我们的服务器；唤醒/ASR/声纹全本地；Key 只在本机 600 文件；详见 [docs/privacy.md](docs/privacy.md) |
 | 🧭 **引导式自测** | 设置面板里五步向导：安静检查 → 增益 → 唤醒 → 转写 → 试听，跟着点就行 |
 | 🩺 **一键体检** | `figaro doctor` 检查服务/模型/密钥/麦克风/音频出口/热键/桌面能力/资源 |
@@ -63,7 +63,7 @@ KWin 液态玻璃是**可选**的：没有 KOS 插件时会自动退回半透明
 | 发行版 | 命令 |
 |---|---|
 | Ubuntu / Kubuntu / KDE neon 26.04 | 从 Release 下载 `figaro_1.0.0_amd64.deb`，`sudo apt install ./figaro_1.0.0_amd64.deb`，然后从菜单打开**费加罗**一次 |
-| Arch / EndeavourOS | `yay -S figaro`（AUR），或用 `packaging/aur/PKGBUILD` 构建 |
+| Arch / EndeavourOS | 用 Release 里的 AUR 包资产（`*.pkg.tar.zst` / `PKGBUILD`）；AUR 上架待推送，也可用 `packaging/aur/PKGBUILD` 本地构建 |
 | Fedora / openSUSE | 从 Release 下载 `figaro-1.0.0-*.rpm` 安装 |
 | 任意发行版（源码） | `git clone … && ./install.sh`（见下） |
 

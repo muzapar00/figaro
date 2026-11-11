@@ -47,7 +47,7 @@ no server of ours: every key, memory and log stays on your machine — see [docs
 | 🌐 **Three languages, guided setup** | Settings and the 9-step onboarding wizard are available in **简体中文 / 繁體中文 / English**; the wizard explains what Figaro does, the privacy model, language/region, API keys and self-tests in plain, large text |
 | 🔌 **Bring your own LLM** | DeepSeek, OpenAI, Gemini, or any OpenAI-compatible endpoint (including local Ollama/vLLM); switch provider/model in settings and test the connection. Old `deepseek.*` configs keep working |
 | 🌏 **Region-aware model download** | Mainland China picks domestic mirrors automatically (ModelScope / hf-mirror / ghproxy with fallback); 中国港澳台 and overseas use official sources. `scripts/fetch-models.sh --probe --region …` shows the exact source |
-| 📦 **Linux packages** | deb (Ubuntu/Kubuntu/KDE neon), AUR (Arch), rpm (Fedora/openSUSE) built by CI on every release tag; see [Platform support](docs/platform-support.md) |
+| 📦 **Linux packages** | deb (Ubuntu/Kubuntu/KDE neon), AUR-ready Arch package, rpm (Fedora/openSUSE) built by CI on every release tag; see [Platform support](docs/platform-support.md) |
 | 🔒 **Private by construction** | No telemetry, no account, no server of ours; wake word, ASR and voiceprint are local; keys stay in a 600 file; details in [docs/privacy.md](docs/privacy.md) |
 | 🧭 **Guided self-test** | A five-step wizard in the settings app: quiet room → gain → wake word → dictation → voice |
 | 🩺 **One-command health check** | `figaro doctor` checks services, models, keys, microphone, audio sink, hotkey, desktop capabilities and resources |
@@ -68,7 +68,7 @@ overlay falls back to a translucent fill and keeps working.
 | Distribution | Command |
 |---|---|
 | Ubuntu / Kubuntu / KDE neon 26.04 | download `figaro_1.0.0_amd64.deb` from the release, `sudo apt install ./figaro_1.0.0_amd64.deb`, then launch **费加罗** once |
-| Arch / EndeavourOS | `yay -S figaro` (AUR) — or build from `packaging/aur/PKGBUILD` |
+| Arch / EndeavourOS | use the AUR package assets from this release (`*.pkg.tar.zst` / `PKGBUILD`); AUR upload is pending — or build from `packaging/aur/PKGBUILD` |
 | Fedora / openSUSE | download the `figaro-1.0.0-*.rpm` from the release and install it |
 | Any distro (source) | `git clone … && ./install.sh` (see below) |
 

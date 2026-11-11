@@ -53,7 +53,7 @@ Figaro 的 UI 是 [Quickshell](https://github.com/quickshell-mirror/quickshell) 
 | 方式 | 状态 | 本机验证 | CI 验证 | 备注 |
 |---|---|---|---|---|
 | **deb**（Ubuntu 26.04 / Kubuntu / KDE neon，amd64） | ✅ 可构建 | ✅ `packaging/deb/build-deb.sh` + `dpkg-deb -c`（Ubuntu 26.04, node 24） | ✅ ubuntu-latest 构建 | `quickshell` 不在 Ubuntu 官方源，放 `Recommends`；其余依赖见 `dpkg-deb -I` |
-| **AUR**（Arch，x86_64） | ✅ 源就绪 | ⚠️ 本机无 `makepkg`，只做静态检查 | ✅ Arch 容器 `makepkg --printsrcinfo` + `makepkg -f --nodeps` | `quickshell` 来自 AUR；模型运行时下载 |
+| **AUR**（Arch，x86_64） | ✅ 包资产已随 release | ⚠️ 本机无 `makepkg`，只做静态检查 | ✅ Arch 容器 `makepkg --printsrcinfo` + `makepkg -f --nodeps` | **尚未推送到 AUR**（需维护者账号）；可下载 release 里的 `*.pkg.tar.zst`/`PKGBUILD`；`quickshell` 来自 AUR；模型运行时下载 |
 | **rpm**（Fedora / openSUSE Tumbleweed，x86_64） | ✅ spec 就绪 | ⚠️ 本机无 `rpmbuild`，只做静态检查 | ✅ Fedora 容器 `rpmbuild -ba --nodeps` | `quickshell` 不在 Fedora/SUSE 官方源，安装时需自行提供 |
 | 源码 checkout + `./install.sh` | ✅ 正式支持 | ✅ | ✅ 测试套件 | 即 `npm install` + `figaro install-user` |
 | Flatpak / AppImage / Snap | ❌ 不推荐 | — | — | 见 §6 |
