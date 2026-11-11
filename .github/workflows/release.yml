@@ -216,21 +216,20 @@ jobs:
           ls -la release-assets
           cd release-assets
           # include the AUR .SRCINFO (a dotfile) and every other asset
-          find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '.SRCINFO' -printf '%P\0' \
+          find . -type f ! -name SHA256SUMS ! -name '.SRCINFO' -printf '%P\0' \
             | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
-          sha256sum .SRCINFO >> SHA256SUMS 2>/dev/null || true
+          find . -type f -name '.SRCINFO' -printf '%P\0' | LC_ALL=C sort -z | xargs -0 -r sha256sum >> SHA256SUMS 2>/dev/null || true
           cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           name: 费加罗 ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-          body_path: docs/v1.0.0-release-notes.md
+          body_path: ${{ github.workspace }}/docs/v1.0.0-release-notes.md
           fail_on_unmatched_files: false
           files: |
-            release-assets/*.deb
-            release-assets/*.rpm
-            release-assets/*.pkg.tar.zst
-            release-assets/*.src.tar.gz
-            release-assets/*.SRCINFO
+            release-assets/**/*.deb
+            release-assets/**/*.rpm
+            release-assets/**/*.pkg.tar.zst
+            release-assets/**/*.src.tar.gz
+            release-assets/**/*.SRCINFO
             release-assets/SHA256SUMS
