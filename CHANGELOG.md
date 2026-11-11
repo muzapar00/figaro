@@ -11,10 +11,13 @@
   档案在 `~/.config/figaro/speaker-profile.json`（0600，不进仓库）。
 - `figaro enroll-voice`：本地录 3 句生成声纹档案；电平门槛降到 0.0025，小增益麦克风也能录。
 
-### 智能家居（准备中）
+### 智能家居
 - 新增可选 `home` 工具：通过本地 Home Assistant 控制灯（开关/亮度/色温/状态），
   配置 `home.haUrl`/`home.haToken` 后才会注册给模型；未配置时模型看不到。
 - 修复 screenshot/view_image 的参数 schema 被二次转换后传给模型的问题（dsh 风格）。
+- 已跑通真实设备：Home Assistant Core（venv）+ 官方 Xiaomi Home 集成（米家 OAuth 登录），
+  台灯实体接入；`figaro ask "把台灯调到30%"` 实测成功（有/无“台灯 Pro”同名设备时按前缀优先消歧，
+  离线的灯不再出现在候选里）。
 
 ## 0.1.0 — 初始发布
 

@@ -53,6 +53,11 @@ function lightName(light) {
   return String(light.attributes?.friendly_name || light.entity_id);
 }
 
+/** An unavailable entity cannot be controlled; keep it out of candidates. */
+function isAvailable(light) {
+  return light && light.state !== 'unavailable' && light.state !== 'unknown';
+}
+
 /** Score a light against a spoken device name: exact > substring > character overlap. */
 function scoreLight(light, query) {
   const q = normalize(query);
@@ -60,6 +65,9 @@ function scoreLight(light, query) {
   const name = normalize(lightName(light));
   const slug = normalize(light.entity_id.slice(LIGHT_DOMAIN.length));
   if (name === q || slug === q) return 1.2;
+  // Prefix hits are what a person means by "台灯": the lamp called 台灯 Light
+  // wins over 米家台灯Pro even though both contain the characters.
+  if (name.startsWith(q)) return 1.1;
   if (name.includes(q) || q.includes(name)) return 1;
   if (slug.includes(q)) return 0.9;
   if (q.length >= 2) {
@@ -353,7 +361,7 @@ export function createHomeTool(options = {}) {
       const room = typeof args.room === 'string' ? args.room.trim() : '';
 
       try {
-        const lights = await fetchLights();
+        const lights = (await fetchLights()).filter(isAvailable);
 
         if (action === 'list') {
           let listed = lights;

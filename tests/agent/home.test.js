@@ -299,3 +299,49 @@ test('schema is dsh-style and converts to a real JSON Schema', () => {
   assert.equal(schema.additionalProperties, false);
   assert.match(tool.description, /Home Assistant/);
 });
+
+test('prefix match beats a longer name that merely contains the word', async () => {
+  const server = http.createServer((req, res) => {
+    const body = JSON.stringify([
+      { entity_id: 'light.pro_lamp', state: 'off', attributes: { friendly_name: '米家台灯Pro  灯' } },
+      { entity_id: 'light.main_lamp', state: 'on', attributes: { friendly_name: '台灯  Light' } },
+    ]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (req.method === 'GET') res.end(body);
+    else { res.writeHead(200); res.end('[]'); }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const tool = createHomeTool({ config: { home: { haUrl: `http://127.0.0.1:${port}`, haToken: 'x' } } });
+    const result = await tool.execute({ action: 'state', device: '台灯' });
+    assert.match(result.content, /台灯\s+Light/, 'the lamp whose name starts with 台灯 wins');
+    assert.doesNotMatch(result.content, /米家台灯Pro/, 'no ambiguity with the Pro lamp');
+  } finally {
+    server.close();
+  }
+});
+
+test('unavailable lights are not listed or offered as candidates', async () => {
+  const server = http.createServer((req, res) => {
+    const body = JSON.stringify([
+      { entity_id: 'light.real', state: 'on', attributes: { friendly_name: '台灯' } },
+      { entity_id: 'light.gone', state: 'unavailable', attributes: { friendly_name: '鱼缸灯' } },
+    ]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (req.method === 'GET') res.end(body);
+    else { res.writeHead(200); res.end('[]'); }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const tool = createHomeTool({ config: { home: { haUrl: `http://127.0.0.1:${port}`, haToken: 'x' } } });
+    const list = await tool.execute({ action: 'list' });
+    assert.match(list.content, /台灯/);
+    assert.doesNotMatch(list.content, /鱼缸灯/);
+    const state = await tool.execute({ action: 'state', device: '鱼缸灯' });
+    assert.doesNotMatch(state.content, /鱼缸灯（light.gone）/);
+  } finally {
+    server.close();
+  }
+});

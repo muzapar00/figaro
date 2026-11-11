@@ -166,6 +166,7 @@ Everything lives in `~/.config/figaro/config.json`, and most of it can also be c
 | `asr.hotkey` | `F9` | hold to talk / tap to cancel |
 | `asr.silenceStopMs` | `3000` | how much silence ends a sentence (900 ms cut people off mid-sentence) |
 | `asr.speaker` | `{enabled:false, threshold:0.65}` | voiceprint: after `figaro enroll-voice`, only your voice can wake it |
+| `home.haUrl` / `home.haToken` | unset | local Home Assistant REST endpoint + long-lived token; enables the `home` tool (lights) |
 | `asr.bargeIn` | `{enabled:true, minRms:0.09, echoFactor:2.5, minMs:500}` | how loud a voice must be to interrupt |
 | `asr.verifyWake` | `{enabled:false, timeoutMs:1800}` | two-stage wake verification (0/40 false wakes, +600 ms per wake) |
 | `asr.modelDir` | `null` | custom wake/ASR model directory; bundled models by default |
