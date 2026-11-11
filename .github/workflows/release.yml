@@ -207,6 +207,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # The release body lives in the repository; without a checkout the
+      # body_path/gh edit steps cannot see docs/v1.0.0-release-notes.md.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
