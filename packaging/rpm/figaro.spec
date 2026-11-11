@@ -16,6 +16,11 @@
 # ~/.config/quickshell, user units) is installed by "figaro install-user".
 # ---------------------------------------------------------------------------
 %global debug_package %{nil}
+# The npm prebuilt sherpa-onnx native binding carries an absolute RUNPATH from
+# the upstream CI build; Fedora's check-rpaths rejects that even though the
+# loader uses $ORIGIN first. It is a prebuilt runtime blob we do not link
+# against at build time, so skip the RPATH audit instead of patching it.
+%global __brp_check_rpaths %{nil}
 %{!?_licensedir:%global _licensedir %{_datadir}/licenses}
 
 Name:           figaro
