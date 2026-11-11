@@ -35,9 +35,9 @@ else ok "git 历史无真实密钥"; fi
 
 echo "== 3. machine-specific paths"
 if grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models --exclude=nextkde-integration.md \
-     -E '/home/[a-z0-9_]+' . 2>/dev/null | grep -vE 'README.md:.*示例' | grep -q .; then
+     -E '(^|[^A-Za-z0-9_.-])/home/[a-z0-9_]+' . 2>/dev/null | grep -vE 'README.md:.*示例' | grep -q .; then
   bad "仍有写死的家目录路径"; grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models \
-     -E '/home/[a-z0-9_]+' . 2>/dev/null | grep -v nextkde-integration.md | head -5
+     -E '(^|[^A-Za-z0-9_.-])/home/[a-z0-9_]+' . 2>/dev/null | grep -v nextkde-integration.md | head -5
 else ok "无写死家目录"; fi
 for f in systemd/figaro.service.in systemd/figaro-ui.service.in systemd/figaro-settings.desktop.in; do
   grep -q '@REPO@\|@NODE@\|@QS@' "$f" && ok "模板 $f" || bad "$f 不是模板"

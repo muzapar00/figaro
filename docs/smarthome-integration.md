@@ -11,9 +11,9 @@
 ## 0. 结论摘要（TL;DR）
 
 1. **本机没有任何 Home Assistant / Homebridge / Matter 服务**：进程、systemd（系统和用户级）、监听端口（8123 / 51827 等）、docker、全局 Node 包、Python 包里都没有。**局域网里现成可发现的智能家居设备是两台名字像小米台灯的 HAP 设备（用户已确认其中只有一盏是自己的台灯，见 §0.5）**：
-   - `MiDeskLamp1S-88E7`（192.168.0.102，型号 `MJTD01SYL`，即米家台灯 1S），`_hap._tcp`，端口 80，TXT 里 `sf=0`（推断：当前未配对 HomeKit）。
-   - `MiDeskLampPro-157D`（192.168.0.100，米家台灯 Pro），同样广播 `_hap._tcp`。
-   - 未发现 `_miio._udp`、`_matter._tcp` / `_matterc._udp` / `_matterd._udp`、`_home-assistant._tcp`、`_homebridge._tcp` 的应答。另有一台 AirPlay 设备（192.168.0.101，疑似 Apple TV / HomePod 一类），是否为 HomeKit 中枢未知。
+   - `MiDeskLamp1S-XXXX`（192.168.0.11，型号 `MJTD01SYL`，即米家台灯 1S），`_hap._tcp`，端口 80，TXT 里 `sf=0`（推断：当前未配对 HomeKit）。
+   - `MiDeskLampPro-YYYY`（192.168.0.12，米家台灯 Pro），同样广播 `_hap._tcp`。
+   - 未发现 `_miio._udp`、`_matter._tcp` / `_matterc._udp` / `_matterd._udp`、`_home-assistant._tcp`、`_homebridge._tcp` 的应答。另有一台 AirPlay 设备（192.168.0.13，疑似 Apple TV / HomePod 一类），是否为 HomeKit 中枢未知。
 2. **对费加罗最合适的接入形态：daemon 里新增一个原生 `home` 工具，通过 HTTP 调 Home Assistant（HA）的 REST API**。设备协议（HomeKit 配对、米家 token、状态订阅）全部交给 HA；费加罗只维护「自然语言 → 实体 + 服务调用」这一层。**不要**在费加罗里直接引 miIO/HAP 库，也**不需要**另写 MCP 服务（费加罗的 agent 没有 MCP 客户端，工具就是本地模块；多一层 MCP 只会多一个依赖和故障点）。
 3. **推荐路线：主线 = HA 作为家庭中枢（用 HA 的 HomeKit Device 集成配对台灯，费加罗走 HA REST）；备线 = 独立 HAP 适配小服务（Python `aiohomekit`）直连台灯，费加罗仍走本地 HTTP。不推荐把「本地直连 miIO」当主线**（要米家云 token、桌面灯支持需实测、Python 3.14 兼容性未知、本机代理还会劫持 UDP 广播发现），它只作为「配对码丢了 / 用户坚持只用米家 App」时的兜底。
 4. **最小可行 demo 已经离线跑通（零新依赖）**：一个 Node 写的 mock HA（`/api/`、`/api/states`、`/api/services/light/turn_on`）+ curl 冒烟脚本，本机实测平均往返 **1.8 ms**；用同一份 mock 验证了 `home` 工具原型（列出设备、读状态、开灯并调到 30% 亮度、401、未启动等分支）——**不碰真实设备就能把费加罗这一侧做到可用**。
@@ -28,7 +28,7 @@
 用户已拍板，进入「实现 + 部署」阶段：
 
 1. **愿意装 Home Assistant**：由 Lead 在本机用 Docker 部署 HA Container，费加罗走 HA REST（§3.6 主线）。本任务本身不 sudo。
-2. **家里实际只有一盏台灯**：之前 mDNS 里看到的另一条 `MiDeskLampPro-157D`（192.168.0.100）身份待 Lead 配对时甄别（可能不是用户的设备/误报）；`192.168.0.101` 的 AirPlay 设备是 **HomePod 一类的 Apple 家庭中枢**，不能作为 HAP 配件被 HA 配对，也不需要配对码。**以 HA 配对时实际出现的设备为准**（1S @192.168.0.102，型号 `MJTD01SYL`，与用户描述一致）。
+2. **家里实际只有一盏台灯**：之前 mDNS 里看到的另一条 `MiDeskLampPro-YYYY`（192.168.0.12）身份待 Lead 配对时甄别（可能不是用户的设备/误报）；`192.168.0.13` 的 AirPlay 设备是 **HomePod 一类的 Apple 家庭中枢**，不能作为 HAP 配件被 HA 配对，也不需要配对码。**以 HA 配对时实际出现的设备为准**（1S @192.168.0.11，型号 `MJTD01SYL`，与用户描述一致）。
 3. **HomeKit 优先于米家账号**：台灯配对到 HA 的 **HomeKit Device（HomeKit Controller）** 集成，本地 HAP、不依赖米家云；**配对码用户手上有**。米家账号/token 只做兜底，本轮不用。
 
 > 设备身份修正：§2.2 的两条 `_hap._tcp` 记录（1S 和 Pro）不可能都属于用户；另一台很可能是 HomePod 或者其他家庭的设备。本机 mDNS 仍在同一个 Wi-Fi 网段上能看到设备广播，不代表设备属于用户。
@@ -54,7 +54,7 @@
 
 **方法说明（诚实披露）**：
 - 本机没有 `avahi-browse`、`avahi-resolve`，也没有 `nmap`；`avahi-daemon` 在跑。因此 mDNS 发现用的是两条只读途径：① avahi-daemon 的 D-Bus 接口确认服务状态；② 自己写的一个零依赖 Node mDNS 查询脚本（一次 PTR 查询 + 监听 5353，不做端口扫描），脚本见附录 B。
-- 第一次用默认 socket 发 mDNS 查询，**0 应答**；发现是代理的 TUN 接口劫持了组播路由（见 §2.3），显式绑定 `192.168.0.107` 后才收到应答。这个坑对后面部署 HA / 做 miIO 发现同样成立。
+- 第一次用默认 socket 发 mDNS 查询，**0 应答**；发现是代理的 TUN 接口劫持了组播路由（见 §2.3），显式绑定 `192.168.0.10` 后才收到应答。这个坑对后面部署 HA / 做 miIO 发现同样成立。
 - 没有做任何会改动设备状态的操作；没有尝试 HAP 配对、没有请求设备 HTTP 接口、没有 UDP 54321 广播。这些留给用户授权后的下一步。
 
 ---
@@ -85,25 +85,25 @@
 来源：被动 mDNS 浏览（附录 B.2）+ 被动 ARP 缓存。**没有**用 nmap / 端口扫描，**没有**扫公网。
 
 ```
-192.168.0.102  _hap._tcp.local  PTR  MiDeskLamp1S-88E7._hap._tcp.local
-192.168.0.102  SRV  MiDeskLamp1S-88E7.local:80
-192.168.0.102  TXT  sh=UHr2xg== ci=5 sf=0 s#=957 pv=1.1 md=MJTD01SYL id=64:CF:97:4D:29:7D ff=1 c#=6
-192.168.0.100  _hap._tcp.local  PTR  MiDeskLampPro-157D._hap._tcp.local
-192.168.0.101  _airplay._tcp / _raop._tcp / _companion-link._tcp / _sleep-proxy._udp 有应答（rdata 未完整解析）
+192.168.0.11  _hap._tcp.local  PTR  MiDeskLamp1S-XXXX._hap._tcp.local
+192.168.0.11  SRV  MiDeskLamp1S-XXXX.local:80
+192.168.0.11  TXT  sh=**** ci=5 sf=0 s#=957 pv=1.1 md=MJTD01SYL id=64:CF:97:XX:XX:XX ff=1 c#=6
+192.168.0.12  _hap._tcp.local  PTR  MiDeskLampPro-YYYY._hap._tcp.local
+192.168.0.13  _airplay._tcp / _raop._tcp / _companion-link._tcp / _sleep-proxy._udp 有应答（rdata 未完整解析）
 ```
 
 | 观察 | 事实 / 推断 / 未知 |
 |---|---|
-| 192.168.0.102 是一台 HAP 灯，型号字段 `md=MJTD01SYL`（米家台灯 1S），端口 80，HAP 协议版本 `pv=1.1` | **事实**（mDNS 原文） |
+| 192.168.0.11 是一台 HAP 灯，型号字段 `md=MJTD01SYL`（米家台灯 1S），端口 80，HAP 协议版本 `pv=1.1` | **事实**（mDNS 原文） |
 | `ci=5` 按 HomeKit 配件类别表是 Lightbulb；`ff=1` 只置了 bit0（支持 HAP pair-setup）；`sh` 是 setup hash | **推断**（字段含义来自公开 HAP 资料；与「一台灯」的观察一致） |
 | `sf=0`：状态标志 bit0 未置位，即 **当前未与 HomeKit 控制器配对** | **推断**（HAP spec 语义；没有做配对了才有的验证接口） |
-| 192.168.0.100 广播名是 `MiDeskLampPro-157D`，也走 `_hap._tcp`（推断为米家台灯 Pro）；这次只抓到 PTR，SRV/TXT 没拿到，配对状态未知 | **事实**（广播 HAP）+ **未知**（配对状态/配对码） |
-| 两台灯都直接回答了 mDNS 查询，说明它们在同一局域网且可达（本轮 ARP 缓存里只有网关和 192.168.0.106，没有这两台；以 mDNS 应答为准） | **推断**（同网段、有应答） |
-| 192.168.0.101 是 AirPlay/AirPlay2 设备（有 `_airplay._tcp`、`_raop._tcp`、`_companion-link._tcp`、`_sleep-proxy._udp`），大概率是 Apple TV / HomePod 或支持 AirPlay 的电视 | **推断**（服务类型组合）；**未知**（具体型号、是否是 HomeKit 中枢） |
+| 192.168.0.12 广播名是 `MiDeskLampPro-YYYY`，也走 `_hap._tcp`（推断为米家台灯 Pro）；这次只抓到 PTR，SRV/TXT 没拿到，配对状态未知 | **事实**（广播 HAP）+ **未知**（配对状态/配对码） |
+| 两台灯都直接回答了 mDNS 查询，说明它们在同一局域网且可达（本轮 ARP 缓存里只有网关和 192.168.0.14，没有这两台；以 mDNS 应答为准） | **推断**（同网段、有应答） |
+| 192.168.0.13 是 AirPlay/AirPlay2 设备（有 `_airplay._tcp`、`_raop._tcp`、`_companion-link._tcp`、`_sleep-proxy._udp`），大概率是 Apple TV / HomePod 或支持 AirPlay 的电视 | **推断**（服务类型组合）；**未知**（具体型号、是否是 HomeKit 中枢） |
 | 没发现 `_miio._udp` 应答 | **事实**；但米家设备发现主要靠 UDP 54321 握手广播，不是 mDNS，所以**不能**据此断言没有米家设备（见 §2.5） |
 | 没发现 `_matter._tcp` / `_matterc._udp` / `_matterd._udp` 应答 | **事实**；推断当前局域网没有已上线或待配对的 Matter 设备 |
 | 没有 `_home-assistant._tcp` / `_homebridge._tcp` 应答 | **事实**；与本机没装 HA/Homebridge 一致 |
-| 网关/路由器 192.168.0.1、未知设备 192.168.0.106 | **事实**（ARP 缓存）；设备类型**未知**（没探测） |
+| 网关/路由器 192.168.0.1、未知设备 192.168.0.14 | **事实**（ARP 缓存）；设备类型**未知**（没探测） |
 
 ### 2.3 网络环境：代理 TUN 会劫持组播/广播（事实 + 推断）
 
@@ -111,19 +111,19 @@
 
 ```
 $ ip -brief addr
-enp6s0   UP  192.168.0.107/24
+enp6s0   UP  192.168.0.10/24
 mihomo   UNKNOWN  198.18.0.1/30
 $ ip route get 224.0.0.251
 multicast 224.0.0.251 dev mihomo table 2022 src 198.18.0.1
 $ ip route get 255.255.255.255
 broadcast 255.255.255.255 dev mihomo table 2022 src 198.18.0.1
-$ ip route get 255.255.255.255 from 192.168.0.107
-broadcast 255.255.255.255 from 192.168.0.107 dev enp6s0
+$ ip route get 255.255.255.255 from 192.168.0.10
+broadcast 255.255.255.255 from 192.168.0.10 dev enp6s0
 $ ip route get 192.168.0.255
-broadcast 192.168.0.255 dev enp6s0 table local src 192.168.0.107
+broadcast 192.168.0.255 dev enp6s0 table local src 192.168.0.10
 ```
 
-- **事实**：默认 socket 把 mDNS 组播（224.0.0.251）和受限广播（255.255.255.255）路由进了 `mihomo`（表 2022）；显式指定源地址/绑定 LAN 接口后走 `enp6s0`。实测：默认 socket 的 mDNS 查询 0 应答，`setMulticastInterface('192.168.0.107')` 后收到两台灯的应答。
+- **事实**：默认 socket 把 mDNS 组播（224.0.0.251）和受限广播（255.255.255.255）路由进了 `mihomo`（表 2022）；显式指定源地址/绑定 LAN 接口后走 `enp6s0`。实测：默认 socket 的 mDNS 查询 0 应答，`setMulticastInterface('192.168.0.10')` 后收到两台灯的应答。
 - **推断**：任何「按默认路由发组播/受限广播」的发现机制（mDNS、SSDP、米家 UDP 54321 的 `255.255.255.255` 握手）都可能被代理吞掉；HA 的发现（zeroconf）一般会显式绑定接口，所以 HA 自己可能没问题，但**miIO 广播发现、以及在容器/host 网络模式下依赖默认路由的脚本要特别验证**。
 - 对费加罗主线（HTTP 调 HA）**没有影响**：走的是普通 TCP 到 LAN 主机，实测路由正常。仅影响部署期的发现/配对和备线的 miIO 探测。
 - **未知**：mihomo 的具体配置（`/etc/mihomo`，需要 root 才能细看）和 ip rule 的完整意图；本轮只记录现象，不改用户网络配置。
@@ -162,12 +162,12 @@ broadcast 192.168.0.255 dev enp6s0 table local src 192.168.0.107
 
 ### 2.6 未知 / 存疑（必须在下一步补的）
 
-1. **另一条 HAP 记录（`MiDeskLampPro-157D` @192.168.0.100）到底是谁的设备**——用户确认家里只有一盏台灯（1S @192.168.0.102），Pro 那条可能是别人的设备或历史误报；HA 配对时如果也发现它，先别配。
+1. **另一条 HAP 记录（`MiDeskLampPro-YYYY` @192.168.0.12）到底是谁的设备**——用户确认家里只有一盏台灯（1S @192.168.0.11），Pro 那条可能是别人的设备或历史误报；HA 配对时如果也发现它，先别配。
 2. **HomeKit 配对码是否还在**：1S 官方说在机身/说明书/包装上；Pro 是否也有、在哪，未知。**没有这个码，HomeKit 路线（主线/备线）都走不通**。
 3. **Pro 的 HAP 配对状态**（这次没抓到 TXT；`sf` 未知）。
 4. **米家 token 是否可获取**：要看用户是否愿意给米家账号/区域，以及账号有没有开二次验证；token 提取工具在 Python 3.14 上能否装（未安装，未验证）。
 5. **米家台灯的 miIO 模型支持**：python-miio 有 lamp* 规格，但 1S（MJTD01SYL）具体映射到哪条、亮度/色温命令是否齐全，要连上真机 `info` 才知道。
-6. **192.168.0.101 是不是 HomeKit 中枢**（Apple TV / HomePod），以及用户是否已经在用 Apple 家庭 App。
+6. **192.168.0.13 是不是 HomeKit 中枢**（Apple TV / HomePod），以及用户是否已经在用 Apple 家庭 App。
 7. **真实 HA 的局域网可达性与延迟**：目前只有 mock（本机 1.8 ms）；真实设备上预计 20–100 ms（推断，待测）。
 8. **用户家里除这盏台灯之外还有没有别的米家/HomeKit 设备**（决定后续要不要在 HA 里加米家集成/网关）。
 
@@ -304,11 +304,11 @@ broadcast 192.168.0.255 dev enp6s0 table local src 192.168.0.107
    - 或者把 HA 放到独立设备/虚拟机（不在这台机器上），彻底绕开。
    - 验证：`ip route get 224.0.0.251` 应显示 `dev enp6s0`（或 HA 所在 LAN 接口），而不是 `dev mihomo`。
 3. 打开 `http://127.0.0.1:8123`，创建管理员账号。
-4. **Settings → Devices & services → Add Integration → HomeKit Device**：HA 应自动发现台灯（`MiDeskLamp1S-88E7` 或实际设备名）。选中 → 输入用户手上的 **HomeKit 设置码**（`123-45-678` 形式）→ 起名 / 选房间（例如「客厅台灯」）。
+4. **Settings → Devices & services → Add Integration → HomeKit Device**：HA 应自动发现台灯（`MiDeskLamp1S-XXXX` 或实际设备名）。选中 → 输入用户手上的 **HomeKit 设置码**（`123-45-678` 形式）→ 起名 / 选房间（例如「客厅台灯」）。
    - 发现不了时依次查：`_hap._tcp` 有应答（附录 B 脚本，记得绑 LAN 接口）；灯未配给 Apple 家庭；mihomo 已临时停；HA 容器是 host 网络。
    - **单控制器**：配对成功后灯只属于 HA。若还想在 Apple 家庭 App 里控制，用 HA 的 **HomeKit Bridge** 反向导出（可选，不在本轮）。
 5. 在 HA 里确认实体：`Settings → Devices & services → Entities`，记下 `light.xxx` 的 entity_id 和 friendly_name（例如 `light.mi_desk_lamp_1s` /「台灯」）。
-   - **另一条 mDNS 记录（`MiDeskLampPro-157D`）如果也被 HA 发现，先别配**：跟用户确认是不是自己的设备。
+   - **另一条 mDNS 记录（`MiDeskLampPro-YYYY`）如果也被 HA 发现，先别配**：跟用户确认是不是自己的设备。
 6. 创建费加罗用的**长期访问令牌**：HA 左下角个人资料 → **Security** → Long-lived access tokens → Create token → 复制（只显示一次，别贴聊天/仓库）。
 7. 配置费加罗（config 由 Lead 统一改；`~/.config/figaro/config.json` 权限 600）：
    ```json
@@ -392,7 +392,7 @@ demo OK
 
 ### 4.2 已跑通：零依赖的 HAP mDNS 发现脚本（可选，只读）
 
-用途：在真实设备上快速确认「灯还在不在、IP 变没变、配对状态字段是什么」，不需要装 avahi-browse。脚本见附录 B（约 60 行，零依赖）。注意：**必须先绑定 LAN 接口**（`setMulticastInterface('192.168.0.107')`），否则本机会被 mihomo 劫持，0 应答。
+用途：在真实设备上快速确认「灯还在不在、IP 变没变、配对状态字段是什么」，不需要装 avahi-browse。脚本见附录 B（约 60 行，零依赖）。注意：**必须先绑定 LAN 接口**（`setMulticastInterface('192.168.0.10')`），否则本机会被 mihomo 劫持，0 应答。
 
 ### 4.3 真实设备只读验证路径（需要授权/依赖，本轮未执行）
 
@@ -415,7 +415,7 @@ demo OK
    python3 -m venv ~/.local/venvs/figaro-miio
    ~/.local/venvs/figaro-miio/bin/pip install python-miio
    ~/.local/venvs/figaro-miio/bin/miiocli discover          # 只读发现（会发 UDP 54321 广播，需授权）
-   ~/.local/venvs/figaro-miio/bin/miiocli device --ip 192.168.0.102 --token <TOKEN> info   # 只读
+   ~/.local/venvs/figaro-miio/bin/miiocli device --ip 192.168.0.11 --token <TOKEN> info   # 只读
    ```
    注意：本机 Python 3.14 不在 python-miio 的分类器里（>=3.11 但只到 3.13），装不上就改用 `uv` 拉一个 3.13 的 venv；`miiocli discover` 的广播很可能被 mihomo 劫持，必要时先 `ip route get` 确认、用 `192.168.0.255` 定向广播或绑 LAN 地址。**本轮没有安装、没有跑**。
 
@@ -646,7 +646,7 @@ node --test tests/agent/home.test.js
 **已确认（2026-11-11 用户）**：
 
 - 愿意装 Home Assistant（本机 Docker，Lead 执行；本任务不 sudo）。
-- 家里实际只有一盏台灯；HomePod（192.168.0.101 的 AirPlay 设备）是 Apple 家庭中枢，不参与 HA 配对、不需要配对码。
+- 家里实际只有一盏台灯；HomePod（192.168.0.13 的 AirPlay 设备）是 Apple 家庭中枢，不参与 HA 配对、不需要配对码。
 - HomeKit 设置码用户手上有；**HomeKit 优先于米家账号**；米家账号只作兜底，本轮不用。
 
 **待 Lead 提供 / 确认（联调前）**：
@@ -655,7 +655,7 @@ node --test tests/agent/home.test.js
 2. HA 里台灯配对后的 `entity_id` + `friendly_name`（HomeKit Device 配对后出现；`curl /api/states` 可看）。工具按 `friendly_name` / entity slug 模糊匹配，一般不需要改代码。
 3. 可选 `defaultRoom`（用户习惯说「卧室灯」还是「客厅灯」；「把灯关掉」时用它收敛）。
 4. 是否要在 Apple 家庭里也保留灯控制：需要的话配对后用 HA 的 HomeKit Bridge 反向导出；不需要就保持 HA 单一控制器。
-5. 另一条 mDNS 记录（`MiDeskLampPro-157D` @192.168.0.100）如果也被 HA 发现，跟用户确认是不是自己的设备——**不是就别配**，避免把别人的灯配进来。
+5. 另一条 mDNS 记录（`MiDeskLampPro-YYYY` @192.168.0.12）如果也被 HA 发现，跟用户确认是不是自己的设备——**不是就别配**，避免把别人的灯配进来。
 6. 允许把 `home` 注册进工具表、改 `settings.js` / `prompt.js` / `index.js`、重启 `figaro.service` 的时机（本阶段按边界没碰；重启要用户/Lead 同意）。
 7. 米家账号（区域）**本轮不需要**，只有 HomeKit 配对失败时才启用。
 
@@ -869,12 +869,12 @@ systemctl status avahi-daemon --no-pager | head -5
 pgrep -a avahi-daemon
 
 # 关键：默认 socket 查询 0 应答；绑定 LAN 接口后收到应答
-node /tmp/mdns-probe3.mjs 192.168.0.107
-# → 192.168.0.102  _hap._tcp.local  PTR  MiDeskLamp1S-88E7._hap._tcp.local
-#   192.168.0.102  MiDeskLamp1S-88E7._hap._tcp.local  SRV  MiDeskLamp1S-88E7.local:80
-#   192.168.0.102  TXT  sh=UHr2xg== | ci=5 | sf=0 | s#=957 | pv=1.1 | md=MJTD01SYL | id=64:CF:97:4D:29:7D | ff=1 | c#=6
-#   192.168.0.100  _hap._tcp.local  PTR  MiDeskLampPro-157D._hap._tcp.local
-#   192.168.0.101  _airplay._tcp / _raop._tcp / _companion-link._tcp / _sleep-proxy._udp 有应答
+node /tmp/mdns-probe3.mjs 192.168.0.10
+# → 192.168.0.11  _hap._tcp.local  PTR  MiDeskLamp1S-XXXX._hap._tcp.local
+#   192.168.0.11  MiDeskLamp1S-XXXX._hap._tcp.local  SRV  MiDeskLamp1S-XXXX.local:80
+#   192.168.0.11  TXT  sh=**** | ci=5 | sf=0 | s#=957 | pv=1.1 | md=MJTD01SYL | id=64:CF:97:XX:XX:XX | ff=1 | c#=6
+#   192.168.0.12  _hap._tcp.local  PTR  MiDeskLampPro-YYYY._hap._tcp.local
+#   192.168.0.13  _airplay._tcp / _raop._tcp / _companion-link._tcp / _sleep-proxy._udp 有应答
 
 # 探测过的服务类型（均无应答）：_miio._udp / _matter._tcp / _matterc._udp / _matterd._udp
 #                         _home-assistant._tcp / _homebridge._tcp / _googlecast._tcp / _http._tcp
@@ -885,10 +885,10 @@ node /tmp/mdns-probe3.mjs 192.168.0.107
 
 ```bash
 ip -brief addr
-# enp6s0 UP 192.168.0.107/24；mihomo UNKNOWN 198.18.0.1/30
+# enp6s0 UP 192.168.0.10/24；mihomo UNKNOWN 198.18.0.1/30
 ip route get 224.0.0.251      # → dev mihomo table 2022
 ip route get 255.255.255.255  # → dev mihomo table 2022
-ip route get 255.255.255.255 from 192.168.0.107  # → dev enp6s0
+ip route get 255.255.255.255 from 192.168.0.10  # → dev enp6s0
 ip route get 192.168.0.255    # → dev enp6s0 table local
 pgrep -a mihomo               # → /usr/local/bin/mihomo -d /etc/mihomo
 ```
