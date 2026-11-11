@@ -49,6 +49,10 @@ const SAMPLE_RATE = 16000;
 const LEVEL_WINDOW_SAMPLES = Math.round(SAMPLE_RATE * 0.05); // 50 ms => 20 Hz
 const PRE_ROLL_MS = 1500;
 const TICK_MS = 250;
+// A non-owner wake keeps the cooldown so one music burst is not re-checked
+// forever, but the owner must be able to retry quickly (echo/quiet false
+// rejects used to lock the wake word out for the full 2.5 s cooldown).
+const SPEAKER_REJECT_RETRY_MS = 800;
 
 // onnxruntime thread counts. Keep every session single-threaded:
 //  - measured idle CPU with KWS numThreads=2 was ~212% of one core (!) because
@@ -703,7 +707,7 @@ export function createAsr(opts) {
         } else {
           const verdict = speakerGate.verify(preRollPcm());
           if (!verdict.ok) {
-            lastWakeAt = now; // keep the cooldown: do not re-check the same music burst
+            markWakeRejected(now);
             log(`声纹不符（score=${verdict.score}，阈值 ${verdict.threshold ?? speakerGate.threshold}，原因 ${verdict.reason ?? 'mismatch'}），忽略唤醒 ${hit.keyword}`);
           } else {
             lastWakeAt = now;
@@ -907,7 +911,7 @@ export function createAsr(opts) {
       if (!voice.ok) {
         verifyStats.rejected += 1;
         log(`声纹不符（score=${voice.score}，阈值 ${voice.threshold ?? speakerGate.threshold}，原因 ${voice.reason ?? 'mismatch'}），忽略唤醒 ${p.hit.keyword}`);
-        lastWakeAt = Date.now(); // one check per cooldown window, like the no-verify path
+        markWakeRejected();
         return;
       }
       if (result.failOpen) verifyStats.failOpen += 1;
@@ -921,6 +925,11 @@ export function createAsr(opts) {
       verifyStats.rejected += 1;
       log(`[wake-verify] 拒绝近音命中 ${p.hit.keyword}（${ms}ms, "${last.text}"），继续监听（不进冷却）`);
     }
+  }
+
+  /** Remember a rejected wake without burning the whole cooldown. */
+  function markWakeRejected(now = Date.now()) {
+    lastWakeAt = now - Math.max(0, wakeCooldownMs - SPEAKER_REJECT_RETRY_MS);
   }
 
   function handleWake(origin) {
@@ -1357,6 +1366,7 @@ export function createAsr(opts) {
           lastVerify: verifyStats.lastVerify,
         },
         verifyPending: Boolean(verifyPending),
+        wakeCooldownRemainingMs: Math.max(0, wakeCooldownMs - (Date.now() - lastWakeAt)),
         speaker: speakerGate.status(),
         bargeIn: bargeDetector.config,
         bargeInStats: {

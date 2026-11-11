@@ -484,3 +484,55 @@ test('echo suppression falls back to pauseListening()/resumeListening()', async 
   record.ttsCallbacks.onState('idle');
   await waitFor(() => record.paused === false, { label: 'resumed' });
 });
+
+test('a command starting with 我在 is not treated as ack echo when speech started late', async (t) => {
+  const asr = makeFakeAsr();
+  const tts = makeFakeTts();
+  const texts = [];
+  const { ack } = makeFakeAck({ mode: 'manual' });
+  const { daemon, client, messages } = await startTestDaemon(t, {
+    asrFactory: asr.factory,
+    ttsFactory: tts.factory,
+    ackFactory: () => ack,
+    agentFactory: makeFakeAgent(texts),
+  });
+  await waitFor(() => daemon.voice.asr && daemon.voice.tts, { label: 'voice modules' });
+  client.send({ type: 'wake' });
+  await waitFor(() => states(messages).includes('waking'), { label: 'ack state' });
+  await ack.startSettled();
+  await waitFor(() => asr.record.begin === 1, { label: 'capture while ack plays' });
+  // The user only starts speaking long after the ack began: the first detected
+  // speech is late, so the opening words belong to the user, not to the ack.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  asr.record.callbacks.onVadStart();
+  ack.finish({ ok: true, phrase: '我在', durationMs: 400 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  asr.record.capturing = false;
+  asr.record.callbacks.onFinal('我在客厅把灯关掉');
+  await waitFor(() => replies(messages)[0], { label: 'reply' });
+  assert.deepEqual(texts, ['我在客厅把灯关掉'], 'the command keeps its opening words');
+});
+
+test('an ASR error stops the capture so its stale final cannot start a turn', async (t) => {
+  const asr = makeFakeAsr();
+  const tts = makeFakeTts();
+  const texts = [];
+  const { client, messages } = await startTestDaemon(t, {
+    asrFactory: asr.factory,
+    ttsFactory: tts.factory,
+    ackFactory: () => makeFakeAck({ mode: 'null' }).ack,
+    agentFactory: makeFakeAgent(texts),
+  });
+  await waitFor(() => states(messages).length > 0, { label: 'started' });
+  client.send({ type: 'wake' });
+  await waitFor(() => asr.record.begin === 1, { label: 'capture started', timeoutMs: 3000 });
+  assert.equal(asr.record.capturing, true);
+  asr.record.callbacks.onError(new Error('microphone glitch'));
+  await waitFor(() => asr.record.end >= 1, { label: 'capture stopped on error' });
+  await waitFor(() => states(messages).at(-1) === 'idle', { label: 'idle after error' });
+  // A late final from the stopped capture must be ignored.
+  asr.record.callbacks.onFinal('现在几点');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(texts, [], 'no turn from a stale final after the error');
+  assert.equal(replies(messages).length, 0);
+});

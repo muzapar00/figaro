@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createAsr } from '../../src/voice/asr/index.js';
-import { makeConfig, modelsAvailable, loadFixture, skipMessage, recorder, silence, concat } from './helpers.js';
+import { makeConfig, modelsAvailable, loadFixture, skipMessage, recorder, silence, concat, waitUntil } from './helpers.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -165,6 +165,26 @@ test('TTS/ack echo is kept out of the pre-roll the voiceprint gate reads', async
     let maxAbs = 0;
     for (const v of gate.calls[0]) maxAbs = Math.max(maxAbs, Math.abs(v));
     assert.ok(maxAbs < 0.5, `the muted TTS echo must not be in the pre-roll (maxAbs=${maxAbs})`);
+  } finally {
+    await asr.stop();
+  }
+});
+
+test('a voiceprint rejection keeps only a short retry window', async (t) => {
+  if (!modelsAvailable()) { skipMessage(t); return; }
+  const clip = loadFixture('wake-nijialuo-male');
+  const gate = fakeGate({ ok: false, score: 0.2, reason: 'mismatch' });
+  const pcm = concat([silence(300), clip.samples, silence(3500)]);
+  const { asr } = startModule({
+    source: pacedSource(pcm),
+    asrOverrides: { wakeCooldownMs: 2500 },
+    gate,
+  });
+  await asr.start();
+  try {
+    await waitUntil(() => gate.calls.length > 0, 8000, 'gate consulted');
+    const remaining = asr.modelInfo.wakeCooldownRemainingMs;
+    assert.ok(remaining > 0 && remaining <= 1000, `owner should be able to retry soon, remaining=${remaining}ms`);
   } finally {
     await asr.stop();
   }

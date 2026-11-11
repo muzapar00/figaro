@@ -28,6 +28,10 @@ const VOICE_RETRY_COOLDOWN_MS = 15_000;
 const WAKE_CAPTURE_FALLBACK_MS = 1_500;
 // How long after an ack finishes its echo may still be in a transcript (pre-roll).
 const ACK_ECHO_WINDOW_MS = 3_000;
+// If the first detected speech in the capture starts later than this, the ack's
+// own echo was not captured at the start of the utterance: do not strip text
+// that merely begins with an ack phrase (e.g. "我在客厅把灯关掉").
+const ACK_ECHO_VAD_MAX_MS = 400;
 // Siri-style defaults for the wake/cancel state machine (docs/voice-interaction.md).
 const DEFAULT_WAKE_GIVE_UP_MS = 5_000;
 const DEFAULT_CANCEL_PHRASES = Object.freeze(['取消', '算了', '别说了', '停下', '停止', '不用了', '退出']);
@@ -224,6 +228,11 @@ export function createDaemon(options = {}) {
   // same): waiting for "我在" to finish before opening the microphone added
   // ~700ms to every wake. Ack echo is stripped from the transcript.
   let ackCaptureStarted = false;
+  // True when the capture was opened while the ack was still audible; only then
+  // may the transcript start with the ack echo.
+  let ackOverlapCapture = false;
+  let captureStartedAt = 0;
+  let captureFirstSpeechAt = -1;
   let lastAckEndedAt = 0;
   let captureRetryCount = 0;
   let suppressFinalOnce = false;
@@ -606,6 +615,7 @@ export function createDaemon(options = {}) {
     wakeFlowPending = false;
     dismissRequested = false;
     ackCaptureStarted = false;
+    ackOverlapCapture = false;
     clearGiveUpTimer();
     clearFollowUpTimer();
     clearWaitingTimer();
@@ -733,7 +743,9 @@ export function createDaemon(options = {}) {
       return;
     }
     let transcript = String(rawText ?? '').trim();
-    const stripped = stripAckEcho(transcript);
+    const echoContext = { overlap: ackOverlapCapture, firstSpeechMs: captureFirstSpeechAt };
+    ackOverlapCapture = false;
+    const stripped = stripAckEcho(transcript, echoContext);
     if (stripped !== transcript) {
       log.info(`wake-ack: stripped echo from transcript (${transcript.length} -> ${stripped.length} chars)`);
       transcript = stripped;
@@ -795,10 +807,17 @@ export function createDaemon(options = {}) {
     enqueueTurn(() => processAsk({ text: transcript, speak: true, fromVoice: true }, null));
   }
 
-  /** Remove a leading ack phrase ("我在…") that leaked in through pre-roll/echo. */
-  function stripAckEcho(text) {
+  /**
+   * Remove a leading ack phrase ("我在…") that leaked in through pre-roll/echo.
+   * Only possible when the capture overlapped the ack and the first speech was
+   * detected right at its start; otherwise a genuine command such as
+   * "我在客厅把灯关掉" would lose its first two characters.
+   */
+  function stripAckEcho(text, { overlap = false, firstSpeechMs = -1 } = {}) {
     if (typeof text !== 'string' || text.length === 0) return '';
     if (!ack || !ack.enabled) return text;
+    if (!overlap) return text;
+    if (firstSpeechMs > ACK_ECHO_VAD_MAX_MS) return text;
     const withinWindow = lastAckEndedAt > 0 && Date.now() - lastAckEndedAt <= ACK_ECHO_WINDOW_MS;
     if (!withinWindow) return text;
     const normalize = (value) => value.replace(/[\s，。！？、,.!?~～…—\-]/g, '');
@@ -819,6 +838,9 @@ export function createDaemon(options = {}) {
   }
 
   function handleAsrVadStart() {
+    if (captureFirstSpeechAt < 0 && captureStartedAt > 0) {
+      captureFirstSpeechAt = Date.now() - captureStartedAt;
+    }
     noteUserSpeech();
     if (state === 'waking') {
       log.info('user started speaking during ack -> listening now');
@@ -876,7 +898,12 @@ export function createDaemon(options = {}) {
 
   function handleAsrError(err) {
     handleVoiceError('asr', err);
-    if (state !== 'idle' && state !== 'speaking' && state !== 'thinking') settleTurn('asr-error');
+    if (state !== 'idle' && state !== 'speaking' && state !== 'thinking') {
+      // Stop the capture this error came from. Otherwise its (stale) final
+      // arrives after we settled and starts a turn nobody asked for.
+      stopCaptureForBargeIn();
+      settleTurn('asr-error');
+    }
   }
 
   // ---------------------------------------------------------------- wake flow
@@ -983,10 +1010,13 @@ export function createDaemon(options = {}) {
       }
       lastAckEndedAt = Date.now();
     }
-    const pending = pendingAckFinal;
+    let pending = pendingAckFinal;
     pendingAckFinal = '';
     const captureAlreadyRunning = ackCaptureStarted;
     ackCaptureStarted = false;
+    if (pending.length > 0) {
+      pending = stripAckEcho(pending, { overlap: true, firstSpeechMs: captureFirstSpeechAt });
+    }
     if (pending.length > 0) {
       log.info(`wake: processing transcript captured during ack (${pending.length} chars)`);
       clearGiveUpTimer();
@@ -1006,6 +1036,8 @@ export function createDaemon(options = {}) {
 
   function beginCaptureNow() {
     if (!voice.asr) return;
+    captureStartedAt = Date.now();
+    captureFirstSpeechAt = -1;
     try {
       if (!voice.asr.capturing) voice.asr.beginCapture();
     } catch (err) {
@@ -1015,6 +1047,7 @@ export function createDaemon(options = {}) {
 
   function beginListeningCapture({ giveUpMs = wakeGiveUpMs, reason = 'wake', keepPendingAckFinal = false } = {}) {
     if (!keepPendingAckFinal) pendingAckFinal = '';
+    if (keepPendingAckFinal) ackOverlapCapture = true;
     setState('listening');
     beginCaptureNow();
     armGiveUpTimer(giveUpMs, reason);
