@@ -167,7 +167,7 @@ function normalizeSpeakerConfig(config) {
     model: raw.model ?? DEFAULT_SPEAKER_MODEL,
     profile: raw.profile ? String(raw.profile) : '',
     threshold: Number.isFinite(Number(raw.threshold)) ? Number(raw.threshold) : DEFAULT_SPEAKER_THRESHOLD,
-    minRms: Number.isFinite(Number(raw.minRms)) ? Number(raw.minRms) : 0.008,
+    minRms: Number.isFinite(Number(raw.minRms)) ? Number(raw.minRms) : 0.0025,
   };
 }
 

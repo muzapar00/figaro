@@ -133,6 +133,7 @@ export function createAsr(opts) {
     hotkey: hotkeyOption,
     hotkeyConnectFn,
     micGain: micGainOption,
+    speakerGate: speakerGateOption,
   } = opts ?? {};
   if (!config) throw new TypeError('createAsr: config is required');
   const asrCfg = config.asr ?? {};
@@ -204,7 +205,7 @@ export function createAsr(opts) {
   const log = (msg) => safe(onLog, msg);
   // Voiceprint gate: the wake word is only the first half; the second half is
   // "did *you* say it". Disabled/unregistered => wake exactly as before.
-  const speakerGate = createSpeakerGate({
+  const speakerGate = speakerGateOption ?? createSpeakerGate({
     config,
     repoRoot: REPO_ROOT,
     logger: { info: log, warn: log },
@@ -568,6 +569,7 @@ export function createAsr(opts) {
     const next = createKws({
       modelDir: dirs.kws,
       wakeWords: asrCfg.wakeWords ?? [],
+      wakeWordsEn,
       numThreads: KWS_THREADS,
       keywordsScore: preset.keywordsScore,
       keywordsThreshold: preset.keywordsThreshold,
@@ -660,7 +662,11 @@ export function createAsr(opts) {
       }
       safe(onLevel, Math.max(0, Math.min(1, rms)));
     });
-    pushPreRoll(samples);
+    // Do not let the assistant's own voice (TTS/ack) into the pre-roll: it is
+    // what the voiceprint gate and capture.begin() inspect, and the assistant
+    // voice measures ~0.09 cosine against the owner profile, so a wake right
+    // after a reply would be rejected as "not the owner".
+    if (!muted) pushPreRoll(samples);
     if (verifyPending && !verifyPending.settled) appendVerifyAudio(samples);
     if (state === 'listening' && muted) {
       // Echo suppression (TTS playing): no wake word, no capture. The barge-in
@@ -788,6 +794,15 @@ export function createAsr(opts) {
    * the buffered pre-roll + post-roll with the offline paraformer. onWake only
    * fires when the transcript contains the wake word. Errors/timeouts pass.
    */
+  /** Concatenate the buffered wake word (pre-roll + post-roll) for gating. */
+  function pendingPcm(p) {
+    const pcm = new Float32Array(p.base.length + p.postSamples);
+    pcm.set(p.base, 0);
+    let off = p.base.length;
+    for (const chunk of p.post) { pcm.set(chunk, off); off += chunk.length; }
+    return pcm;
+  }
+
   function startWakeVerify(hit, { selfTest = false } = {}) {
     if (verifyPending) return null;
     const pending = {
@@ -833,10 +848,7 @@ export function createAsr(opts) {
     try {
       const rec = await ensureOfflineModel();
       if (!rec) throw new Error('offline ASR unavailable');
-      const pcm = new Float32Array(p.base.length + p.postSamples);
-      pcm.set(p.base, 0);
-      let off = p.base.length;
-      for (const chunk of p.post) { pcm.set(chunk, off); off += chunk.length; }
+      const pcm = pendingPcm(p);
       const t0 = Date.now();
       text = await rec.transcribe(pcm);
       p.text = text;
@@ -885,8 +897,22 @@ export function createAsr(opts) {
       return;
     }
     if (result.ok) {
+      // Verification only proves the words; the voiceprint gate still has to
+      // prove it was the owner. These two gates used to be mutually exclusive:
+      // enabling verifyWake silently bypassed the speaker gate.
+      let voice = { ok: true, skipped: true };
+      if (!p.selfTest && typeof speakerGate.verify === 'function') {
+        voice = speakerGate.verify(pendingPcm(p));
+      }
+      if (!voice.ok) {
+        verifyStats.rejected += 1;
+        log(`声纹不符（score=${voice.score}，阈值 ${voice.threshold ?? speakerGate.threshold}，原因 ${voice.reason ?? 'mismatch'}），忽略唤醒 ${p.hit.keyword}`);
+        lastWakeAt = Date.now(); // one check per cooldown window, like the no-verify path
+        return;
+      }
       if (result.failOpen) verifyStats.failOpen += 1;
       else verifyStats.accepted += 1;
+      if (!voice.skipped) log(`[wake-verify] 声纹通过（score=${voice.score}）`);
       const kw = p.hit.keyword;
       log(`[wake-verify] 通过（${ms}ms, ${result.reason}${result.failOpen ? ', fail-open' : ''}, "${last.text}"）`);
       lastWakeAt = Date.now();
@@ -1215,6 +1241,18 @@ export function createAsr(opts) {
       lastAudioAt = Date.now();
       state = 'listening';
       log('ASR 常驻监听已启动');
+      // The first speaker-gate verify otherwise loads the 28 MB ONNX model
+      // synchronously inside the audio callback (~350 ms measured). Warm it
+      // after the daemon has settled.
+      if (!speakerGateOption && speakerGate.enabled && typeof speakerGate.prepare === 'function') {
+        const warm = setTimeout(() => {
+          try {
+            const status = speakerGate.prepare();
+            log(`声纹模型预热完成（${status?.state ?? 'ready'}）`);
+          } catch (err) { log(`声纹模型预热失败：${asError(err).message}`); }
+        }, 1200);
+        warm.unref?.();
+      }
       // Run calibration in the background (300-500 ms of audio is enough); it
       // never blocks start() or the audio loop. Pinned gain skips calibration.
       if (inputGainSetting === null) void calibrateMicGain();
