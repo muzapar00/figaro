@@ -110,7 +110,12 @@ jobs:
       - name: rpmbuild (spec is the deliverable; dependencies are checked in CI only)
         env:
           RPMBUILD_OPTS: '--nodeps'
-        run: bash packaging/rpm/build-rpm.sh
+        run: |
+          set -o pipefail
+          if ! bash packaging/rpm/build-rpm.sh 2>&1 | tee /tmp/rpm-build.log; then
+            echo "::error title=rpmbuild failed::$(tail -c 1800 /tmp/rpm-build.log | tr '\n' ' ' | tr -d '\r')"
+            exit 1
+          fi
       - name: inspect rpm
         run: |
           rpm_path="$(find packaging/rpm/out/RPMS -name '*.rpm' | head -n1)"
@@ -161,7 +166,11 @@ jobs:
       - name: build package (no dependency installation; quickshell comes from the AUR for users)
         working-directory: packaging/aur
         run: |
-          runuser -u builder -- bash -c 'cd "$GITHUB_WORKSPACE/packaging/aur" && makepkg -f --nodeps --nocheck'
+          set -o pipefail
+          if ! runuser -u builder -- bash -c 'cd "$GITHUB_WORKSPACE/packaging/aur" && makepkg -f --nodeps --nocheck' 2>&1 | tee /tmp/aur-build.log; then
+            echo "::error title=AUR makepkg failed::$(tail -c 1800 /tmp/aur-build.log | tr '\n' ' ' | tr -d '\r')"
+            exit 1
+          fi
           ls -la
       - name: source package for the AUR + a non-hidden .SRCINFO copy for Release assets
         working-directory: packaging/aur
@@ -213,6 +222,7 @@ jobs:
           name: 费加罗 ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          body_path: docs/v1.0.0-release-notes.md
           fail_on_unmatched_files: false
           files: |
             release-assets/*.deb
