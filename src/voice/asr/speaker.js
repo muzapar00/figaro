@@ -211,7 +211,11 @@ export function createSpeakerGate({ config, logger = {}, repoRoot, embedder, pro
 
   return {
     get enabled() { return conf.enabled && Boolean(profile); },
-    get threshold() { return profile?.threshold ?? conf.threshold; },
+    get threshold() {
+      const configured = Number(conf.threshold);
+      if (Number.isFinite(configured) && configured > 0) return configured;
+      return profile?.threshold ?? DEFAULT_SPEAKER_THRESHOLD;
+    },
     get profilePath() { return profileFile; },
     get stats() { return { ...stats }; },
     status() {
@@ -221,7 +225,7 @@ export function createSpeakerGate({ config, logger = {}, repoRoot, embedder, pro
         enrolled: Boolean(profile),
         state: reason ?? 'ready',
         reason,
-        threshold: profile?.threshold ?? conf.threshold,
+        threshold: typeof this !== 'undefined' && typeof this.threshold === 'number' ? this.threshold : conf.threshold,
         model: path.basename(emb.modelPath ?? ''),
         profile: path.basename(profileFile),
         samples: profile?.embeddings.length ?? 0,
@@ -260,7 +264,10 @@ export function createSpeakerGate({ config, logger = {}, repoRoot, embedder, pro
         const score = cosineSimilarity(vector, enrolled);
         if (score > best) best = score;
       }
-      const threshold = profile?.threshold ?? conf.threshold;
+      const configured = Number(conf.threshold);
+      const threshold = Number.isFinite(configured) && configured > 0
+        ? configured
+        : (profile?.threshold ?? DEFAULT_SPEAKER_THRESHOLD);
       const ok = best >= threshold;
       stats.checked += 1;
       stats.lastScore = Math.round(best * 1000) / 1000;

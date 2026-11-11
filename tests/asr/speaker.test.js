@@ -137,3 +137,20 @@ test('default profile lives in the figaro config directory', () => {
     else process.env.FIGARO_CONFIG_DIR = old;
   }
 });
+
+test('the configured threshold wins over the value stored in the profile', () => {
+  const dir = tmpDir();
+  const profilePath = path.join(dir, 'profile.json');
+  // Enrolled at 0.70, but the user lowered the threshold in config to 0.50.
+  saveProfile(profilePath, { threshold: 0.7, embeddings: [vec(1, 0)] });
+  const gate = createSpeakerGate({
+    config: { asr: { speaker: { enabled: true, threshold: 0.5 } } },
+    embedder: { preload: () => true, embed: () => vec(0.6, 0.8), modelPath: '/tmp/m', failure: null },
+    profilePath,
+  });
+  const verdict = gate.verify(quiet());
+  assert.equal(verdict.ok, true, JSON.stringify(verdict));
+  assert.equal(verdict.score, 0.6);
+  assert.equal(verdict.threshold, 0.5);
+  assert.equal(gate.threshold, 0.5);
+});

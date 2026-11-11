@@ -1314,6 +1314,10 @@ export function createDaemon(options = {}) {
             onUserSpeech: handleAsrUserSpeech,
             onGiveUp: handleAsrGiveUp,
             onFinalizing: handleAsrFinalizing,
+            // Forward the ASR module's own diagnostics (voiceprint scores, KWS
+            // rejections, cooldown decisions) into the daemon log; without this
+            // a "wake does nothing" report had no evidence behind it at all.
+            onLog: (message) => log.info(`[asr] ${message}`),
           });
           wakeMuted = false;
           wakeMuteSupported = null;
