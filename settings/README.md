@@ -186,14 +186,21 @@ CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 
 7. 语音服务（MiniMax Key，可稍后，写 `minimax.apiKey` 兼容旧键）；8. 自检（3 秒麦克风底噪 +
 F9/声纹状态，可跳过）；9. 完成总结（语言/地区/记忆/模型/语音/自检一览 + 重来/进入）。
 
-### 服务商引导卡片
-- 「模型服务」页：DeepSeek / OpenAI / Gemini 三张卡片 + Custom；「语音」页：MiniMax 卡片。
-- 每张卡带「推荐服务商」小字和圆圈 ⓘ，点开说明：**我们无法直接提供高质量实时的 LLM/TTS
-  服务，需要你自己向服务商申请 API Key；Key 只保存在本机（config.json 权限 600）、不上传、
-  不写日志；这些是推荐服务商，非唯一选择；Custom 可填本地/第三方 OpenAI 兼容端点（Ollama /
-  vLLM 等）**。卡片按钮直接打开官方 Key 页面：[DeepSeek](https://platform.deepseek.com/api_keys)、
-  [OpenAI](https://platform.openai.com/api-keys)、[Gemini](https://aistudio.google.com/app/apikey)、
-  [MiniMax](https://platform.minimaxi.com/user-center/basic-information/interface-key)。
+### 服务商引导（紧凑按钮，v1.0 发布前简化）
+- 「模型服务」页：一行紧凑按钮 **DeepSeek / OpenAI / Google Gemini**（logo + 名字），点一下直接
+  打开官方取 Key 页面：[DeepSeek](https://platform.deepseek.com/api_keys)、
+  [OpenAI](https://platform.openai.com/api-keys)、[Gemini](https://aistudio.google.com/app/apikey)；
+  旁边的小字为用户原话：**「我们推荐以下服务商，如果您支持开源，请选择中国的深度求索」**
+  （en/zh-TW 见 i18n 词表）；Custom 仍可填本地/第三方 OpenAI 兼容端点（如 Ollama / vLLM）。
+- 「语音」页：MiniMax 紧凑按钮（logo + 名字，链接
+  [MiniMax 控制台](https://platform.minimaxi.com/user-center/basic-information/interface-key)）+ 小 ⓘ。
+- 只保留一个小 ⓘ，弹窗内容不变：**我们无法直接提供高质量实时的 LLM/TTS 服务，需要你自己向
+  服务商申请 API Key；Key 只保存在本机（config.json 权限 600）、不上传、不写日志；这些是推荐
+  服务商，非唯一选择；Custom 可填本地/第三方 OpenAI 兼容端点**。
+- Logo：Simple Icons 白色 SVG，离线放在 `settings/assets/providers/`（运行时不联网）；`openai`
+  在 Simple Icons 为 404，按产品要求退化为文字圆标 "O"。尺寸 16px、按钮高 28px（`MProviderButton`）。
+  来源与商标归属见 `settings/assets/providers/README.md`（CC0 资产；商标归各自公司；仅用于跳转，
+  不表示合作/背书；权利人要求时可删除对应文件，自动退化文字圆标）。
 
 ### 通用 LLM 设置（模型服务页）
 - 字段：provider（DeepSeek/OpenAI/Gemini/Custom OpenAI 兼容）、baseUrl、model、apiKey（密码框，
@@ -219,7 +226,9 @@ F9/声纹状态，可跳过）；9. 完成总结（语言/地区/记忆/模型/�
 `26-wizard-welcome`…`35-wizard-summary`（9 步引导）、`46-i18n-en-overview` / `47-i18n-en-wizard`
 / `48-i18n-tw-overview` / `49-i18n-tw-wake`（三语切换）、`50-llm-top` / `51-llm-test-ok` /
 `52-llm-providers` / `53-llm-provider-info`（LLM 页 + 推荐服务商 + ⓘ 弹窗）、
-`54-voice-minimax-provider` / `55-minimax-info`（语音页 MiniMax 卡片）。
+`54-voice-minimax-provider` / `55-minimax-info`（语音页 MiniMax 入口）、
+`56-provider-buttons-zh` / `57-provider-buttons-en` / `58-provider-buttons-zh-tw`（紧凑按钮三语）、
+`59-voice-minimax-button`（语音页紧凑按钮）、`60-provider-info-dialog`（单 ⓘ 弹窗）。
 
 ### 已知环境问题
 Qt **software** 后端在本会话里启动 Quickshell 会段错误（`QWaylandShmBackingStore` 双绘制，

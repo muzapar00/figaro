@@ -672,5 +672,6 @@ var map = {
  "（空：英文无法唤醒）": "(empty: English cannot be awakened)",
  "麦克风正常，环境底噪 ": "Microphone OK, noise floor ",
  "环境有点吵，安静一点再测": "It's a bit noisy here — quiet down and try again",
- "最近 300 行 journalctl 日志 → 剪贴板": "Last 300 journalctl lines → clipboard"
+ "最近 300 行 journalctl 日志 → 剪贴板": "Last 300 journalctl lines → clipboard",
+ "我们推荐以下服务商，如果您支持开源，请选择中国的深度求索": "We recommend the following providers; if you support open source, please choose DeepSeek from China."
 };

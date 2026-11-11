@@ -384,7 +384,7 @@ shot 51-llm-test-ok
 ipc act "scroll-bottom" >/dev/null
 sleep 0.5
 shot 52-llm-providers
-act llm-info:deepseek >/dev/null
+act llm-info >/dev/null
 sleep 0.6
 shot 53-llm-provider-info
 act info-close >/dev/null
@@ -397,6 +397,30 @@ shot 54-voice-minimax-provider
 act voice-minimax-info >/dev/null
 sleep 0.6
 shot 55-minimax-info
+act info-close >/dev/null
+sleep 0.3
+
+# ---------------------------------------- 紧凑服务商按钮（三语 + 语音页 + ⓘ）
+echo "[shoot] compact provider buttons"
+page llm
+ipc act "scroll-bottom" >/dev/null
+sleep 0.5
+shot 56-provider-buttons-zh
+act lang:en >/dev/null
+sleep 0.7
+shot 57-provider-buttons-en
+act lang:zh-TW >/dev/null
+sleep 0.7
+shot 58-provider-buttons-zh-tw
+act lang:zh-CN >/dev/null
+sleep 0.5
+page voice
+ipc act "scroll:150" >/dev/null
+sleep 0.5
+shot 59-voice-minimax-button
+act voice-minimax-info >/dev/null
+sleep 0.6
+shot 60-provider-info-dialog
 act info-close >/dev/null
 sleep 0.3
 
@@ -626,13 +650,34 @@ try:
 except Exception as e:
     check("config.json readable (" + config_path + ")", False, str(e))
 
+# compact provider buttons: exact URLs + offline logo assets + recommendation line
+links = {entry.get("name"): entry for entry in (llm.get("providerLinks") or [])}
+check("provider link DeepSeek", (links.get("DeepSeek") or {}).get("url") == "https://platform.deepseek.com/api_keys", str(links))
+check("provider link OpenAI", (links.get("OpenAI") or {}).get("url") == "https://platform.openai.com/api-keys", str(links))
+check("provider link Gemini", (links.get("Google Gemini") or {}).get("url") == "https://aistudio.google.com/app/apikey", str(links))
+check("recommendation line exact", llm.get("recommendLine") == "我们推荐以下服务商，如果您支持开源，请选择中国的深度求索", str(llm.get("recommendLine")))
+voice = d.get("voice", {}) or {}
+check("MiniMax button URL", voice.get("minimaxKeyUrl") == "https://platform.minimaxi.com/user-center/basic-information/interface-key", str(voice.get("minimaxKeyUrl")))
+check("MiniMax button logo", (voice.get("minimaxLogo") or "").endswith("assets/providers/minimax.svg"), str(voice.get("minimaxLogo")))
+check("OpenAI falls back to a letter badge", (links.get("OpenAI") or {}).get("logo") == "" and (links.get("OpenAI") or {}).get("fallback") == "O", str(links.get("OpenAI")))
+for name, rel in [("DeepSeek", "deepseek.svg"), ("Google Gemini", "googlegemini.svg")]:
+    logo = (links.get(name) or {}).get("logo") or ""
+    check(f"{name} logo path", logo.endswith(f"assets/providers/{rel}"), logo)
+root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1]))))  # settings/test/out -> settings
+for rel in ["assets/providers/deepseek.svg", "assets/providers/googlegemini.svg", "assets/providers/minimax.svg"]:
+    path = os.path.join(root, rel)
+    check("offline logo " + rel, os.path.isfile(path) and os.path.getsize(path) > 100, path)
+
 for name in ["26-wizard-welcome.png", "27-wizard-privacy.png", "28-wizard-language.png",
              "29-wizard-region.png", "30-wizard-memory.png", "31-wizard-llm.png",
              "32-wizard-voice.png", "33-wizard-selftest.png", "34-wizard-selftest-result.png",
              "35-wizard-summary.png", "46-i18n-en-overview.png", "47-i18n-en-wizard.png",
              "48-i18n-tw-overview.png", "49-i18n-tw-wake.png", "50-llm-top.png",
              "51-llm-test-ok.png", "52-llm-providers.png", "53-llm-provider-info.png",
-             "54-voice-minimax-provider.png", "55-minimax-info.png"]:
+             "54-voice-minimax-provider.png", "55-minimax-info.png",
+             "56-provider-buttons-zh.png", "57-provider-buttons-en.png",
+             "58-provider-buttons-zh-tw.png", "59-voice-minimax-button.png",
+             "60-provider-info-dialog.png"]:
     path = os.path.join(os.path.dirname(sys.argv[1]), name)
     check("screenshot " + name, os.path.isfile(path) and os.path.getsize(path) > 10000, path)
 
@@ -699,8 +744,14 @@ check('every source has an English string', not missing_en, str(missing_en[:5]))
 check('every source has a zh-TW string', not missing_tw, str(missing_tw[:5]))
 leftover_cjk = [s for s, v in en.items() if cjk.search(v) and s not in ('简体中文', '繁體中文')]
 check('English catalog contains no Chinese', not leftover_cjk, str(leftover_cjk[:5]))
+recommend_src = '我们推荐以下服务商，如果您支持开源，请选择中国的深度求索'
+check('recommendation en translation', en.get(recommend_src) == 'We recommend the following providers; if you support open source, please choose DeepSeek from China.', str(en.get(recommend_src)))
+check('recommendation zh-TW translation', tw.get(recommend_src) == '我們推薦以下服務商，如果您支持開源，請選擇中國的深度求索', str(tw.get(recommend_src)))
 bad_tw_terms = ['设置', '麦克风', '语音', '连接', '唤醒', '保存', '默认', '服务器', '信息', '软件', '网络', '用户', '数据', '加载', '支持', '识别', '声纹', '试听', '诊断', '外观', '概览']
-tw_hits = [(s, t) for s, v in tw.items() for t in bad_tw_terms if t in v]
+# The one-line recommendation uses the user's exact zh-TW copy (「支持開源」), so it
+# is excluded from the simplified-vocabulary scan on purpose.
+recommend_src = '我们推荐以下服务商，如果您支持开源，请选择中国的深度求索'
+tw_hits = [(s, t) for s, v in tw.items() if s != recommend_src for t in bad_tw_terms if t in v]
 check('zh-TW uses Taiwan wording (no simplified terms)', not tw_hits, str(tw_hits[:3]))
 
 # No user-visible Chinese left unwrapped; these are spoken-config data values.

@@ -13,13 +13,17 @@ MPageScroll {
     // ---- provider presets (baseUrl/model defaults follow the official docs) --
     readonly property var providers: [
         { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-flash",
-          keyUrl: "https://platform.deepseek.com/api_keys", desc: I18n.t("性价比高、中文好，费加罗的默认选择") },
+          keyUrl: "https://platform.deepseek.com/api_keys", desc: I18n.t("性价比高、中文好，费加罗的默认选择"),
+          logo: "../assets/providers/deepseek.svg", fallback: "D", fallbackColor: "#4D6BFE" },
         { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini",
-          keyUrl: "https://platform.openai.com/api-keys", desc: I18n.t("生态成熟、工具调用稳定") },
+          keyUrl: "https://platform.openai.com/api-keys", desc: I18n.t("生态成熟、工具调用稳定"),
+          logo: "", fallback: "O", fallbackColor: "#10A37F" },
         { id: "gemini", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.0-flash",
-          keyUrl: "https://aistudio.google.com/app/apikey", desc: I18n.t("响应快、有免费额度") },
+          keyUrl: "https://aistudio.google.com/app/apikey", desc: I18n.t("响应快、有免费额度"),
+          logo: "../assets/providers/googlegemini.svg", fallback: "G", fallbackColor: "#8E75B2" },
         { id: "custom", label: I18n.t("自定义"), baseUrl: "", model: "",
-          keyUrl: "", desc: I18n.t("任意 OpenAI 兼容端点，如 Ollama / vLLM / 第三方中转") },
+          keyUrl: "", desc: I18n.t("任意 OpenAI 兼容端点，如 Ollama / vLLM / 第三方中转"),
+          logo: "", fallback: "C", fallbackColor: "#5E5CE6" },
     ]
 
     property string providerDraft: "deepseek"
@@ -43,6 +47,18 @@ MPageScroll {
             if (page.providers[i].id === id) return i;
         return 0;
     }
+    function openLlmInfo() {
+        page.infoRequested(
+            I18n.t("推荐服务商"),
+            I18n.t("我们无法直接提供高质量的实时 LLM 服务，需要你自己向服务商申请 API Key。")
+                + I18n.t("Key 只保存在本机 config.json（权限 600），不会上传给我们，也不会写进日志。")
+                + I18n.t("DeepSeek / OpenAI / Gemini 是推荐服务商，不是唯一选择；")
+                + I18n.t("「自定义」可以填 Ollama / vLLM 等 OpenAI 兼容端点。"),
+            "",
+            "");
+        return "llm-info";
+    }
+
     function openProviderInfo(id) {
         const info = page.providerInfo(id);
         page.infoRequested(
@@ -152,6 +168,8 @@ MPageScroll {
             apiKeyDraftEmpty: page.apiKeyDraft.length === 0,
             keyStored: page.keyStored,
             localHint: page.localHint,
+            recommendLine: I18n.t("我们推荐以下服务商，如果您支持开源，请选择中国的深度求索"),
+            providerLinks: page.providers.map((p) => ({ name: p.label, url: p.keyUrl, logo: p.logo, fallback: p.fallback })),
             test: {
                 running: Ipc.llmTestRunning,
                 ok: page.testResult.ok === true,
@@ -302,93 +320,49 @@ MPageScroll {
         }
     }
 
-    // ------------------------------------------------------- 推荐服务商卡片
+    // ------------------------------------------------ 推荐服务商（紧凑按钮）
     MCard {
         title: I18n.t("推荐服务商")
         subtitle: I18n.t("下列服务商可以直接填 API Key 使用；也可以选「自定义」接本地或第三方端点")
 
-        Repeater {
-            model: page.providers
-
-            ColumnLayout {
-                required property var modelData
-                Layout.fillWidth: true
-                spacing: 6
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: cardLayout.implicitHeight + 24
-                    radius: 10
-                    color: page.providerDraft === modelData.id ? Qt.rgba(0.04, 0.52, 1.0, 0.12) : Theme.insetBg
-                    border.width: page.providerDraft === modelData.id ? 1 : 0.5
-                    border.color: page.providerDraft === modelData.id ? Qt.rgba(0.04, 0.52, 1.0, 0.45) : Qt.rgba(1, 1, 1, 0.08)
-
-                    ColumnLayout {
-                        id: cardLayout
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: 12
-                        spacing: 6
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            Text {
-                                text: modelData.label
-                                color: Theme.text
-                                font.family: Theme.fontSans
-                                font.pixelSize: 14
-                                font.weight: Font.DemiBold
-                            }
-                            MPill {
-                                visible: modelData.id !== "custom"
-                                text: I18n.t("推荐服务商")
-                                tone: Theme.accent
-                            }
-                            MIcon {
-                                kind: "info"
-                                size: 15
-                                color: Theme.accent
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: page.openProviderInfo(modelData.id)
-                                }
-                            }
-                            Item { Layout.fillWidth: true }
-                            MButton {
-                                text: I18n.t("用这家")
-                                onClicked: page.useProvider(modelData.id)
-                            }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: modelData.desc
-                            color: Theme.textDim
-                            font.family: Theme.fontSans
-                            font.pixelSize: Theme.fsSmall
-                            wrapMode: Text.WordWrap
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            MButton {
-                                visible: modelData.keyUrl.length > 0
-                                text: I18n.t("获取 API Key →")
-                                onClicked: Qt.openUrlExternally(modelData.keyUrl)
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                text: modelData.id === "custom" ? I18n.t("自定义：baseUrl 填到 /v1 即可") : modelData.baseUrl
-                                color: Theme.textFaint
-                                font.family: Theme.fontSans
-                                font.pixelSize: Theme.fsTiny
-                                elide: Text.ElideRight
-                            }
-                        }
-                    }
+        Text {
+            Layout.fillWidth: true
+            text: I18n.t("我们推荐以下服务商，如果您支持开源，请选择中国的深度求索")
+            color: Theme.textDim
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Repeater {
+                model: page.providers.filter((p) => p.id !== "custom")
+                MProviderButton {
+                    required property var modelData
+                    label: modelData.label
+                    logoSource: modelData.logo
+                    fallbackText: modelData.fallback
+                    fallbackColor: modelData.fallbackColor
+                    onClicked: Qt.openUrlExternally(modelData.keyUrl)
                 }
+            }
+            MIcon {
+                kind: "info"
+                size: 16
+                color: Theme.accent
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.openLlmInfo()
+                }
+            }
+            Item { Layout.fillWidth: true }
+            Text {
+                text: I18n.t("自定义：baseUrl 填到 /v1 即可")
+                color: Theme.textFaint
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fsTiny
             }
         }
         Text {

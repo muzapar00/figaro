@@ -9,6 +9,9 @@ MPageScroll {
 
     signal infoRequested(string title, string body, string linkLabel, string linkUrl)
 
+    readonly property string minimaxKeyUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key"
+    readonly property string minimaxLogo: "../assets/providers/minimax.svg"
+
     property string sink: ""
     property string voiceId: ""
     property string draftSink: ""
@@ -163,6 +166,8 @@ MPageScroll {
             running: Ipc.ttsRunning,
             lastResult: Ipc.ttsResult,
             candidateSinks: page.sinks.length,
+            minimaxKeyUrl: page.minimaxKeyUrl,
+            minimaxLogo: page.minimaxLogo,
         };
     }
 
@@ -272,65 +277,40 @@ MPageScroll {
     }
 
     // ---------------------------------------------- 推荐语音服务商 MiniMax
+    // 紧凑入口：logo + 名字，点一下直接打开 MiniMax 取 Key 页面；ⓘ 保留原说明。
     MCard {
         title: I18n.t("推荐语音服务商")
         subtitle: I18n.t("费加罗的「嗓子」：把回复读出来需要 TTS 服务商；语音识别是本地的，不需要 Key")
 
-        Rectangle {
+        RowLayout {
             Layout.fillWidth: true
-            implicitHeight: minimaxLayout.implicitHeight + 24
-            radius: 10
-            color: Theme.insetBg
-            border.width: 0.5
-            border.color: Qt.rgba(1, 1, 1, 0.08)
-
-            ColumnLayout {
-                id: minimaxLayout
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 12
-                spacing: 6
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Text {
-                        text: "MiniMax"
-                        color: Theme.text
-                        font.family: Theme.fontSans
-                        font.pixelSize: 14
-                        font.weight: Font.DemiBold
-                    }
-                    MPill {
-                        text: I18n.t("推荐服务商")
-                        tone: Theme.accent
-                    }
-                    MIcon {
-                        kind: "info"
-                        size: 15
-                        color: Theme.accent
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.openMinimaxInfo()
-                        }
-                    }
-                    Item { Layout.fillWidth: true }
-                    MButton {
-                        text: I18n.t("获取 API Key →")
-                        onClicked: Qt.openUrlExternally("https://platform.minimaxi.com/user-center/basic-information/interface-key")
-                    }
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: I18n.t("音色自然、延迟低，费加罗的默认 TTS 选择；Key 填在「连接」页的 MiniMax API Key 里。")
-                    color: Theme.textDim
-                    font.family: Theme.fontSans
-                    font.pixelSize: Theme.fsSmall
-                    wrapMode: Text.WordWrap
+            spacing: 8
+            MProviderButton {
+                label: "MiniMax"
+                logoSource: page.minimaxLogo
+                fallbackText: "M"
+                fallbackColor: "#F23F5D"
+                onClicked: Qt.openUrlExternally(page.minimaxKeyUrl)
+            }
+            MIcon {
+                kind: "info"
+                size: 16
+                color: Theme.accent
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.openMinimaxInfo()
                 }
             }
+            Item { Layout.fillWidth: true }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: I18n.t("音色自然、延迟低，费加罗的默认 TTS 选择；Key 填在「连接」页的 MiniMax API Key 里。")
+            color: Theme.textDim
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
         }
         Text {
             Layout.fillWidth: true

@@ -97,6 +97,7 @@ Rectangle {
         case "wizard-finish": return wizardPage.finishWizard();
         case "wizard-selftest": wizardPage.gotoStep(7); return wizardPage.runSelfTest();
         case "wizard-memory-info": wizardPage.gotoStep(4); return wizardPage.openMemoryInfo();
+        case "llm-info": return llmPage.openLlmInfo();
         case "voice-minimax-info": return voicePage.openMinimaxInfo();
         case "wizard-selftest-pass": wizardPage.gotoStep(7); return wizardPage.markSelfTest();
         case "wizard-llm-demo": return wizardPage.fillLlmDemo();
