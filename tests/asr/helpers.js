@@ -102,6 +102,10 @@ export function makeConfig(overrides = {}) {
     // defaults (the real user config may have bargeIn.enabled=false from the GUI
     // and src/config.js may still carry an older minRms/echoFactor)
     bargeIn: { ...BARGE_IN_DEFAULTS },
+    // deterministic tests: the real user config may have the voiceprint gate on
+    // (and a profile that rejects the synthetic fixture voices). Speaker tests
+    // opt in explicitly.
+    speaker: { ...(DEFAULTS.asr.speaker ?? {}), enabled: false },
     ...(overrides.asr ?? {}),
   };
   return config;

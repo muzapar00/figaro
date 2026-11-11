@@ -92,6 +92,14 @@ export function summarizeToolCall(name, args = {}) {
       return cut(Array.isArray(args.queries) ? args.queries.join(' / ') : args.queries);
     case 'web_fetch':
       return cut(args.url);
+    case 'home': {
+      const parts = [args.action ?? 'list'];
+      if (args.device) parts.push(String(args.device));
+      if (args.room) parts.push(String(args.room));
+      if (args.value !== undefined) parts.push(`${args.value}%`);
+      if (args.kelvin !== undefined) parts.push(`${args.kelvin}K`);
+      return cut(parts.join(' '));
+    }
     default:
       return cut(JSON.stringify(args));
   }

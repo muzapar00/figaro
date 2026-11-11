@@ -204,10 +204,16 @@ test('screenshot and view_image are offered to the model', () => {
   assert.ok(shot && view, 'both screen tools exist');
   assert.match(shot.description, /screen/i);
   // The catalog uses `file_path` elsewhere, so both spellings must be accepted.
-  assert.ok(view.parameters.properties.file_path);
-  assert.ok(view.parameters.properties.path);
+  assert.ok(view.parameters.file_path, 'view_image declares file_path in the dsh-style map');
+  assert.ok(view.parameters.path, 'view_image accepts the path alias');
+  assert.ok(shot.parameters.path, 'screenshot declares path in the dsh-style map');
   const schema = registry.schemas.find((tool) => tool.function.name === 'view_image');
   assert.equal(schema.type, 'function');
+  // A raw JSON Schema accidentally passed to toChatTools() produced a schema with
+  // properties named "type"/"properties"; the model then could not see file_path.
+  assert.ok(schema.function.parameters.properties.file_path, 'schema exposes file_path');
+  assert.ok(schema.function.parameters.required.includes('file_path'));
+  assert.equal(schema.function.parameters.properties.type, undefined);
 });
 
 test('view_image returns the picture separately from its text result', async () => {

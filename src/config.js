@@ -35,6 +35,14 @@ export const DEFAULTS = {
     format: 'pcm',
     endpointTimeoutMs: 8000,
   },
+  // Smart home (optional): a local Home Assistant instance is the device layer;
+  // the `home` tool maps spoken light commands to HA entities. Empty haUrl/haToken
+  // means the tool is not registered at all, so the model never sees it.
+  home: {
+    haUrl: '',
+    haToken: '',
+    defaultRoom: '',
+  },
   asr: {
     // wake phrase list, matched against normalized Chinese text
     wakeWords: ['费加罗', '菲加罗', '飞加罗', 'figaro', '费加'],
@@ -93,7 +101,7 @@ export const DEFAULTS = {
       // different speakers land at ~0.2-0.45, so 0.65 leaves room for both.
       threshold: 0.65,
       // ignore wake audio quieter than this (normalized RMS)
-      minRms: 0.008,
+      minRms: 0.0025,
     },
   },
   tts: {

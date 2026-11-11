@@ -9,6 +9,12 @@
   比对（本地计算，不联网）。放歌/电视里的近似发音会被挡掉，不播应答、不开麦；
   没录声纹或模型缺失时自动退回只认唤醒词，热键 F9 不受声纹限制。
   档案在 `~/.config/figaro/speaker-profile.json`（0600，不进仓库）。
+- `figaro enroll-voice`：本地录 3 句生成声纹档案；电平门槛降到 0.0025，小增益麦克风也能录。
+
+### 智能家居（准备中）
+- 新增可选 `home` 工具：通过本地 Home Assistant 控制灯（开关/亮度/色温/状态），
+  配置 `home.haUrl`/`home.haToken` 后才会注册给模型；未配置时模型看不到。
+- 修复 screenshot/view_image 的参数 schema 被二次转换后传给模型的问题（dsh 风格）。
 
 ## 0.1.0 — 初始发布
 

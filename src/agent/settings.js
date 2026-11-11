@@ -26,7 +26,7 @@ export const SETTINGS_MESSAGE_TYPES = Object.freeze([
   'diagnostics',
 ]);
 
-export const SECRET_PATHS = Object.freeze(['deepseek.apiKey', 'minimax.apiKey']);
+export const SECRET_PATHS = Object.freeze(['deepseek.apiKey', 'minimax.apiKey', 'home.haToken']);
 
 // Paths the GUI may write. Everything else is rejected so a UI bug cannot
 // rewrite the API keys, socket path or model endpoints.
@@ -65,6 +65,9 @@ export const ALLOWED_CONFIG_PATHS = Object.freeze([
   'tts.ack.enabled',
   'tts.ack.phrases',
   'tts.ack.timeoutMs',
+  'home.haUrl',
+  'home.haToken',
+  'home.defaultRoom',
 ]);
 
 export const MIC_TEST_DEFAULT_MS = 4000;

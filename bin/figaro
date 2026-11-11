@@ -27,7 +27,7 @@ const USAGE = `用法:
   figaro talk                            唤醒一次（等同喊「费加罗」，可绑到桌面快捷键）
   figaro status [--json]                 查看状态与健康
   figaro doctor [--json] [--fix] [--net] 一键体检（服务/模型/麦克风/音频出口/热键/桌面/资源）
-  figaro enroll-voice [--samples 3] [--seconds 3] [--device 源] [--threshold 0.65]
+  figaro enroll-voice [--samples=3] [--seconds=3] [--device=源] [--threshold=0.65] [--dry-run]
                                          录你的声纹，之后只认你的声音唤醒
   figaro help                            显示帮助
 
@@ -347,18 +347,26 @@ async function recordMic({ seconds, device }) {
 }
 
 async function commandEnrollVoice(flags) {
+  // parseArgs keeps a Set of bare flags (no values); accept --name=value here.
+  const flagValue = (name) => {
+    for (const f of flags) {
+      if (f.startsWith(`${name}=`)) return f.slice(name.length + 1);
+    }
+    return undefined;
+  };
   const { loadConfig: loadCfg, CONFIG_PATH } = await import('../src/config.js');
   const {
     createEmbedder, saveProfile, cosineSimilarity, defaultProfilePath, resolveSpeakerModelPath, DEFAULT_SPEAKER_THRESHOLD,
   } = await import('../src/voice/asr/speaker.js');
   const config = loadCfg();
   const repoRoot = config.paths?.root ?? process.cwd();
-  const sampleCount = Math.max(1, Math.round(Number(flags.get('samples') ?? 3)));
-  const seconds = Math.max(1.5, Number(flags.get('seconds') ?? 3));
-  const threshold = Number.isFinite(Number(flags.get('threshold'))) ? Number(flags.get('threshold')) : (config.asr.speaker.threshold ?? DEFAULT_SPEAKER_THRESHOLD);
-  const model = resolveSpeakerModelPath(flags.get('model') ?? config.asr.speaker.model, repoRoot);
-  const profilePath = flags.get('profile') ? path.resolve(String(flags.get('profile'))) : defaultProfilePath();
-  const device = flags.get('device') ?? (config.asr.device && config.asr.device !== 'default' ? config.asr.device : undefined);
+  const sampleCount = Math.max(1, Math.round(Number(flagValue('samples') ?? 3)));
+  const seconds = Math.max(1.5, Number(flagValue('seconds') ?? 3));
+  const thresholdValue = Number(flagValue('threshold'));
+  const threshold = Number.isFinite(thresholdValue) ? thresholdValue : (config.asr.speaker.threshold ?? DEFAULT_SPEAKER_THRESHOLD);
+  const model = resolveSpeakerModelPath(flagValue('model') ?? config.asr.speaker.model, repoRoot);
+  const profilePath = flagValue('profile') ? path.resolve(String(flagValue('profile'))) : defaultProfilePath();
+  const device = flagValue('device') ?? (config.asr.device && config.asr.device !== 'default' ? config.asr.device : undefined);
   const embedder = createEmbedder({ model, repoRoot, logger: { info: (m) => console.log(`  ${m}`), warn: (m) => console.warn(`  ${m}`) } });
   console.log('费加罗 · 声纹录制');
   console.log(`  模型: ${model}`);
@@ -368,6 +376,10 @@ async function commandEnrollVoice(flags) {
   if (!embedder.preload()) {
     console.error('\n✗ 声纹模型加载失败。先下载模型：bash scripts/fetch-models.sh');
     process.exit(1);
+  }
+  if (flags.has('dry-run')) {
+    console.log('\n--dry-run：模型与档案检查完成，不录音。');
+    return;
   }
   const prompts = [
     '费加罗，帮我打开演示文件夹',
@@ -397,7 +409,7 @@ async function commandEnrollVoice(flags) {
     let sum = 0;
     for (let i = 0; i < pcm.length; i += 1) sum += pcm[i] * pcm[i];
     const level = Math.sqrt(sum / Math.max(1, pcm.length));
-    if (level < 0.005) {
+    if (level < 0.0025) {
       console.log(`  声音太小（rms=${level.toFixed(4)}），这条重录`);
       continue;
     }
@@ -485,6 +497,8 @@ async function commandStatus(flags) {
   console.log(`  PID: ${pong.pid}`);
   console.log(`  模型: ${pong.model ?? '?'}`);
   console.log(`  语音: ASR ${pong.voice?.asr ? '可用' : '不可用'}，TTS ${pong.voice?.tts ? '可用' : '不可用'}`);
+  const homeCfg = config.home ?? {};
+  console.log(`  家庭中枢: ${homeCfg.haUrl && homeCfg.haToken ? `已配置（${homeCfg.haUrl}）` : '未配置（config.home.haUrl/haToken）'}`);
   if (pong.ack) {
     const ack = pong.ack;
     let ackLine;

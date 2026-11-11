@@ -12,9 +12,10 @@ import { createReadTool, createWriteTool, createEditTool } from './fs.js';
 import { createGlobTool, createGrepTool } from './search.js';
 import { createWebSearchTool, createWebFetchTool } from './web.js';
 import { createScreenshotTool, createViewImageTool } from './screen.js';
+import { createHomeTool } from './home.js';
 import { toChatTools, summarizeToolCall, redactArgs } from './define.js';
 
-export const TOOL_NAMES = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'web_search', 'web_fetch', 'screenshot', 'view_image'];
+export const TOOL_NAMES = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'web_search', 'web_fetch', 'screenshot', 'view_image', 'home'];
 
 // Only offered when the host supplies a control hook: standing down is a daemon
 // decision, not something a tool implementation can do on its own.
@@ -55,6 +56,13 @@ export function createTools(options = {}) {
     createScreenshotTool(),
     createViewImageTool(),
   ];
+
+  // Only offered when the user actually configured Home Assistant; otherwise the
+  // model has no reason to see a tool that can only answer "not configured".
+  const homeConfig = config.home ?? {};
+  if (homeConfig.haUrl && homeConfig.haToken) {
+    tools.push(createHomeTool({ config }));
+  }
 
   if (control?.dismiss) {
     tools.push({

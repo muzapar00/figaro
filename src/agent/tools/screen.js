@@ -62,13 +62,11 @@ export function createScreenshotTool() {
     description:
       'Capture the current screen to an image file and return its path. Use it when the user asks about something visible '
       + 'on screen; follow up with view_image on the returned path, because the screenshot tool itself does not show you the picture.',
+    // dsh-style parameter map (see define.js): a raw JSON Schema object here would
+    // be converted a second time by toChatTools() and reach the model broken.
     parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Optional output path; defaults to a timestamped file in the temp directory.' },
-        file_path: { type: 'string', description: 'Alias for path.' },
-      },
-      additionalProperties: false,
+      path: { type: 'string', description: 'Optional output path; defaults to a timestamped file in the temp directory.' },
+      file_path: { type: 'string', description: 'Alias for path.' },
     },
     async execute(args) {
       const wanted = pickPath(args);
@@ -94,16 +92,11 @@ export function createViewImageTool() {
       'Look at an image file (screenshot or any PNG/JPEG). Returns the picture so you can describe or reason about it. '
       + 'The image is downscaled to at most 1440px wide.',
     parameters: {
-      type: 'object',
-      properties: {
-        // The file tools in this catalog use `file_path`, and the model naturally
-        // reuses that name here; both spellings are accepted so a wording
-        // difference never reads as "the image tool is broken".
-        file_path: { type: 'string', description: 'Absolute path to the image file.' },
-        path: { type: 'string', description: 'Alias for file_path.' },
-      },
-      required: ['file_path'],
-      additionalProperties: false,
+      // The file tools in this catalog use `file_path`, and the model naturally
+      // reuses that name here; both spellings are accepted so a wording
+      // difference never reads as "the image tool is broken".
+      file_path: { type: 'string', required: true, description: 'Absolute path to the image file.' },
+      path: { type: 'string', description: 'Alias for file_path.' },
     },
     async execute(args) {
       const wanted = pickPath(args);
