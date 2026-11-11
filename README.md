@@ -7,7 +7,7 @@
 **A voice assistant that runs on your own Linux desktop. Say the word — it appears. Finish — it leaves.**
 
 [![License: GPL-3.0+](https://img.shields.io/badge/license-GPL--3.0%2B-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen.svg)](#measured-numbers)
+[![Tests](https://img.shields.io/badge/tests-376%20passing-brightgreen.svg)](#measured-numbers)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Wayland%20%C2%B7%20Quickshell-6a5acd.svg)](#quick-start)
 [![Brain](https://img.shields.io/badge/brain-DeepSeek%20%2B%20local%20tools-4a7dff.svg)](#architecture)
 [![Voice](https://img.shields.io/badge/voice-MiniMax%20streaming-d75cff.svg)](#architecture)
@@ -37,6 +37,7 @@ DeepSeek; the voice is MiniMax streaming TTS.
 | 🗣️ **Stops when you stop, waits when it is done** | After the reply it waits seven seconds; just keep talking to follow up — no wake word needed. Only genuinely loud speech counts (floor 0.0023, gate 0.012) |
 | 🚪 **Leaves on request** | "退下 / 休息吧 / 没事了" finishes the spoken reply first, then dismisses; tap it to cancel instead |
 | 🛑 **Interruptible** | Talk over the answer (loud enough, long enough) and it stops instantly and listens — background noise will not trigger it |
+| 🧠 **Remembers across sessions** | Long-term memory via a local **LightRAG** service (MIT): related past notes are recalled before answering, and finished exchanges are indexed in the background. No cloud vector DB; if the service is down it silently answers without memory |
 | 🖥️ **Sees the screen** | Built-in `screenshot` + `view_image` tools: ask what is on screen and it actually looks (a parameter-name mismatch that used to make it report "the image tool is broken" is fixed) |
 | 🛠️ **Local tools** | bash, read/write files, glob/grep, web search — composable |
 | 🔊 **Quiet UI sounds** | Five 65–200 ms earcons (wake, capture end, answer done, dismiss, error), 4–6 dB below the voice, separate processes that can never interrupt speech |
@@ -166,6 +167,8 @@ Everything lives in `~/.config/figaro/config.json`, and most of it can also be c
 | `asr.hotkey` | `F9` | hold to talk / tap to cancel |
 | `asr.silenceStopMs` | `3000` | how much silence ends a sentence (900 ms cut people off mid-sentence) |
 | `asr.speaker` | `{enabled:false, threshold:0.65}` | voiceprint: after `figaro enroll-voice`, only your voice can wake it |
+| `rag.enabled` / `rag.host` | `true` / `http://127.0.0.1:9621` | local LightRAG long-term memory (MIT, see [docs/rag.md](docs/rag.md)) |
+| `rag.timeoutMs` / `rag.autoIngest` | `1500` / `true` | recall latency budget; index each finished exchange in the background |
 | `home.haUrl` / `home.haToken` | unset | local Home Assistant REST endpoint + long-lived token; enables the `home` tool (lights) |
 | `asr.bargeIn` | `{enabled:true, minRms:0.09, echoFactor:2.5, minMs:500}` | how loud a voice must be to interrupt |
 | `asr.verifyWake` | `{enabled:false, timeoutMs:1800}` | two-stage wake verification (0/40 false wakes, +600 ms per wake) |
@@ -192,6 +195,7 @@ floor, audio sink and mute state, hotkey binding, the KWin glass plugin, VRAM/CP
 | No sound | `tts.sink` points at a muted or unconnected sink; `figaro doctor` names it, or pick the output device in settings. The daemon and the earcons share one sink |
 | Wake word does nothing | try `medium/high` sensitivity; check `asr.inputGainPercent` against the live level in `figaro doctor`; make sure the KWS model is downloaded |
 | Music / TV wakes it up | record your voiceprint once with `figaro enroll-voice`; after that the wake audio is matched against your voice (config `asr.speaker`) |
+| It forgets yesterday | long-term memory is the local LightRAG service: `systemctl --user status figaro-rag figaro-rag-embed`, see [docs/rag.md](docs/rag.md) |
 | False wakes from TV or music | enable `asr.verifyWake.enabled` (near-homophone false wakes 2/40 → 0/40, at +600 ms per wake) |
 | F9 does not work | the portal is still starting, or the session predates the login. The daemon retries for ~50 s and then re-checks every minute, so give it a moment or restart `figaro`. If it never binds, the portal cannot resolve the app id: KDE System Settings → Shortcuts → add the command `figaro talk`, bind F9 |
 | Nothing happens after logging out and back in | expected for a couple of seconds: the units follow `graphical-session.target`, so the daemon stops on logout and comes back once PipeWire and the portal are ready (≈3–10 s). `systemctl --user status figaro figaro-ui`, then `systemctl --user restart figaro figaro-ui` if it is still down |

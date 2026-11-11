@@ -11,3 +11,9 @@ tests/asr/fixtures/generated/
 settings/test/out/*.log
 settings/test/out/*.json
 settings/test/out/*.csv
+
+# third-party RAG engine cloned for reference/pinning: never commit upstream source
+vendor/
+
+# settings screenshot harness writes a transient snapshot with local paths
+settings/test/out/status.json

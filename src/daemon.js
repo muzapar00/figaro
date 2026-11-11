@@ -318,6 +318,7 @@ export function createDaemon(options = {}) {
         },
       },
       history: agent?.history?.length ?? 0,
+      rag: agent?.ragStats ?? null,
       ack: ackHealth(),
       lastError,
     };

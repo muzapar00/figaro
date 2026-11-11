@@ -13,6 +13,7 @@ import { createGlobTool, createGrepTool } from './search.js';
 import { createWebSearchTool, createWebFetchTool } from './web.js';
 import { createScreenshotTool, createViewImageTool } from './screen.js';
 import { createHomeTool } from './home.js';
+import { createRagTool } from './rag.js';
 import { toChatTools, summarizeToolCall, redactArgs } from './define.js';
 
 export const TOOL_NAMES = ['bash', 'read', 'write', 'edit', 'glob', 'grep', 'web_search', 'web_fetch', 'screenshot', 'view_image', 'home'];
@@ -56,6 +57,10 @@ export function createTools(options = {}) {
     createScreenshotTool(),
     createViewImageTool(),
   ];
+
+  // Long-term memory tool: only when the agent wired a LightRAG client in.
+  const ragTool = options.rag ? createRagTool({ rag: options.rag }) : null;
+  if (ragTool) tools.push(ragTool);
 
   // Only offered when the user actually configured Home Assistant; otherwise the
   // model has no reason to see a tool that can only answer "not configured".

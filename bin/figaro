@@ -497,6 +497,9 @@ async function commandStatus(flags) {
   console.log(`  PID: ${pong.pid}`);
   console.log(`  模型: ${pong.model ?? '?'}`);
   console.log(`  语音: ASR ${pong.voice?.asr ? '可用' : '不可用'}，TTS ${pong.voice?.tts ? '可用' : '不可用'}`);
+  if (pong.rag) {
+    console.log(`  长期记忆: ${pong.rag.enabled ? `LightRAG ${pong.rag.host}（mode=${pong.rag.mode}，${pong.rag.recallHits ?? 0} 次召回）` : '关闭'}`);
+  }
   const homeCfg = config.home ?? {};
   console.log(`  家庭中枢: ${homeCfg.haUrl && homeCfg.haToken ? `已配置（${homeCfg.haUrl}）` : '未配置（config.home.haUrl/haToken）'}`);
   if (pong.ack) {

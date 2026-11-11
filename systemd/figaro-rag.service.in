@@ -1,0 +1,27 @@
+[Unit]
+Description=Figaro RAG server (LightRAG long-term memory, 127.0.0.1:9621)
+Documentation=file://@REPO@/docs/rag.md
+After=network-online.target figaro-rag-embed.service
+Wants=network-online.target figaro-rag-embed.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# lightrag-server loads .env relative to the working directory AND systemd
+# passes the same 600 file via EnvironmentFile, so both start paths agree.
+WorkingDirectory=@LIGHTRAG_HOME@
+EnvironmentFile=@LIGHTRAG_HOME@/.env
+ExecStart=@LIGHTRAG_HOME@/venv/bin/lightrag-server
+Environment=HOME=@HOME@
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+SyslogIdentifier=figaro-rag
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -24,7 +24,7 @@ else
 fi
 
 echo "== 2. secrets"
-if grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models \
+if grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models --exclude-dir=vendor --exclude-dir=.venv --exclude-dir=venv \
      -E 'sk-[A-Za-z0-9]{20,}' . 2>/dev/null | grep -vE 'sk-DOCTOR|sk-test|sk-…|placeholder|masked' | grep -q .; then
   bad "工作树疑似真实密钥（见上面 grep）"
 else ok "工作树无真实密钥"; fi
@@ -34,9 +34,9 @@ else ok "git 历史无真实密钥"; fi
 [[ -f config/config.json ]] && bad "config/config.json 出现在仓库（应只在本机 ~/.config）" || ok "仓库内无 config.json"
 
 echo "== 3. machine-specific paths"
-if grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models --exclude=nextkde-integration.md \
+if grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models --exclude-dir=vendor --exclude-dir=.venv --exclude-dir=venv --exclude=nextkde-integration.md --exclude=status.json \
      -E '(^|[^A-Za-z0-9_.-])/home/[a-z0-9_]+' . 2>/dev/null | grep -vE 'README.md:.*示例' | grep -q .; then
-  bad "仍有写死的家目录路径"; grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models \
+  bad "仍有写死的家目录路径"; grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=models --exclude-dir=vendor --exclude-dir=.venv --exclude-dir=venv --exclude=status.json \
      -E '(^|[^A-Za-z0-9_.-])/home/[a-z0-9_]+' . 2>/dev/null | grep -v nextkde-integration.md | head -5
 else ok "无写死家目录"; fi
 for f in systemd/figaro.service.in systemd/figaro-ui.service.in systemd/figaro-settings.desktop.in; do

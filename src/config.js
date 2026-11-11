@@ -171,6 +171,18 @@ export const DEFAULTS = {
     // extra system prompt lines appended to the dsh-derived prompt
     name: '费加罗',
   },
+  // Local long-term memory / RAG (LightRAG, MIT, http://127.0.0.1:9621; see
+  // docs/rag.md). Recall is bounded by timeoutMs and both recall/ingest degrade
+  // silently when the service is down, so voice turns never depend on it.
+  rag: {
+    enabled: true,
+    host: 'http://127.0.0.1:9621',
+    apiKey: '', // '' => read LIGHTRAG_API_KEY from envFile
+    envFile: '', // '' => ~/.local/share/figaro/lightrag/.env
+    mode: 'mix', // mix | local | global | hybrid | naive
+    timeoutMs: 1500, // recall budget (voice latency); raise for slower hosts
+    autoIngest: true, // index each finished exchange in the background
+  },
   sfx: {
     // Short, quiet UI sounds played next to (never over) the voice. They are
     // one-shots on the same sink as the TTS, so they never interrupt speech.

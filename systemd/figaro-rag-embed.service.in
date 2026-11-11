@@ -1,0 +1,31 @@
+[Unit]
+Description=Figaro RAG embedding proxy (MiniMax embo-01 -> OpenAI-compatible 127.0.0.1:9622)
+Documentation=file://@REPO@/docs/rag.md
+# Only needs loopback + the public MiniMax API; no graphical session involved.
+After=network-online.target
+Wants=network-online.target
+# A transient MiniMax outage must not leave the unit rate-limited into "failed".
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @REPO@/scripts/rag/minimax-embed-proxy.mjs
+WorkingDirectory=@REPO@
+Environment=HOME=@HOME@
+Environment=FIGARO_CONFIG=@HOME@/.config/figaro/config.json
+# Loopback only. The MiniMax key is read from config.json at runtime, never
+# passed on the command line or through the environment.
+Environment=RAG_EMBED_HOST=127.0.0.1
+Environment=RAG_EMBED_PORT=9622
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+SyslogIdentifier=figaro-rag-embed
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

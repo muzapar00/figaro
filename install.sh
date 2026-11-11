@@ -111,6 +111,20 @@ systemctl --user daemon-reload
 systemctl --user enable --now figaro.service
 systemctl --user enable --now figaro-ui.service
 
+echo "== RAG (LightRAG long-term memory)"
+rag_home="${FIGARO_LIGHTRAG_HOME:-$HOME/.local/share/figaro/lightrag}"
+if [[ -x "$rag_home/venv/bin/lightrag-server" && -f "$rag_home/.env" && -f "$repo/scripts/rag/minimax-embed-proxy.mjs" ]]; then
+  render "$repo/systemd/figaro-rag-embed.service.in" "$unit_dir/figaro-rag-embed.service"
+  render "$repo/systemd/figaro-rag.service.in" "$unit_dir/figaro-rag.service"
+  sed -i "s|@LIGHTRAG_HOME@|$rag_home|g" "$unit_dir/figaro-rag-embed.service" "$unit_dir/figaro-rag.service"
+  systemctl --user daemon-reload
+  systemctl --user enable --now figaro-rag-embed.service
+  systemctl --user enable --now figaro-rag.service
+  echo "   RAG 服务已启用（$rag_home，127.0.0.1:9621/9622；配置见 docs/rag.md）"
+else
+  echo "   跳过：未检测到 $rag_home/venv/bin/lightrag-server（按 docs/rag.md 安装后重跑）"
+fi
+
 echo "== status"
 systemctl --user --no-pager --lines=0 status figaro.service figaro-ui.service || true
 echo

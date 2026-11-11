@@ -34,6 +34,16 @@
   令牌不回显不进日志）。
 - 设置窗口默认改用 OpenGL Qt 后端（当前 Qt/Wayland 的软件后端会段错误，基线同样崩）。
 
+### 长期记忆 / RAG（LightRAG）
+- 新增本地长期记忆服务：[LightRAG](https://github.com/HKUDS/LightRAG)（**MIT**，`vendor/LightRAG`
+  只作版本锁定、不入库），独立 systemd user 服务，只绑 `127.0.0.1:9621`；
+  embedding 走 `scripts/rag/minimax-embed-proxy.mjs`（MiniMax `embo-01`，1536 维）→
+  `127.0.0.1:9622`，LLM 抽取/查询用 DeepSeek。见 `docs/rag.md`。
+- 费加罗侧：每轮开始有预算地召回相关记忆并注入 system prompt；回复结束后**异步**把对话
+  写入长期记忆；服务不可用/超时则静默降级为"无记忆"，绝不阻塞语音。可用 `rag` 工具
+  显式 `search` / `remember`；配置 `rag.enabled/host/timeoutMs/autoIngest/mode`。
+- 安装脚本在有 LightRAG venv 时自动渲染并启用 `figaro-rag{,-embed}.service`。
+
 ### 智能家居
 - 新增可选 `home` 工具：通过本地 Home Assistant 控制灯（开关/亮度/色温/状态），
   配置 `home.haUrl`/`home.haToken` 后才会注册给模型；未配置时模型看不到。

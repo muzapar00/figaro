@@ -8,6 +8,7 @@
 // (see docs/ipc.md §6) but implemented here: no dsh package is imported.
 import { buildSystemPrompt } from './prompt.js';
 import { streamChatCompletion, sleep } from './llm.js';
+import { createRagClient } from './rag.js';
 import { createTools, defaultToolWorkdir, summarizeToolCall } from './tools/index.js';
 import { buildToolRegistry } from './tools/registry.js';
 
@@ -45,8 +46,11 @@ export function createAgent(options = {}) {
   const fetchImpl = options.fetchImpl;
   const workdir = options.workdir ?? defaultToolWorkdir(config);
 
+  // Long-term memory: a standalone LightRAG service (docs/rag.md). Only created
+  // when the merged config enables it, so hand-built test configs stay hermetic.
+  const rag = options.rag ?? (config.rag?.enabled === true ? createRagClient({ config }) : null);
   const registry = buildToolRegistry(
-    options.tools ?? createTools({ config, workdir, control: options.control }),
+    options.tools ?? createTools({ config, workdir, control: options.control, rag }),
   );
   const maxToolRounds = Number.isFinite(Number(config.deepseek?.maxToolRounds))
     ? Math.max(1, Math.floor(Number(config.deepseek?.maxToolRounds)))
@@ -62,8 +66,11 @@ export function createAgent(options = {}) {
   let running = false;
   let turnCounter = 0;
 
-  function refreshSystemMessage() {
-    const system = { role: 'system', content: buildSystemPrompt({ config, workdir, now: new Date() }) };
+  function refreshSystemMessage(ragContext = '') {
+    const system = {
+      role: 'system',
+      content: buildSystemPrompt({ config, workdir, now: new Date(), ragContext }),
+    };
     if (messages.length === 0) messages.push(system);
     else messages[0] = system;
   }
@@ -208,7 +215,16 @@ export function createAgent(options = {}) {
     if (running) throw new Error('agent is already running; cancel the current turn first');
     running = true;
     turnCounter += 1;
-    refreshSystemMessage();
+    // Recall long-term memory with a hard latency budget; a slow or dead RAG
+    // service degrades to "no memory" instead of delaying the spoken answer.
+    let ragContext = '';
+    if (rag) {
+      try {
+        const recalled = await rag.recall(text, { timeoutMs: config.rag?.timeoutMs });
+        ragContext = recalled?.context ?? '';
+      } catch { ragContext = ''; }
+    }
+    refreshSystemMessage(ragContext);
     messages.push({ role: 'user', content: text });
     const spoken = [];
     let usage = null;
@@ -261,7 +277,12 @@ export function createAgent(options = {}) {
 
         messages.push({ role: 'assistant', content: result.content });
         onState?.('done');
-        return { text: spoken.join(''), usage, toolRounds };
+        const finalText = spoken.join('');
+        // Index the finished exchange in the background; never delay the reply.
+        if (rag && typeof rag.ingestTurn === 'function') {
+          Promise.resolve(rag.ingestTurn({ user: text, assistant: finalText })).catch(() => {});
+        }
+        return { text: finalText, usage, toolRounds };
       }
     } finally {
       running = false;
@@ -292,6 +313,10 @@ export function createAgent(options = {}) {
     },
     get systemPrompt() {
       return messages[0]?.content ?? '';
+    },
+    get ragStats() {
+      if (!rag) return null;
+      try { return { enabled: rag.enabled, host: rag.host, mode: rag.mode, autoIngest: rag.autoIngest, ...rag.stats }; } catch { return null; }
     },
     workdir,
   };

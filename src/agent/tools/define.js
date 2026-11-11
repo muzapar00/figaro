@@ -92,6 +92,12 @@ export function summarizeToolCall(name, args = {}) {
       return cut(Array.isArray(args.queries) ? args.queries.join(' / ') : args.queries);
     case 'web_fetch':
       return cut(args.url);
+    case 'rag': {
+      const parts = [args.action ?? 'search'];
+      if (args.query) parts.push(String(args.query));
+      if (args.text) parts.push(String(args.text));
+      return cut(parts.join(' '));
+    }
     case 'home': {
       const parts = [args.action ?? 'list'];
       if (args.device) parts.push(String(args.device));

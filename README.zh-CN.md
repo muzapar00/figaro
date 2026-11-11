@@ -7,7 +7,7 @@
 **跑在你自己 Linux 桌面上的语音助手：喊一声，它出现；说完事，它退下。**
 
 [![License: GPL-3.0+](https://img.shields.io/badge/license-GPL--3.0%2B-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen.svg)](#实测数字)
+[![Tests](https://img.shields.io/badge/tests-376%20passing-brightgreen.svg)](#实测数字)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Wayland%20%C2%B7%20Quickshell-6a5acd.svg)](#快速开始)
 [![Brain](https://img.shields.io/badge/brain-DeepSeek%20%2B%20本地工具-4a7dff.svg)](#架构)
 [![Voice](https://img.shields.io/badge/voice-MiniMax%20流式男声-d75cff.svg)](#架构)
@@ -34,6 +34,7 @@
 | 🗣️ **说完就停、答完等你** | 回答播完停在屏幕顶部 7 秒，期间直接用正常音量接着说即可追问，不用再喊唤醒词；只有够响的人声才算（底噪 0.0023，门槛 0.012） |
 | 🚪 **会自己退下** | 说「退下/休息吧/没事了」→ 先把话说完、语音播完，再收起；也可以点它一下取消 |
 | 🛑 **能被打断** | 回答中你开口（够响且持续）就立刻停声转听，不会把环境音当指令 |
+| 🧠 **跨会话记忆** | 本地 **LightRAG**（MIT）长期记忆：回答前检索相关旧内容，回合结束后异步入库。不依赖云端向量库；服务挂了就静默按无记忆回答 |
 | 🖥️ **看得见屏幕** | 内置 `screenshot` + `view_image` 工具，问"屏幕上是什么"它真的会看（已修复参数名导致"看图工具坏了"的坑） |
 | 🛠️ **本机工具** | bash、读写文件、glob/grep、网页搜索；都能组合使用 |
 | 🔊 **不抢语音的音效** | 5 个 65–200ms 的轻音效（唤醒/采集结束/答完/退下/错误），比语音低 4–6 dB，独立进程播放，绝不会打断说话 |
