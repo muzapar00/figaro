@@ -288,6 +288,48 @@ act wizard-finish >/dev/null
 sleep 0.6
 shot 31-wizard-summary
 
+# --------------------------------- voiceprint card + Home Assistant (task home/voiceprint)
+echo "[shoot] voiceprint card + Home Assistant card"
+
+page wake
+ipc act "scroll:300" >/dev/null
+sleep 0.5
+shot 38-wake-speaker
+act wake-speaker-demo >/dev/null
+sleep 1.1
+shot 39-wake-speaker-on
+
+act wake-enroll-dialog >/dev/null
+sleep 0.7
+shot 40-wake-enroll-dialog
+act enroll-copy >/dev/null
+sleep 0.5
+if [[ "$(wl-paste -n 2>/dev/null)" == "figaro enroll-voice" ]]; then
+  pass "enroll dialog copies 'figaro enroll-voice' to the clipboard"
+else
+  fail "enroll dialog clipboard content was '$(wl-paste -n 2>/dev/null)'"
+fi
+act dialog-close >/dev/null
+sleep 0.3
+
+page api
+ipc act "scroll-bottom" >/dev/null
+sleep 0.5
+act api-home-demo >/dev/null
+sleep 0.3
+act api-home-save >/dev/null
+sleep 1.0
+shot 41-api-home
+act api-home-test >/dev/null
+sleep 1.0
+shot 42-api-home-test-ok
+act api-home-test-bad >/dev/null
+sleep 1.0
+shot 43-api-home-test-401
+# leave a successful result in status.json for the assertions
+act api-home-test >/dev/null
+sleep 1.0
+
 # ---------------------------------------------------------------- state dump
 sleep 0.5
 ipc status >"$out/status.json"
@@ -307,8 +349,9 @@ assert_num() { # assert_num <label> <expr> <min>
   fi
 }
 
-# latest wake window is the wizard's short hit test, so >=10 live frames is enough
-assert_num "wake score samples" "d['wake'].get('scoreSamples', 0)" 10
+# The latest wake window is the wizard's short hit test (it disarms on the first
+# deterministic hit at ~1.5 s), so 3 live score frames already prove streaming.
+assert_num "wake score samples" "d['wake'].get('scoreSamples', 0)" 3
 assert_num "wake last-test hits" "d['wake'].get('lastWakeHits', -1)" 1
 assert_num "wake last-test max score" "d['wake'].get('lastWakeMaxScore', -1)" 0.6
 assert_num "ambient event rows" "d['wake'].get('ambientRows', 0)" 1
@@ -465,6 +508,84 @@ w = d.get("wizard", {})
 print(json.dumps(w, ensure_ascii=False, indent=2))
 PYEOF
 [[ -s "$out/wizard-result.log" ]] && pass "wizard result evidence -> $out/wizard-result.log"
+
+# --- voiceprint gate + Home Assistant -----------------------------
+echo
+echo "[shoot] voiceprint / Home Assistant fields"
+python3 - "$out/status.json" <<'PYEOF'
+import json, sys, os
+with open(sys.argv[1]) as f:
+    raw = f.read()
+d = json.loads(raw)
+checks = []
+
+def check(name, ok, detail=""):
+    checks.append((name, ok, detail))
+
+fs = d.get("fieldStatus", {})
+diag = d.get("daemonDiagnostics", {}) or {}
+d_asr = diag.get("asr", {}) or {}
+speaker = d_asr.get("speaker") or {}
+wake = d.get("wake", {}) or {}
+api = d.get("api", {}) or {}
+home_test = api.get("homeTest") or {}
+
+check("asr.speaker.enabled written (restart-required)", fs.get("asr.speaker.enabled", {}).get("state") == "restart", str(fs.get("asr.speaker.enabled")))
+check("asr.speaker.threshold written (restart-required)", fs.get("asr.speaker.threshold", {}).get("state") == "restart", str(fs.get("asr.speaker.threshold")))
+check("diagnostics passes asr.speaker through", bool(speaker), str(speaker))
+check("speaker state = ready after enabling", speaker.get("state") == "ready", str(speaker.get("state")))
+check("speaker enrolled", speaker.get("enrolled") is True, str(speaker.get("enrolled")))
+check("speaker threshold readback 0.72", abs(float(speaker.get("threshold", -1)) - 0.72) < 1e-6, str(speaker.get("threshold")))
+check("speaker checked/rejected counters", int(speaker.get("checked", 0)) == 17 and int(speaker.get("rejected", 0)) == 3, str(speaker))
+check("speaker lastScore 0.82", abs(float(speaker.get("lastScore", -1)) - 0.82) < 1e-6, str(speaker.get("lastScore")))
+check("wake page speaker snapshot ready", wake.get("speakerState") == "ready" and wake.get("speakerLabel") == "就绪", str(wake.get("speakerState")))
+check("wake page speaker threshold 0.72", abs(float(wake.get("speakerThreshold", -1)) - 0.72) < 1e-6, str(wake.get("speakerThreshold")))
+
+check("home.haUrl written (restart-required)", fs.get("home.haUrl", {}).get("state") == "restart", str(fs.get("home.haUrl")))
+check("home.haToken written (restart-required)", fs.get("home.haToken", {}).get("state") == "restart", str(fs.get("home.haToken")))
+check("home.defaultRoom written (restart-required)", fs.get("home.defaultRoom", {}).get("state") == "restart", str(fs.get("home.defaultRoom")))
+check("api page kept URL/room drafts", api.get("haUrl") == "http://homeassistant.local:8123" and api.get("haRoom") == "客厅", str(api.get("haUrl")))
+check("api page sees the token as stored (masked)", api.get("haTokenStored") is True, str(api.get("haTokenStored")))
+check("api page token draft was cleared after save", api.get("haTokenDraftEmpty") is True, str(api.get("haTokenDraftEmpty")))
+check("api page shows the restart hint", "重启费加罗后生效" in (api.get("haHint") or ""), str(api.get("haHint")))
+check("home.test reported connected", home_test.get("ok") is True, str(home_test))
+check("home.test message", "已连接 Home Assistant" in (home_test.get("message") or ""), str(home_test))
+
+# token privacy: the secret must never appear in the GUI status snapshot
+check("home token never leaks into status.json", "ha-test-token" not in raw and "bad-token" not in raw)
+# ...nor may the fake-daemon config masking be bypassed through config.get
+tok = ((d.get("daemonDiagnostics") or {}).get("home") or {}).get("haToken")
+check("diagnostics never includes the raw HA token", tok is None, str(tok))
+
+config_path = diag.get("configPath") or ""
+try:
+    with open(config_path) as f:
+        cfg = json.load(f)
+    check("config.json asr.speaker.enabled = true", cfg["asr"]["speaker"]["enabled"] is True, str(cfg.get("asr", {}).get("speaker")))
+    check("config.json asr.speaker.threshold = 0.72", abs(float(cfg["asr"]["speaker"]["threshold"]) - 0.72) < 1e-6)
+    check("config.json home.haUrl written", cfg["home"]["haUrl"] == "http://homeassistant.local:8123", str(cfg.get("home")))
+    check("config.json home.haToken stored", cfg["home"]["haToken"] == "ha-test-token")
+    check("config.json home.defaultRoom written", cfg["home"]["defaultRoom"] == "客厅")
+except Exception as e:
+    check("config.json readable (" + config_path + ")", False, str(e))
+
+# screenshots that must exist (both HA test outcomes + the enroll dialog)
+for name in ["38-wake-speaker.png", "39-wake-speaker-on.png", "40-wake-enroll-dialog.png",
+             "41-api-home.png", "42-api-home-test-ok.png", "43-api-home-test-401.png"]:
+    path = os.path.join(os.path.dirname(sys.argv[1]), name)
+    check("screenshot " + name, os.path.isfile(path) and os.path.getsize(path) > 10000, path)
+
+failed = [c for c in checks if not c[1]]
+for name, ok, detail in checks:
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""))
+sys.exit(1 if failed else 0)
+PYEOF
+task13_fails=$?
+if [[ "$task13_fails" -ne 0 ]]; then
+  fail "voiceprint/Home Assistant assertions ($task13_fails)"
+else
+  pass "voiceprint/Home Assistant assertions (speaker card + HA card + both test outcomes)"
+fi
 
 # copy the exported artifacts next to the screenshots as evidence
 latest_diag="$(ls -t "$HOME"/figaro-diagnostics-*.json 2>/dev/null | head -1)"

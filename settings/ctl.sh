@@ -14,7 +14,9 @@
 # Env:
 #   FIGARO_SOCKET          unix socket the GUI connects to (default: production
 #                          $XDG_RUNTIME_DIR/figaro/sock)
-#   FIGARO_SETTINGS_GL=1   use the OpenGL Qt Quick backend instead of software
+#   FIGARO_SETTINGS_GL=0   force the software Qt Quick backend; the default is
+#                          OpenGL because QWaylandShmBackingStore segfaults with
+#                          the software backend on this Qt/Wayland combo
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,9 +32,9 @@ desktop_dest="${XDG_DATA_HOME:-$HOME/.local/share}/applications/figaro-settings.
 export XDG_RUNTIME_DIR="$runtime"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export PATH="$HOME/.local/bin:$PATH"
-# The settings panel also uses the software rasterizer: deterministic on this
-# machine, no GL context needed while the local LLM may hold the VRAM.
-if [[ "${FIGARO_SETTINGS_GL:-0}" != "1" ]]; then
+# OpenGL is the default: the software rasterizer (QWaylandShmBackingStore)
+# segfaults on this Qt/Wayland setup. Set FIGARO_SETTINGS_GL=0 to force software.
+if [[ "${FIGARO_SETTINGS_GL:-1}" == "0" ]]; then
   export QT_QUICK_BACKEND=software
 fi
 # Passthrough: empty => the GUI falls back to the production socket.

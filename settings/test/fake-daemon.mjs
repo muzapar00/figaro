@@ -91,7 +91,21 @@ const DEFAULTS = {
     wakeCooldownMs: 2500,
     inputGainPercent: 45,
     silenceStopMs: 900,
+    // Voiceprint gate (real module: CAM++ embedding + profile file); the fake
+    // reports a simulated enrolled profile so the GUI shows the "ready" state.
+    speaker: {
+      enabled: false,
+      threshold: 0.65,
+      model: 'models/speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx',
+      profile: '',
+      minRms: 0.0025,
+    },
     bargeIn: { enabled: true, minRms: 0.09, echoFactor: 2.5, minMs: 500 },
+  },
+  home: {
+    haUrl: '',
+    haToken: '',
+    defaultRoom: '',
   },
   interaction: {
     cancelPhrases: ['取消', '算了', '别说了', '停下', '停止', '不用了', '退出'],
@@ -186,7 +200,7 @@ function redactPatch(value) {
   if (isPlainObject(value)) {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = /apiKey$/i.test(k) ? '***' : redactPatch(v);
+      out[k] = /(apiKey|haToken)$/i.test(k) ? '***' : redactPatch(v);
     }
     return out;
   }
@@ -202,6 +216,24 @@ function uiSnapshot() {
     shape: ['orb', 'ball', 'line'].includes(ui.shape) ? ui.shape : 'orb',
     motion: ui.motion === 'off' ? 'off' : 'auto',
     windowButtonSize: Number.isFinite(size) && size >= 12 && size <= 24 ? size : 16,
+  };
+}
+
+// Simulated voiceprint gate state (real ASR module: CAM++ + profile file).
+// The fake behaves as if a profile was recorded when the gate is enabled.
+function speakerSnapshot() {
+  const sp = config.asr?.speaker || {};
+  const enabled = sp.enabled === true;
+  const threshold = Number(sp.threshold);
+  return {
+    enabled,
+    enrolled: true,
+    state: enabled ? 'ready' : 'disabled',
+    threshold: Number.isFinite(threshold) ? Math.min(1, Math.max(0, threshold)) : 0.65,
+    samples: 3,
+    checked: enabled ? 17 : 0,
+    rejected: enabled ? 3 : 0,
+    lastScore: enabled ? 0.82 : null,
   };
 }
 
@@ -231,6 +263,9 @@ function publicConfig() {
     ? '***' : '';
   c.minimax = c.minimax || {};
   c.minimax.apiKey = config.minimax && typeof config.minimax.apiKey === 'string' && config.minimax.apiKey.length > 0
+    ? '***' : '';
+  c.home = c.home || {};
+  c.home.haToken = config.home && typeof config.home.haToken === 'string' && config.home.haToken.length > 0
     ? '***' : '';
   return c;
 }
@@ -441,6 +476,27 @@ function handle(socket, msg) {
       return;
 
     // ---- §3.1 config ------------------------------------------------------
+    case 'home.test': {
+      // Deterministic canned probe: the fake daemon never talks to a real HA.
+      // The real daemon forwards `${haUrl}/api/` through Node fetch (see
+      // src/agent/settings.js testHomeAssistant).
+      const visible = (v) => (typeof v === 'string' && v.trim().length > 0 && v.trim() !== '***' ? v.trim() : '');
+      const haUrl = visible(msg.haUrl) || visible(config.home?.haUrl);
+      const haToken = visible(msg.haToken) || visible(config.home?.haToken);
+      if (!haUrl) {
+        return send(socket, { type: 'home.test', id: msg.id, ok: false, status: 0, message: '还差一个 Home Assistant 地址（例如 http://homeassistant.local:8123）' });
+      }
+      if (!haToken) {
+        return send(socket, { type: 'home.test', id: msg.id, ok: false, status: 0, message: '还没有填写长期访问令牌（home.haToken）' });
+      }
+      if (/bad-token|wrong/i.test(haToken) || /\/bad/i.test(haUrl)) {
+        return send(socket, { type: 'home.test', id: msg.id, ok: false, status: 401, message: '令牌无效（HTTP 401）' });
+      }
+      if (/unreachable|offline/i.test(haUrl)) {
+        return send(socket, { type: 'home.test', id: msg.id, ok: false, status: 0, message: `连不上 ${haUrl.replace(/\/+$/, '')}（网络错误）` });
+      }
+      return send(socket, { type: 'home.test', id: msg.id, ok: true, status: 200, message: '已连接 Home Assistant（假 daemon）' });
+    }
     case 'config.get':
       return send(socket, { type: 'config', id: msg.id, config: publicConfig() });
 
@@ -711,6 +767,7 @@ function diagnostics() {
       hotkey: config.asr.hotkey,
       hotkeyState: { state: 'active', bound: true, started: true, session: 'fake-session' },
       muted: false,
+      speaker: speakerSnapshot(),
       wakeWordsEn: config.asr.wakeWordsEn,
       bargeIn: {
         enabled: config.asr.bargeIn.enabled !== false,

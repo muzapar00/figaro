@@ -128,6 +128,38 @@ CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 
    也拿不到尾号；建议 daemon 增加 `hasDeepseekKey`/`hasMinimaxKey` 布尔或尾号掩码。
 3. （可选）`ui.scale` 文档范围 0.5–2.0；GUI 已按此范围实现。
 
+## 声纹门控 + 家庭中枢 Home Assistant（三期）
+
+### 唤醒页「声纹」卡片（`asr.speaker.*`）
+- 开关写 `asr.speaker.enabled`、阈值滑块 0.35–0.90（步进 0.01，写入时由 settings 服务校验 0–1）
+  写 `asr.speaker.threshold`；两项目前都按 **restartRequired** 处理（daemon 启动时加载 CAM++ 模型/档案）。
+- 状态徽章 + 计数读 daemon diagnostics 的 `asr.speaker`（`ready / not-enrolled / model-missing / disabled`），
+  显示「上次 score · 已检测 N 次 · 已过滤 N 次」；没有该字段的旧 daemon 显示「未提供」并降级。
+- 「重新录制声纹」弹窗显示 `figaro enroll-voice`（设置窗口不能直接驱动录音），可一键复制
+  （`wl-copy`，失败回退 `xclip`）；说明安静环境录 3 句、录完自动启用。
+
+### 连接页「家庭中枢 Home Assistant」卡片（`home.*`）
+- 字段：`home.haUrl`（地址，可省略 `http://`）、`home.haToken`（密码框，只写不读；`***` 不覆盖原值，
+  只有用户输入新值才写）、`home.defaultRoom`（可选）。
+- 保存沿用 `MApplyStatus`/`fieldStatus`；由于 daemon 只在启动时注册 home 工具，保存后统一提示
+  「已保存，重启费加罗后生效」（settings 服务对 daemon 未归类的路径补 restartRequired）。
+- 「测试连接」通过 settings 服务新增的 `home.test` 消息：Node 内置 `fetch` 请求 `${haUrl}/api/`，
+  `Authorization: Bearer <token>`，4 秒超时；200→「已连接 Home Assistant」，401/403→「令牌无效」，
+  其它/网络错误→「连不上 <url>」。**token 不写日志、不回显、不进截图/status 快照**；
+  未填写新 token 时 daemon 用 config 里的已保存 token（GUI 传 `***` 视为“用已保存的”）。
+- 单测：`tests/agent/settings.test.js` 覆盖 home.test 200/401/超时、stored-token 回退、
+  home.* 写入掩码+需重启、声纹阈值写入/越界拒绝、`normalizeHaUrl`。
+
+### 截图（`test/out/`）
+`38-wake-speaker.png`（关闭态）、`39-wake-speaker-on.png`（开启+0.72+就绪徽章）、
+`40-wake-enroll-dialog.png`（录制命令弹窗）、`41-api-home.png`（HA 卡片已保存/需重启）、
+`42-api-home-test-ok.png`、`43-api-home-test-401.png`（两种连接测试结果）。
+
+### 已知环境问题（与本次改动无关）
+当前会话里 Qt **software** 后端启动 Quickshell 会段错误（`QWaylandShmBackingStore` 双绘制，
+未修改的 HEAD 基线同样崩），因此 `settings/test/dev.sh` 新增 `FIGARO_SETTINGS_GL=1` 走 GPU；
+`ctl.sh` 仍保留 `FIGARO_SETTINGS_GL=1` 开关。部署桌面入口默认 software，需要 Lead 决定是否切默认。
+
 ## 待 Lead 集成（install.sh）
 
 1. 部署：`rsync -a --delete settings/ ~/.config/quickshell/figaro-settings/ --exclude ctl.sh --exclude test --exclude '*.md'`

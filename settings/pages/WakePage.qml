@@ -17,6 +17,10 @@ MPageScroll {
     property string hotkey: ""
     property bool editingHotkey: false
     property string draftHotkey: ""
+    // ---- voiceprint gate (asr.speaker.*) ----------------------------------
+    property bool speakerEnabledDraft: false
+    property real speakerThresholdDraft: 0.65
+    signal enrollCommandRequested()
     readonly property var englishDefaults: ["figaro", "hey figaro"]
     readonly property var chineseDefaults: ["费加罗", "菲加罗", "飞加罗", "figaro", "费加"]
 
@@ -52,6 +56,87 @@ MPageScroll {
         page.englishEnabled = list.length > 0;
         page.wakeWordsEn = list.length > 0 ? list : page.englishDefaults.slice(0);
         page.hotkey = String(Ipc.cfg("asr.hotkey", "") || "");
+        page.speakerEnabledDraft = Ipc.cfg("asr.speaker.enabled", false) === true;
+        page.speakerThresholdDraft = Number(Ipc.cfg("asr.speaker.threshold", 0.65));
+    }
+
+    // ---- voiceprint gate ---------------------------------------------------
+    // Read-only snapshot pushed by the daemon diagnostics (src/agent/settings.js
+    // passthrough of the ASR module's `speaker` state).
+    readonly property var speakerInfo: {
+        const diag = Ipc.diagnostics || ({});
+        const asr = diag.asr || ({});
+        return asr.speaker && typeof asr.speaker === "object" ? asr.speaker : null;
+    }
+    readonly property string speakerState: page.speakerInfo ? String(page.speakerInfo.state || "") : ""
+    readonly property bool speakerEnrolled: page.speakerInfo ? page.speakerInfo.enrolled === true : false
+    readonly property int speakerChecked: page.speakerInfo ? Number(page.speakerInfo.checked || 0) : 0
+    readonly property int speakerRejected: page.speakerInfo ? Number(page.speakerInfo.rejected || 0) : 0
+    readonly property real speakerLastScore: (page.speakerInfo && page.speakerInfo.lastScore !== null
+        && page.speakerInfo.lastScore !== undefined) ? Number(page.speakerInfo.lastScore) : -1
+
+    function speakerLabel() {
+        switch (page.speakerState) {
+        case "ready": return "就绪";
+        case "not-enrolled": return "未注册";
+        case "model-missing": return "模型缺失";
+        case "disabled": return "关闭";
+        default: return page.speakerInfo ? "未知" : "未提供";
+        }
+    }
+    function speakerTone() {
+        switch (page.speakerState) {
+        case "ready": return Theme.green;
+        case "not-enrolled": return Theme.orange;
+        case "model-missing": return Theme.red;
+        case "disabled": return Theme.textFaint;
+        default: return Theme.textDim;
+        }
+    }
+    function speakerNote() {
+        switch (page.speakerState) {
+        case "ready":
+            return "声纹已就绪：唤醒时会先比对你的声纹，非主人声音会被过滤掉。";
+        case "not-enrolled":
+            return "还没有录制声纹：运行下面的命令在安静环境录 3 句，录完自动启用。";
+        case "model-missing":
+            return "缺少声纹模型：先运行 scripts/fetch-models.sh（或检查 asr.speaker.model 路径）。";
+        case "disabled":
+            return "声纹门控关闭时，任何人喊「费加罗」都会唤醒。开启前建议先录制声纹。";
+        default:
+            return "当前 daemon 没有提供声纹状态（旧 daemon 或 ASR 模块未加载）。";
+        }
+    }
+    function speakerScoreText() {
+        if (page.speakerState === "disabled") return "声纹门控已关闭";
+        if (!page.speakerInfo) return "—";
+        const parts = [];
+        if (page.speakerLastScore >= 0) parts.push("上次 score " + page.speakerLastScore.toFixed(2));
+        parts.push("已检测 " + page.speakerChecked + " 次");
+        parts.push("已过滤 " + page.speakerRejected + " 次");
+        return parts.join(" · ");
+    }
+    function setSpeakerEnabled(value) {
+        page.speakerEnabledDraft = value;
+        Ipc.writeField("asr.speaker.enabled", value);
+    }
+    function setSpeakerThreshold(value) {
+        const rounded = Math.round(Number(value) * 100) / 100;   // slider step 0.01
+        page.speakerThresholdDraft = rounded;
+        Ipc.writeField("asr.speaker.threshold", rounded);
+    }
+    function openEnrollDialog() {
+        page.enrollCommandRequested();
+        return "wake-enroll-dialog";
+    }
+    function speakerDemoWrite() {
+        page.speakerEnabledDraft = true;
+        page.speakerThresholdDraft = 0.72;
+        Ipc.writeFields([
+            { path: "asr.speaker.enabled", value: true },
+            { path: "asr.speaker.threshold", value: 0.72 },
+        ]);
+        return "speaker-demo-written";
     }
 
     function timestamp() {
@@ -267,12 +352,34 @@ MPageScroll {
             wakeWordsEn: page.wakeWordsEn,
             englishEnabled: page.englishEnabled,
             hotkey: page.hotkey,
+            speakerState: page.speakerState,
+            speakerLabel: page.speakerLabel(),
+            speakerEnrolled: page.speakerEnrolled,
+            speakerEnabled: page.speakerEnabledDraft,
+            speakerThreshold: page.speakerThresholdDraft,
+            speakerChecked: page.speakerChecked,
+            speakerRejected: page.speakerRejected,
+            speakerLastScore: page.speakerLastScore,
+            speakerInfo: page.speakerInfo,
         };
     }
 
     Connections {
         target: Ipc
-        function onConfigChanged() { page.syncFromConfig(); }
+        function onConfigChanged() {
+            page.syncFromConfig();
+            Ipc.refreshDiagnostics();
+        }
+        function onDiagnosticsLoadedChanged() {
+            if (Ipc.diagnosticsLoaded && page.speakerInfo && page.speakerInfo.threshold !== undefined
+                && page.speakerInfo.threshold !== null) {
+                // daemon is authoritative for the stored threshold
+                if (Math.abs(Number(page.speakerInfo.threshold) - page.speakerThresholdDraft) > 1e-9
+                    && Ipc.fieldState("asr.speaker.threshold") === null) {
+                    page.speakerThresholdDraft = Number(page.speakerInfo.threshold);
+                }
+            }
+        }
         function onWakeHitSeqChanged() {
             if (page.testMode !== "ambient") return;
             if (Ipc.wakeHitSeq <= page.lastSeenHitSeq) return;
@@ -311,7 +418,10 @@ MPageScroll {
         }
     }
 
-    Component.onCompleted: page.syncFromConfig()
+    Component.onCompleted: {
+        page.syncFromConfig();
+        Ipc.refreshDiagnostics();
+    }
 
     Timer {
         interval: 100
@@ -430,6 +540,80 @@ MPageScroll {
             Layout.fillWidth: true
             text: "daemon 拒绝：" + Ipc.configErrors.join("；")
             color: Theme.orange
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    // ---------------------------------------------------------- 声纹（门控）
+    MCard {
+        title: "声纹"
+        subtitle: "用你自己的声音做二次校验：别人喊「费加罗」不会唤醒（asr.speaker.*）"
+
+        MRow {
+            label: "声纹门控"
+            subtitle: "开启后唤醒前先比对声纹 · 写入 asr.speaker.enabled（需重启 daemon）"
+            RowLayout {
+                spacing: 8
+                MPill {
+                    text: page.speakerLabel()
+                    tone: page.speakerTone()
+                }
+                MApplyStatus { paths: ["asr.speaker.enabled"] }
+                MToggle {
+                    checked: page.speakerEnabledDraft
+                    onToggled: (value) => page.setSpeakerEnabled(value)
+                }
+            }
+        }
+        MRow {
+            label: "相似度阈值"
+            subtitle: "0.35–0.90 · 越高越严格 · config 优先（需重启）"
+            RowLayout {
+                spacing: 8
+                Text {
+                    text: page.speakerThresholdDraft.toFixed(2)
+                    color: Theme.textDim
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.fsSmall
+                    Layout.preferredWidth: 38
+                    horizontalAlignment: Text.AlignRight
+                }
+                MSlider {
+                    Layout.preferredWidth: 170
+                    from: 0.35
+                    to: 0.90
+                    value: page.speakerThresholdDraft
+                    markers: [0.65]
+                    onMoved: (v) => page.setSpeakerThreshold(v)
+                }
+                MApplyStatus { paths: ["asr.speaker.threshold"] }
+            }
+        }
+        MRow {
+            label: "声纹记录"
+            subtitle: "安静环境下用正常音量录 3 句，约 10 秒；录完自动启用"
+            showSeparator: false
+            MButton {
+                text: "重新录制声纹"
+                icon: "mic"
+                onClicked: page.openEnrollDialog()
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: page.speakerScoreText()
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+        Text {
+            Layout.fillWidth: true
+            text: page.speakerNote()
+            color: page.speakerState === "model-missing" ? Theme.orange
+                : page.speakerState === "ready" ? Theme.green : Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
             wrapMode: Text.WordWrap

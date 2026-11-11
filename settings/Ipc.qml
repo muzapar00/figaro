@@ -97,6 +97,11 @@ Singleton {
     property var ttsResult: ({})      // last {type:"test.tts.result"}
     property string ttsLastText: ""
 
+    // ------------------------------------------------------- home assistant
+    property bool homeTestRunning: false
+    property var homeTestResult: ({})   // last {type:"home.test", ok, status, message}
+    property int homeTestSeq: 0
+
     // ---------------------------------------------------------- service restart
     property bool restartPending: false
     property string restartState: ""  // "" | sent | accepted | unsupported | restarting | done
@@ -464,6 +469,13 @@ Singleton {
             if (msg.id) root.resolvePending(msg.id, msg);
             root.markCapability("test.tts", "supported");
             break;
+        case "home.test":
+            root.homeTestRunning = false;
+            root.homeTestResult = msg;
+            root.homeTestSeq += 1;
+            if (msg.id) root.resolvePending(msg.id, msg);
+            root.markCapability("home.test", "supported");
+            break;
         default:
             if (msg.id) root.resolvePending(msg.id, msg, false);
             break;
@@ -797,6 +809,35 @@ Singleton {
             onError: function(msg) {
                 root.ttsRunning = false;
                 root.ttsResult = msg;
+            },
+        });
+    }
+
+    // ------------------------------------------------------- home assistant
+    // Probe ${haUrl}/api/ through the daemon (it holds the saved token; the GUI
+    // never reads it back). A *draft* token typed in the page may be passed for
+    // an unsaved config; the reply never contains the token.
+    function homeTest(haUrl, haToken) {
+        root.homeTestRunning = true;
+        root.homeTestResult = ({});
+        const params = {};
+        if (haUrl) params.haUrl = haUrl;
+        if (haToken) params.haToken = haToken;
+        root.call("home.test", params, {
+            timeoutMs: 7000,
+            onReply: function(msg) {
+                root.homeTestRunning = false;
+                root.homeTestResult = msg;
+                if (msg && msg.type === "home.test") root.markCapability("home.test", "supported");
+            },
+            onTimeout: function() {
+                root.homeTestRunning = false;
+                root.homeTestResult = { ok: false, message: "daemon 没有响应连接测试（当前 daemon 可能不支持 home.test）" };
+            },
+            onError: function(msg) {
+                root.homeTestRunning = false;
+                root.homeTestResult = { ok: false, message: (msg && msg.message) || "连接测试失败" };
+                if (msg && msg.code === "unsupported") root.markCapability("home.test", "unsupported");
             },
         });
     }

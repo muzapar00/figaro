@@ -26,6 +26,14 @@
   档案在 `~/.config/figaro/speaker-profile.json`（0600，不进仓库）。
 - `figaro enroll-voice`：本地录 3 句生成声纹档案；电平门槛降到 0.0025，小增益麦克风也能录。
 
+### 设置面板
+- 唤醒页新增「声纹」卡片：开关、相似度阈值滑块（0.35–0.90，config 优先）、状态徽章
+  （就绪/未注册/模型缺失/关闭）、上次 score/检测/过滤计数，以及「重新录制声纹」命令弹窗。
+- 连接页新增「家庭中枢 Home Assistant」卡片：`home.haUrl` / `home.haToken`（只写不读、
+  掩码不覆盖）/ `home.defaultRoom`，并有「测试连接」（`home.test` IPC，200/401/超时三种中文结果，
+  令牌不回显不进日志）。
+- 设置窗口默认改用 OpenGL Qt 后端（当前 Qt/Wayland 的软件后端会段错误，基线同样崩）。
+
 ### 智能家居
 - 新增可选 `home` 工具：通过本地 Home Assistant 控制灯（开关/亮度/色温/状态），
   配置 `home.haUrl`/`home.haToken` 后才会注册给模型；未配置时模型看不到。

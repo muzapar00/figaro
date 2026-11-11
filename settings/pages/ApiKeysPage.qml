@@ -17,6 +17,75 @@ MPageScroll {
     readonly property bool deepseekStored: Ipc.secretStored("deepseek.apiKey")
     readonly property bool minimaxStored: Ipc.secretStored("minimax.apiKey")
 
+    // ---- Home Assistant (home.*) ------------------------------------------
+    property string haUrlDraft: ""
+    property string haTokenDraft: ""
+    property string haRoomDraft: ""
+    property string haHint: ""
+    readonly property bool haTokenStored: Ipc.secretStored("home.haToken")
+    readonly property var homeResult: Ipc.homeTestResult || ({})
+    readonly property bool homeResultOk: page.homeResult.ok === true
+    readonly property string homeResultMessage: page.homeResult.message || ""
+    readonly property bool homeTestBusy: Ipc.homeTestRunning
+
+    function syncHome() {
+        page.haUrlDraft = String(Ipc.cfg("home.haUrl", "") || "");
+        page.haRoomDraft = String(Ipc.cfg("home.defaultRoom", "") || "");
+        // The token is write-only: never copy "***" into a visible field.
+        page.haTokenDraft = "";
+        if (haTokenField) haTokenField.text = "";
+    }
+
+    function saveHome() {
+        const url = page.haUrlDraft.trim();
+        const room = page.haRoomDraft.trim();
+        const token = page.haTokenDraft.trim();
+        const entries = [];
+        if (url !== String(Ipc.cfg("home.haUrl", "") || "")) entries.push({ path: "home.haUrl", value: url });
+        if (room !== String(Ipc.cfg("home.defaultRoom", "") || "")) entries.push({ path: "home.defaultRoom", value: room });
+        if (token.length > 0) {
+            entries.push({ path: "home.haToken", value: token });
+            page.haTokenDraft = "";
+            haTokenField.text = "";
+        }
+        if (entries.length === 0) {
+            page.haHint = "没有修改需要保存";
+            return "home-noop";
+        }
+        Ipc.writeFields(entries, {
+            onDone: function(msg) {
+                if (msg && msg.ok !== false) {
+                    page.haHint = "已保存，重启费加罗后生效（daemon 只在启动时读取 home.*）";
+                }
+            },
+        });
+        return "home-save-requested";
+    }
+
+    function runHomeTest() {
+        Ipc.homeTest(page.haUrlDraft.trim(), page.haTokenDraft.trim());
+        return "home-test-requested";
+    }
+
+    // Harness only: fills plausible drafts (fake daemon never talks to a real HA).
+    function homeDemoWrite() {
+        page.haUrlDraft = "http://homeassistant.local:8123";
+        page.haRoomDraft = "客厅";
+        page.haTokenDraft = "ha-test-token";
+        haUrlField.text = page.haUrlDraft;
+        haRoomField.text = page.haRoomDraft;
+        haTokenField.text = page.haTokenDraft;
+        page.haHint = "测试值已填入（仅假 daemon）";
+        return "home-demo-filled";
+    }
+
+    function homeDemoFailTest() {
+        page.haUrlDraft = "http://homeassistant.local:8123";
+        haUrlField.text = page.haUrlDraft;
+        Ipc.homeTest(page.haUrlDraft, "bad-token");
+        return "home-test-bad-token";
+    }
+
     function saveDeepseek() {
         const value = page.deepseekDraft.trim();
         if (value.length === 0) {
@@ -79,6 +148,17 @@ MPageScroll {
             restartState: Ipc.restartState,
             deepseekDraftEmpty: page.deepseekDraft.length === 0,
             minimaxDraftEmpty: page.minimaxDraft.length === 0,
+            haUrl: page.haUrlDraft,
+            haRoom: page.haRoomDraft,
+            haTokenStored: page.haTokenStored,
+            haTokenDraftEmpty: page.haTokenDraft.length === 0,
+            haHint: page.haHint,
+            homeTest: {
+                running: page.homeTestBusy,
+                ok: page.homeResult.ok === true,
+                status: page.homeResult.status !== undefined ? page.homeResult.status : null,
+                message: page.homeResultMessage,
+            },
         };
     }
 
@@ -87,7 +167,12 @@ MPageScroll {
         function onConfigChanged() {
             // Only status flags are read; never the secret content itself.
         }
+        function onConfigLoadedChanged() {
+            if (Ipc.configLoaded) page.syncHome();
+        }
     }
+
+    Component.onCompleted: page.syncHome()
 
     Timer {
         id: restartConfirmTimer
@@ -209,6 +294,125 @@ MPageScroll {
         color: Theme.textDim
         font.family: Theme.fontSans
         font.pixelSize: Theme.fsSmall
+    }
+
+    // --------------------------------------------- 家庭中枢 Home Assistant
+    MCard {
+        title: "家庭中枢 Home Assistant"
+        subtitle: "用本地 Home Assistant 控制灯（home.*）· 工具只在 daemon 启动时注册，改完需重启费加罗"
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 5
+
+            Text {
+                Layout.fillWidth: true
+                text: "Home Assistant 地址"
+                color: Theme.text
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.fs
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                MTextField {
+                    id: haUrlField
+                    Layout.fillWidth: true
+                    text: page.haUrlDraft
+                    placeholder: "http://homeassistant.local:8123"
+                    onTextChanged: page.haUrlDraft = text
+                    onAccepted: page.saveHome()
+                }
+                MApplyStatus { paths: ["home.haUrl"] }
+            }
+        }
+
+        MRow {
+            label: "长期访问令牌"
+            subtitleWrap: true
+            subtitle: "home.haToken · 只写不读" + (page.haTokenStored
+                ? "（已保存，daemon 只回传掩码，不回显）" : "（未设置）")
+            RowLayout {
+                spacing: 8
+                MTextField {
+                    id: haTokenField
+                    inputWidth: 240
+                    password: true
+                    placeholder: Ipc.secretPlaceholder("home.haToken", "粘贴 Home Assistant 长期令牌")
+                    onTextChanged: page.haTokenDraft = text
+                    onAccepted: page.saveHome()
+                }
+                MApplyStatus { paths: ["home.haToken"] }
+            }
+        }
+
+        MRow {
+            label: "默认房间"
+            subtitle: "没说房间名时用哪个房间（可选，home.defaultRoom）"
+            showSeparator: false
+            RowLayout {
+                spacing: 8
+                MTextField {
+                    id: haRoomField
+                    inputWidth: 160
+                    text: page.haRoomDraft
+                    placeholder: "例如 客厅"
+                    onTextChanged: page.haRoomDraft = text
+                    onAccepted: page.saveHome()
+                }
+                MApplyStatus { paths: ["home.defaultRoom"] }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            MButton {
+                text: "保存"
+                primary: true
+                icon: "check"
+                onClicked: page.saveHome()
+            }
+            MButton {
+                text: page.homeTestBusy ? "测试中…" : "测试连接"
+                icon: "wand"
+                enabled: Ipc.connected && !page.homeTestBusy
+                onClicked: page.runHomeTest()
+            }
+            Item { Layout.fillWidth: true }
+            MPill {
+                visible: page.homeResultMessage.length > 0
+                text: page.homeResultOk ? "已连接" : "连接失败"
+                tone: page.homeResultOk ? Theme.green : Theme.red
+            }
+        }
+        Text {
+            visible: page.homeResultMessage.length > 0
+            Layout.fillWidth: true
+            text: page.homeResultMessage
+            color: page.homeResultOk ? Theme.green : Theme.red
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+        Text {
+            visible: page.haHint.length > 0
+            Layout.fillWidth: true
+            text: page.haHint
+            color: Theme.textDim
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsSmall
+            wrapMode: Text.WordWrap
+        }
+        Text {
+            Layout.fillWidth: true
+            text: "说明：令牌只写进 config.json，不会回显/记录；「测试连接」只探测 ${地址}/api/（4 秒超时），不保存配置。"
+                + "保存后需要重启费加罗，daemon 才会注册家庭控制工具。"
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
+            wrapMode: Text.WordWrap
+        }
     }
 
     MCard {

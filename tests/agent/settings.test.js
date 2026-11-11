@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import { createDaemon } from '../../src/daemon.js';
@@ -14,6 +15,8 @@ import {
   validatePatchPaths,
   deepMergeConfig,
   readConfigFile,
+  testHomeAssistant,
+  normalizeHaUrl,
 } from '../../src/agent/settings.js';
 import { makeTestConfig, silentLogger, waitFor } from './fake-llm.js';
 
@@ -198,6 +201,17 @@ const DEFAULT_SINKS = [
   { name: 'alsa_output.pci-0000_00_1f.3.analog-stereo', description: 'Built-in Audio Analog Stereo', isDefault: true },
   { name: 'alsa_output.pci-0000_01_00.1.hdmi-stereo', description: 'HDMI Audio', isDefault: false },
 ];
+
+
+async function startHaServer(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  return { server, baseUrl: `http://127.0.0.1:${server.address().port}` };
+}
 
 async function startSettingsDaemon(t, overrides = {}) {
   const ctx = overrides.ctx ?? (await makeContext(t));
@@ -645,4 +659,152 @@ test('diagnostics omits the sink list when enumeration fails (GUI has a manual f
   assert.equal(reply.type, 'diagnostics');
   assert.equal(reply.tts.sinks, undefined);
   assert.equal(typeof reply.tts.sink, 'string');
+});
+
+// -------------------------------------------------- voiceprint + home assistant
+
+test('config.set accepts the voiceprint switch/threshold and marks both restartRequired', async (t) => {
+  const { client, messages, ctx } = await startSettingsDaemon(t);
+  const reply = await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-speaker',
+    patch: { asr: { speaker: { enabled: true, threshold: 0.72 } } },
+  });
+  assert.equal(reply.type, 'config');
+  assert.equal(reply.ok, true);
+  assert.deepEqual(reply.applied, []);
+  assert.deepEqual(reply.restartRequired.sort(), ['asr.speaker.enabled', 'asr.speaker.threshold']);
+  const raw = JSON.parse(await fs.readFile(ctx.configPath, 'utf8'));
+  assert.equal(raw.asr.speaker.enabled, true);
+  assert.equal(raw.asr.speaker.threshold, 0.72);
+  assert.equal(reply.config.asr.speaker.enabled, true);
+  assert.equal(reply.config.asr.speaker.threshold, 0.72);
+});
+
+test('config.set rejects a voiceprint threshold outside 0-1 (and a non-boolean switch)', async (t) => {
+  const { client, messages, ctx } = await startSettingsDaemon(t);
+  const before = await fs.readFile(ctx.configPath, 'utf8');
+  const reply = await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-speaker-bad',
+    patch: { asr: { speaker: { threshold: 2 } } },
+  });
+  assert.equal(reply.ok, false);
+  assert.match(reply.errors.join(' '), /0–1/);
+  assert.ok(reply.forbidden.includes('asr.speaker.threshold'));
+  assert.equal(await fs.readFile(ctx.configPath, 'utf8'), before, 'an invalid value never hits the disk');
+
+  const badSwitch = await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-speaker-bad-2',
+    patch: { asr: { speaker: { enabled: 'yes' } } },
+  });
+  assert.equal(badSwitch.ok, false);
+  assert.ok(badSwitch.forbidden.includes('asr.speaker.enabled'));
+});
+
+test('home config writes are masked on read and need a daemon restart', async (t) => {
+  const { client, messages, ctx } = await startSettingsDaemon(t);
+  const reply = await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-home',
+    patch: { home: { haUrl: 'http://homeassistant.local:8123', haToken: 'home-secret-token', defaultRoom: '客厅' } },
+  });
+  assert.equal(reply.ok, true);
+  assert.deepEqual(reply.applied, []);
+  assert.deepEqual(reply.restartRequired.sort(), ['home.defaultRoom', 'home.haToken', 'home.haUrl']);
+  const raw = JSON.parse(await fs.readFile(ctx.configPath, 'utf8'));
+  assert.equal(raw.home.haUrl, 'http://homeassistant.local:8123');
+  assert.equal(raw.home.haToken, 'home-secret-token');
+  assert.equal(raw.home.defaultRoom, '客厅');
+  const fetched = await request(client, messages, { type: 'config.get', id: 'cfg-home-get' });
+  assert.equal(fetched.config.home.haUrl, 'http://homeassistant.local:8123');
+  assert.equal(fetched.config.home.defaultRoom, '客厅');
+  assert.equal(fetched.config.home.haToken, '***');
+  assert.doesNotMatch(JSON.stringify(messages), /home-secret-token/);
+});
+
+test('home.test reports connected on HTTP 200 and never echoes the token', async (t) => {
+  const seen = [];
+  const { baseUrl } = await startHaServer(t, (req, res) => {
+    seen.push({ url: req.url, authorization: req.headers.authorization });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"message":"API running."}');
+  });
+  const { client, messages } = await startSettingsDaemon(t);
+  const reply = await request(client, messages, {
+    type: 'home.test',
+    id: 'ha-ok',
+    haUrl: baseUrl,
+    haToken: 'ha-test-token',
+  });
+  assert.equal(reply.type, 'home.test');
+  assert.equal(reply.id, 'ha-ok');
+  assert.equal(reply.ok, true);
+  assert.match(reply.message, /已连接 Home Assistant/);
+  assert.equal(reply.status, 200);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, '/api/');
+  assert.equal(seen[0].authorization, 'Bearer ha-test-token');
+  assert.doesNotMatch(JSON.stringify(messages), /ha-test-token/);
+});
+
+test('home.test reports an invalid token on HTTP 401', async (t) => {
+  const { baseUrl } = await startHaServer(t, (req, res) => {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end('{"message":"401: Unauthorized"}');
+  });
+  const { client, messages } = await startSettingsDaemon(t);
+  const reply = await request(client, messages, {
+    type: 'home.test',
+    id: 'ha-401',
+    haUrl: baseUrl,
+    haToken: 'wrong-token',
+  });
+  assert.equal(reply.ok, false);
+  assert.equal(reply.status, 401);
+  assert.match(reply.message, /令牌无效/);
+  assert.doesNotMatch(JSON.stringify(messages), /wrong-token/);
+});
+
+test('home.test uses the stored token when only the URL is sent', async (t) => {
+  const seen = [];
+  const { baseUrl } = await startHaServer(t, (req, res) => {
+    seen.push(req.headers.authorization);
+    res.writeHead(200);
+    res.end('{}');
+  });
+  const { client, messages } = await startSettingsDaemon(t);
+  await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-home-token',
+    patch: { home: { haToken: 'stored-token-xyz' } },
+  });
+  const reply = await request(client, messages, { type: 'home.test', id: 'ha-stored', haUrl: baseUrl });
+  assert.equal(reply.ok, true);
+  assert.equal(seen.at(-1), 'Bearer stored-token-xyz');
+  assert.doesNotMatch(JSON.stringify(messages), /stored-token-xyz/);
+});
+
+test('home.test times out with a readable message', async (t) => {
+  const { baseUrl } = await startHaServer(t, (req, res) => {
+    setTimeout(() => {
+      try {
+        res.end('{}');
+      } catch {
+        /* the client already aborted */
+      }
+    }, 500);
+  });
+  const result = await testHomeAssistant({ haUrl: baseUrl, haToken: 'token', timeoutMs: 80 });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 0);
+  assert.match(result.message, /超时/);
+});
+
+test('normalizeHaUrl adds a scheme, drops trailing slashes and rejects junk', () => {
+  assert.equal(normalizeHaUrl('homeassistant.local:8123/'), 'http://homeassistant.local:8123');
+  assert.equal(normalizeHaUrl('https://ha.example.com/api/'), 'https://ha.example.com/api');
+  assert.equal(normalizeHaUrl(''), '');
+  assert.equal(normalizeHaUrl('ftp://ha.local'), '');
 });

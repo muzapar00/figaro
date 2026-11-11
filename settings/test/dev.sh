@@ -8,7 +8,12 @@ settings="$repo/settings"
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_RUNTIME_DIR="$runtime"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
-export QT_QUICK_BACKEND=software
+# Qt software rasterizer on Wayland currently crashes in this session
+# (QWaylandShmBackingStore double-paint, reproducible on the unmodified tree
+# too), so allow the GPU backend for local runs: FIGARO_SETTINGS_GL=1.
+if [[ "${FIGARO_SETTINGS_GL:-0}" != "1" ]]; then
+  export QT_QUICK_BACKEND=software
+fi
 export PATH="$HOME/.local/bin:$PATH"
 export FIGARO_SOCKET="${FIGARO_SOCKET:-$runtime/figaro-settings-test/sock}"
 fake_pid="$runtime/figaro-settings-test/dev-fake.pid"

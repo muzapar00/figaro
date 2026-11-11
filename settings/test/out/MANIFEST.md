@@ -78,6 +78,16 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 | ~~`real-daemon-task12.log`~~（本地生成，不入库） | 真 daemon（task-12） | 生产 daemon 的 ui/sfx 状态 + 临时真 daemon 实例上 9 个字段的 applied/restartRequired 原始应答 |
 | ~~`wizard-result.log`~~（本地生成，不入库） | 引导向导（task-12） | shoot.sh 走完 5 步后的 wizard 快照（step=5, allPassed=true, results 全 pass） |
 
+| `38-wake-speaker.png` | 声纹（三期） | 唤醒页声纹卡片（关闭态）：开关、0.35–0.90 阈值、「重新录制声纹」按钮 |
+| `39-wake-speaker-on.png` | 声纹（三期） | 开启声纹 + 阈值 0.72：就绪徽章、上次 score 0.82/已检测 17/已过滤 3、「已写入·需重启 daemon」 |
+| `40-wake-enroll-dialog.png` | 声纹（三期） | 「重新录制声纹」弹窗：`figaro enroll-voice` + 复制命令 + 说明 |
+| `41-api-home.png` | Home Assistant（三期） | 连接页 HA 卡片：URL/令牌（只写不读、掩码占位）/默认房间、已保存需重启提示 |
+| `42-api-home-test-ok.png` | Home Assistant（三期） | 「测试连接」成功 →「已连接 Home Assistant」 |
+| `43-api-home-test-401.png` | Home Assistant（三期） | 「测试连接」令牌无效 →「令牌无效（HTTP 401）」 |
+
+| `44-deployed-wake-speaker.png` | 部署后真 daemon（三期） | 部署到 `~/.config/quickshell/figaro-settings` 后打开唤醒页：声纹卡片显示生产 daemon 的真实状态（就绪、阈值 0.50、上次 score 0.64、已检测 4、已过滤 1） |
+| `45-deployed-api-home.png` | 部署后真 daemon（三期） | 部署后连接页 HA 卡片：生产 config 已有 haUrl/haToken，GUI 只显示掩码占位与「需重启」提示（home.test 要 daemon 重启后才可用） |
+
 ## 数据/日志
 
 | 文件 | 说明 |

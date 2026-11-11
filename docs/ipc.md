@@ -164,6 +164,7 @@ GUI（`qs -c figaro-settings`）与诊断脚本通过同一 socket 使用以下�
 | `{type:"test.tts"}` | `id?`, `text`, `voiceId?` | 直接用当前 TTS 试听一段（走同一 sink/音色），回 `{type:"test.tts.result", id, ms, ok}` |
 | `{type:"service.restart"}` | `id?` | 重启守护进程（GUI 按钮用；daemon 先回 ack 再 exec 自身或退出由 systemd 拉起） |
 | `{type:"diagnostics"}` | `id?` | 回 `{type:"diagnostics", id, configPath, version, uptimeMs, asr, tts, ack, mic:{gainPercent, rms, peak}, latency:{...}, recentErrors[]}` |
+| `{type:"home.test"}` | `id?`, `haUrl?`, `haToken?` | 测试本地 Home Assistant 连通性：不带字段时用 config 里已保存的 `home.*`；`haToken` 为 `***` 表示"沿用已保存令牌"。返回 `{type:"home.test.result", id, ok, status, message}`：200→已连接、401/403→令牌无效、超时/网络错误→连不上。**令牌不写日志、不回显** |
 
 **daemon → 客户端**：`config`、`mic`、`mic.end`、`test.asr.result`、`wake.score`、`wake.hit`、`test.wake.end`、`test.tts.result`、`diagnostics`（字段如上）。
 
@@ -172,6 +173,8 @@ GUI（`qs -c figaro-settings`）与诊断脚本通过同一 socket 使用以下�
 - `asr.wakeCooldownMs`: 两次唤醒之间的最小间隔（默认 2500）
 - `asr.inputGainPercent`: 显式麦克风增益（`null`=允许自动校准；数字=固定值，不自动改）
 - `tts.ack.*`（已有）、`tts.sink`（已有）
+- `asr.speaker.enabled` / `asr.speaker.threshold`（声纹门，写后需重启 daemon 才加载模型/档案）
+- `home.haUrl` / `home.haToken`（只写不读，`config` 回包只有掩码）/ `home.defaultRoom`（写后需重启 daemon 注册 `home` 工具）
 
 ## 4. 系统集成（Lead + A 共同）
 

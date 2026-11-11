@@ -23,6 +23,7 @@ export const SETTINGS_MESSAGE_TYPES = Object.freeze([
   'test.wake.disarm',
   'test.tts',
   'service.restart',
+  'home.test',
   'diagnostics',
 ]);
 
@@ -44,6 +45,8 @@ export const ALLOWED_CONFIG_PATHS = Object.freeze([
   'asr.bargeIn.echoFactor',
   'asr.bargeIn.minMs',
   'asr.verifyWake.enabled',
+  'asr.speaker.enabled',
+  'asr.speaker.threshold',
   'interaction.followUpWindowMs',
   'interaction.followUpMinRms',
   'interaction.followUpMinMs',
@@ -72,6 +75,8 @@ export const ALLOWED_CONFIG_PATHS = Object.freeze([
 
 export const MIC_TEST_DEFAULT_MS = 4000;
 export const WAKE_TEST_DEFAULT_MS = 15000;
+/** Home Assistant connectivity probe: 4 s, matches what the GUI reports. */
+export const HOME_TEST_TIMEOUT_MS = 4000;
 const MIC_TEST_OVERHEAD_MS = 800;
 const WAKE_TEST_OVERHEAD_MS = 1200;
 const WAKE_SCORE_MIN_INTERVAL_MS = 100;
@@ -127,6 +132,27 @@ export function validatePatchPaths(patch) {
     else forbidden.push(path);
   }
   return { allowed, forbidden };
+}
+
+/**
+ * Value-level checks for whitelisted paths that would otherwise corrupt the
+ * daemon config (the GUI already constrains them, but a direct IPC call must
+ * not be able to write nonsense).
+ * @returns {Array<{path: string, message: string}>}
+ */
+export function validatePatchValues(patch) {
+  const invalid = [];
+  const speaker = isPlainObject(patch?.asr) && isPlainObject(patch.asr.speaker) ? patch.asr.speaker : null;
+  if (speaker && speaker.enabled !== undefined && typeof speaker.enabled !== 'boolean') {
+    invalid.push({ path: 'asr.speaker.enabled', message: '声纹开关需要是 true/false' });
+  }
+  if (speaker && speaker.threshold !== undefined) {
+    const value = Number(speaker.threshold);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      invalid.push({ path: 'asr.speaker.threshold', message: '声纹阈值需要是 0–1 之间的数字' });
+    }
+  }
+  return invalid;
 }
 
 /** Deep merge plain objects; arrays and scalars replace. */
@@ -213,6 +239,80 @@ export async function listAudioSinks({ force = false } = {}) {
   }
 }
 
+/**
+ * Normalise the Home Assistant base URL the user typed ("ha.local:8123",
+ * "http://ha.local:8123/", ...) to a scheme+host+path string without a
+ * trailing slash. Returns "" when it is not a usable http(s) URL.
+ */
+export function normalizeHaUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+  if (hasScheme && !/^https?:\/\//i.test(raw)) return ''; // reject ftp:// etc.
+  const withScheme = hasScheme ? raw : `http://${raw}`;
+  try {
+    const url = new URL(withScheme);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    if (!url.hostname) return '';
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Probe `${haUrl}/api/` with the long-lived access token.
+ * Never logs or echoes the token; the returned message is safe to display.
+ * @returns {Promise<{type:'home.test', ok:boolean, status:number, message:string}>}
+ */
+export async function testHomeAssistant({ haUrl, haToken, timeoutMs = HOME_TEST_TIMEOUT_MS, fetchImpl = globalThis.fetch } = {}) {
+  const base = normalizeHaUrl(haUrl);
+  if (!base) {
+    return { type: 'home.test', ok: false, status: 0, message: '还差一个 Home Assistant 地址（例如 http://homeassistant.local:8123）' };
+  }
+  const token = String(haToken ?? '').trim();
+  if (!token || token === '***') {
+    return { type: 'home.test', ok: false, status: 0, message: '还没有填写长期访问令牌（home.haToken）' };
+  }
+  if (typeof fetchImpl !== 'function') {
+    return { type: 'home.test', ok: false, status: 0, message: '当前 Node 没有内置 fetch，无法测试连接' };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || HOME_TEST_TIMEOUT_MS));
+  try {
+    const response = await fetchImpl(`${base}/api/`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    // Do not read the body: /api/ is small and we only need the status class.
+    try {
+      await response.body?.cancel?.();
+    } catch {
+      /* ignore */
+    }
+    if (response.status === 200) {
+      return { type: 'home.test', ok: true, status: 200, message: '已连接 Home Assistant' };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return { type: 'home.test', ok: false, status: response.status, message: '令牌无效（HTTP ' + response.status + '）' };
+    }
+    return { type: 'home.test', ok: false, status: response.status, message: `连不上 ${base}（HTTP ${response.status}）` };
+  } catch (err) {
+    const aborted = err?.name === 'AbortError';
+    return {
+      type: 'home.test',
+      ok: false,
+      status: 0,
+      message: aborted
+        ? `连不上 ${base}（${Math.round(Number(timeoutMs) || HOME_TEST_TIMEOUT_MS)} ms 超时）`
+        : `连不上 ${base}（网络错误）`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function clamp01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
@@ -291,6 +391,23 @@ export function createSettingsService(options = {}) {
 
   // ------------------------------------------------------------- config ----
 
+  // ---------------------------------------------------------- home assistant ----
+  async function handleHomeTest(message, client) {
+    const id = messageId(message);
+    const effective = context.getEffectiveConfig?.() ?? options.config ?? {};
+    const home = effective?.home ?? {};
+    const visible = (value) => (typeof value === 'string' && value.trim().length > 0 && value.trim() !== '***' ? value.trim() : '');
+    // Draft URL from the GUI wins; the token only comes from the draft when the
+    // user actually typed a new one ("***" and empty mean "use the saved one").
+    const haUrl = visible(message?.haUrl) || visible(home.haUrl);
+    const haToken = visible(message?.haToken) || visible(home.haToken);
+    const result = await testHomeAssistant({ haUrl, haToken });
+    // Never log the URL or the token: just the outcome class.
+    log.info(`home.test ${result.ok ? 'ok' : 'failed'}${result.status ? ` (HTTP ${result.status})` : ''}`);
+    if (message?.id !== undefined) result.id = message.id;
+    reply(client, result);
+  }
+
   async function handleConfigGet(message, client) {
     const id = messageId(message);
     let effective;
@@ -308,6 +425,19 @@ export function createSettingsService(options = {}) {
       return sendError(client, id, 'CONFIG_BAD_PATCH', 'config.set 需要 patch 是 JSON 对象');
     }
     const { allowed, forbidden } = validatePatchPaths(message.patch);
+    const invalid = validatePatchValues(message.patch);
+    if (invalid.length > 0) {
+      const current = context.getEffectiveConfig?.() ?? options.config;
+      reply(client, withId(id, {
+        type: 'config',
+        ok: false,
+        invalid,
+        errors: invalid.map((entry) => entry.message),
+        forbidden: invalid.map((entry) => entry.path),
+        config: sanitizeConfig(current),
+      }));
+      return;
+    }
     if (forbidden.length > 0) {
       const current = context.getEffectiveConfig?.() ?? options.config;
       reply(client, withId(id, {
@@ -356,6 +486,13 @@ export function createSettingsService(options = {}) {
       errors = applyResult?.errors ?? [];
     } catch (err) {
       errors.push(`热应用失败：${err?.message || err}`);
+    }
+
+    // Paths the daemon did not classify (e.g. home.*, which the daemon only
+    // reads at startup) still need a restart; say so instead of "unknown".
+    const classified = new Set([...applied, ...restartRequired]);
+    for (const path of allowed) {
+      if (!classified.has(path)) restartRequired.push(path);
     }
 
     reply(client, withId(id, {
@@ -811,6 +948,9 @@ export function createSettingsService(options = {}) {
         return;
       case 'test.tts':
         await handleTtsTest(message, client);
+        return;
+      case 'home.test':
+        await handleHomeTest(message, client);
         return;
       case 'service.restart': {
         const via = context.describeRestart?.() ?? 'unknown';

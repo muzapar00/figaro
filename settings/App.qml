@@ -46,6 +46,18 @@ Rectangle {
         return path;
     }
 
+    // Modal for CLI commands the settings window cannot run itself (voiceprint
+    // enrollment drives the microphone through `figaro enroll-voice`).
+    function showEnrollCommand() {
+        commandDialog.title = "重新录制声纹";
+        commandDialog.command = "figaro enroll-voice";
+        commandDialog.note = "在安静环境里按提示录 3 句（约 10 秒），录完会自动启用声纹门控。"
+            + "录制需要麦克风，所以由 daemon 的 CLI 完成，设置窗口不能直接驱动录音。"
+            + "录完后回这里点「刷新」即可看到新的声纹状态。";
+        commandDialog.show();
+        return "enroll-dialog-open";
+    }
+
     function runAction(name) {
         // scroll:<px> lets the self-test harness park the page at an offset.
         if (name.indexOf("scroll:") === 0) return app.scrollCurrent(name.slice(7));
@@ -59,6 +71,14 @@ Rectangle {
         case "appearance-demo": return appearancePage.demoWrite();
         case "appearance-reset": return appearancePage.resetDefaults();
         case "api-demo": return apiKeysPage.demoWrite();
+        case "api-home-demo": return apiKeysPage.homeDemoWrite();
+        case "api-home-save": return apiKeysPage.saveHome();
+        case "api-home-test": return apiKeysPage.runHomeTest();
+        case "api-home-test-bad": return apiKeysPage.homeDemoFailTest();
+        case "wake-enroll-dialog": return wakePage.openEnrollDialog();
+        case "enroll-copy": commandDialog.copyCommand(); return "enroll-copied";
+        case "dialog-close": commandDialog.close(); return "dialog-closed";
+        case "wake-speaker-demo": return wakePage.speakerDemoWrite();
         case "wake-start": return wakePage.startWakeTest();
         case "wake-stop": return wakePage.stopWakeTest();
         case "ambient-start": return wakePage.startAmbientTest();
@@ -229,6 +249,7 @@ Rectangle {
             id: wakePage
             anchors.fill: parent
             visible: app.pageIndex === 4
+            onEnrollCommandRequested: app.showEnrollCommand()
         }
         InteractionPage {
             id: interactionPage
@@ -255,5 +276,11 @@ Rectangle {
             anchors.fill: parent
             visible: app.pageIndex === 9
         }
+    }
+
+    MCommandDialog {
+        id: commandDialog
+        anchors.fill: parent
+        z: 60
     }
 }

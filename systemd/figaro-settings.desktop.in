@@ -5,7 +5,7 @@ Name=费加罗
 Name[en]=Figaro
 GenericName=语音助手设置与自测
 Comment=费加罗语音助手的 macOS 风格设置面板：灵敏度、误唤醒、麦克风、语音与识别自测
-Exec=@QS@ --no-duplicate -c figaro-settings
+Exec=env FIGARO_SETTINGS_GL=1 @QS@ --no-duplicate -c figaro-settings
 Icon=figaro
 Terminal=false
 Categories=Settings;
