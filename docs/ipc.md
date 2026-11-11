@@ -164,7 +164,8 @@ GUI（`qs -c figaro-settings`）与诊断脚本通过同一 socket 使用以下�
 | `{type:"test.tts"}` | `id?`, `text`, `voiceId?` | 直接用当前 TTS 试听一段（走同一 sink/音色），回 `{type:"test.tts.result", id, ms, ok}` |
 | `{type:"service.restart"}` | `id?` | 重启守护进程（GUI 按钮用；daemon 先回 ack 再 exec 自身或退出由 systemd 拉起） |
 | `{type:"diagnostics"}` | `id?` | 回 `{type:"diagnostics", id, configPath, version, uptimeMs, asr, tts, ack, mic:{gainPercent, rms, peak}, latency:{...}, recentErrors[]}` |
-| `{type:"home.test"}` | `id?`, `haUrl?`, `haToken?` | 测试本地 Home Assistant 连通性：不带字段时用 config 里已保存的 `home.*`；`haToken` 为 `***` 表示"沿用已保存令牌"。返回 `{type:"home.test.result", id, ok, status, message}`：200→已连接、401/403→令牌无效、超时/网络错误→连不上。**令牌不写日志、不回显** |
+| `{type:"home.test"}` | `id?`, `haUrl?`, `haToken?` | 测试本地 Home Assistant 连通性：不带字段时用 config 里已保存的 `home.*`；`haToken` 为 `***` 表示"沿用已保存令牌"。返回 `{type:"home.test", id, ok, status, message}`：200→已连接、401/403→令牌无效、超时/网络错误→连不上。**令牌不写日志、不回显** |
+| `{type:"llm.test"}` | `id?`, `provider?`, `baseUrl?`, `model?`, `apiKey?` | 用当前/草稿 LLM 配置做一次最小连通性测试（`src/agent/llm.js` 的 `testLlmConnection`）。`apiKey` 为空或 `***` 表示沿用已保存 key。返回 `{type:"llm.test", id, ok, status, message, provider, model, apiKeyConfigured}`；错误信息打码、key 不回显/不写日志 |
 
 **daemon → 客户端**：`config`、`mic`、`mic.end`、`test.asr.result`、`wake.score`、`wake.hit`、`test.wake.end`、`test.tts.result`、`diagnostics`（字段如上）。
 
@@ -175,6 +176,8 @@ GUI（`qs -c figaro-settings`）与诊断脚本通过同一 socket 使用以下�
 - `tts.ack.*`（已有）、`tts.sink`（已有）
 - `asr.speaker.enabled` / `asr.speaker.threshold`（声纹门，写后需重启 daemon 才加载模型/档案）
 - `home.haUrl` / `home.haToken`（只写不读，`config` 回包只有掩码）/ `home.defaultRoom`（写后需重启 daemon 注册 `home` 工具）
+- `llm.provider` / `llm.baseUrl` / `llm.model` / `llm.apiKey` / `llm.reasoningEffort` / `llm.temperature`（通用 LLM 服务商；`apiKey` 只写不读、回包掩码；写后需重启 daemon 重建 agent）
+- `models.region`（`mainland|hmt|overseas`，模型下载地区）、`rag.autoIngest`（长期记忆自动入库，默认 false）
 
 ## 4. 系统集成（Lead + A 共同）
 

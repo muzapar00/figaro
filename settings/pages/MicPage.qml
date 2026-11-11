@@ -38,7 +38,7 @@ MPageScroll {
     }
 
     function levelText() {
-        return Ipc.micRunning || Ipc.micSampleCount > 0 ? Ipc.micSampleCount + " 帧 @20Hz" : "未开始";
+        return Ipc.micRunning || Ipc.micSampleCount > 0 ? Ipc.micSampleCount + I18n.t(" 帧 @20Hz") : I18n.t("未开始");
     }
 
     function startMonitor() {
@@ -86,7 +86,7 @@ MPageScroll {
         page.measuring = false;
         const samples = Ipc.micSamples || [];
         if (samples.length === 0) {
-            page.measureError = "没有采到样本，请重新测量";
+            page.measureError = I18n.t("没有采到样本，请重新测量");
             return;
         }
         let sum = 0;
@@ -123,7 +123,7 @@ MPageScroll {
 
     function snapshot() {
         return {
-            title: "麦克风",
+            title: I18n.t("麦克风"),
             device: page.device,
             gainPercent: page.gainPercent,
             gainIsAuto: page.gainIsAuto,
@@ -166,17 +166,17 @@ MPageScroll {
     Component.onCompleted: page.syncFromConfig()
 
     MPageHeader {
-        title: "麦克风"
-        subtitle: "输入设备、实时电平、增益校准与底噪测量"
+        title: I18n.t("麦克风")
+        subtitle: I18n.t("输入设备、实时电平、增益校准与底噪测量")
         icon: "mic"
     }
 
     MCard {
-        title: "输入"
+        title: I18n.t("输入")
 
         MRow {
-            label: "输入设备"
-            subtitle: "写入 asr.device · default = 系统默认输入"
+            label: I18n.t("输入设备")
+            subtitle: I18n.t("写入 asr.device · default = 系统默认输入")
             RowLayout {
                 spacing: 8
                 MTextField {
@@ -185,7 +185,7 @@ MPageScroll {
                     placeholder: "default"
                 }
                 MButton {
-                    text: "应用"
+                    text: I18n.t("应用")
                     onClicked: {
                         page.device = page.draftDevice.trim().length > 0 ? page.draftDevice.trim() : "default";
                         Ipc.applyPatch({ asr: { device: page.device } });
@@ -194,14 +194,14 @@ MPageScroll {
             }
         }
         MRow {
-            label: "增益"
+            label: I18n.t("增益")
             subtitle: page.gainIsAuto
-                ? "自动校准模式（asr.inputGainPercent = null）"
-                : "固定 " + page.gainPercent + "%（写 asr.inputGainPercent）"
+                ? I18n.t("自动校准模式（asr.inputGainPercent = null）")
+                : I18n.t("固定 ") + page.gainPercent + I18n.t("%（写 asr.inputGainPercent）")
             RowLayout {
                 spacing: 8
                 Text {
-                    text: page.gainIsAuto ? "自动" : page.gainPercent + "%"
+                    text: page.gainIsAuto ? I18n.t("自动") : page.gainPercent + "%"
                     color: Theme.textDim
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
@@ -218,20 +218,20 @@ MPageScroll {
             }
         }
         MRow {
-            label: "自动校准"
-            subtitle: "静音 3 秒测底噪，按 2% RMS 目标自动设置增益"
+            label: I18n.t("自动校准")
+            subtitle: I18n.t("静音 3 秒测底噪，按 2% RMS 目标自动设置增益")
             showSeparator: false
             RowLayout {
                 spacing: 8
                 MButton {
-                    text: page.measuring && page.measureAutoApply ? "校准中…" : "自动校准"
+                    text: page.measuring && page.measureAutoApply ? I18n.t("校准中…") : I18n.t("自动校准")
                     icon: "refresh"
                     primary: true
                     enabled: Ipc.connected && page.micSupported && !page.measuring
                     onClicked: page.autoCalibrate()
                 }
                 MButton {
-                    text: "恢复自动"
+                    text: I18n.t("恢复自动")
                     enabled: Ipc.connected && !page.gainIsAuto
                     onClicked: Ipc.applyPatch({ asr: { inputGainPercent: null } })
                 }
@@ -240,7 +240,7 @@ MPageScroll {
         Text {
             visible: Ipc.configErrors.length > 0
             Layout.fillWidth: true
-            text: "daemon 拒绝：" + Ipc.configErrors.join("；")
+            text: I18n.t("daemon 拒绝：") + Ipc.configErrors.join("；")
             color: Theme.orange
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -249,8 +249,8 @@ MPageScroll {
     }
 
     MCard {
-        title: "实时电平"
-        subtitle: "test.mic.start 的 20Hz rms/peak 流 · 削波时增益过高"
+        title: I18n.t("实时电平")
+        subtitle: I18n.t("test.mic.start 的 20Hz rms/peak 流 · 削波时增益过高")
         contentSpacing: 14
 
         Rectangle {
@@ -266,7 +266,7 @@ MPageScroll {
                 MIcon { kind: "warning"; size: 14; color: Theme.yellow }
                 Text {
                     Layout.fillWidth: true
-                    text: "当前 daemon 不支持此功能（test.mic.start 未响应）。"
+                    text: I18n.t("当前 daemon 不支持此功能（test.mic.start 未响应）。")
                     color: Theme.yellow
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
@@ -278,19 +278,19 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: page.monitoring ? "停止监听" : "开始实时监听"
+                text: page.monitoring ? I18n.t("停止监听") : I18n.t("开始实时监听")
                 icon: page.monitoring ? "stop" : "play"
                 primary: !page.monitoring
                 enabled: Ipc.connected && page.micSupported
                 onClicked: page.monitoring ? page.stopMonitor() : page.startMonitor()
             }
             MPill {
-                text: page.monitoring ? "监听中" : (Ipc.micSampleCount > 0 ? "已停止" : "未开始")
+                text: page.monitoring ? I18n.t("监听中") : (Ipc.micSampleCount > 0 ? I18n.t("已停止") : I18n.t("未开始"))
                 tone: page.monitoring ? Theme.green : Theme.textDim
             }
             MPill {
                 visible: Ipc.micClipped
-                text: "削波！增益过高"
+                text: I18n.t("削波！增益过高")
                 tone: Theme.red
             }
             Item { Layout.fillWidth: true }
@@ -327,8 +327,8 @@ MPageScroll {
             }
             Item { Layout.fillWidth: true }
             Text {
-                text: "诊断增益：" + (page.micInfo.gainPercent !== undefined && page.micInfo.gainPercent !== null
-                    ? page.micInfo.gainPercent + "%" : "自动")
+                text: I18n.t("诊断增益：") + (page.micInfo.gainPercent !== undefined && page.micInfo.gainPercent !== null
+                    ? page.micInfo.gainPercent + "%" : I18n.t("自动"))
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -337,30 +337,30 @@ MPageScroll {
     }
 
     MAdvancedCard {
-        title: "高级 · 底噪测量"
-        subtitle: "保持安静 3 秒，测出环境底噪并给出建议增益"
+        title: I18n.t("高级 · 底噪测量")
+        subtitle: I18n.t("保持安静 3 秒，测出环境底噪并给出建议增益")
 
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: page.measuring ? "测量中…" : "静音 3 秒测量"
+                text: page.measuring ? I18n.t("测量中…") : I18n.t("静音 3 秒测量")
                 icon: "record"
                 primary: true
                 enabled: Ipc.connected && page.micSupported && !page.measuring
                 onClicked: page.measureNoiseFloor()
             }
             MButton {
-                text: "应用建议增益"
+                text: I18n.t("应用建议增益")
                 icon: "check"
                 enabled: page.suggestedGain >= 0
                 onClicked: page.applySuggestedGain()
             }
             Item { Layout.fillWidth: true }
             Text {
-                text: page.measuring ? "采样中，请保持安静…"
+                text: page.measuring ? I18n.t("采样中，请保持安静…")
                     : page.measureError.length > 0 ? page.measureError
-                    : (page.noiseRms >= 0 ? "测量完成" : "尚未测量")
+                    : (page.noiseRms >= 0 ? I18n.t("测量完成") : I18n.t("尚未测量"))
                 color: page.measuring ? Theme.accent : Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -371,33 +371,33 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 12
             MStat {
-                label: "环境 RMS"
+                label: I18n.t("环境 RMS")
                 value: page.noiseRms >= 0 ? Number(page.noiseRms).toFixed(3) : "—"
                 tone: Theme.text
             }
             MStat {
-                label: "环境峰值"
+                label: I18n.t("环境峰值")
                 value: page.noisePeak >= 0 ? Number(page.noisePeak).toFixed(3) : "—"
                 tone: Theme.text
             }
             MStat {
-                label: "当前增益"
-                value: page.gainIsAuto ? "自动" : String(page.gainPercent)
+                label: I18n.t("当前增益")
+                value: page.gainIsAuto ? I18n.t("自动") : String(page.gainPercent)
                 unit: page.gainIsAuto ? "" : "%"
                 tone: Theme.accent
             }
             MStat {
-                label: "建议增益"
+                label: I18n.t("建议增益")
                 value: page.suggestedGain >= 0 ? String(page.suggestedGain) + "%" : "—"
                 tone: Theme.green
-                hint: "目标：底噪 ≈ 2% RMS"
+                hint: I18n.t("目标：底噪 ≈ 2% RMS")
             }
         }
 
         Text {
             Layout.fillWidth: true
-            text: "说明：底噪长期高于 5% 时唤醒词分数会被噪声抬高，容易出现误唤醒；"
-                + "建议降低增益或使用带降噪的麦克风。"
+            text: I18n.t("说明：底噪长期高于 5% 时唤醒词分数会被噪声抬高，容易出现误唤醒；")
+                + I18n.t("建议降低增益或使用带降噪的麦克风。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny

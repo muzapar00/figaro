@@ -7,7 +7,8 @@
 **跑在你自己 Linux 桌面上的语音助手：喊一声，它出现；说完事，它退下。**
 
 [![License: GPL-3.0+](https://img.shields.io/badge/license-GPL--3.0%2B-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-376%20passing-brightgreen.svg)](#实测数字)
+[![Release](https://img.shields.io/badge/release-v1.0.0-2ea043.svg)](https://github.com/muzapar00/figaro/releases)
+[![Tests](https://img.shields.io/badge/tests-447%20passing-brightgreen.svg)](#实测数字)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Wayland%20%C2%B7%20Quickshell-6a5acd.svg)](#快速开始)
 [![Brain](https://img.shields.io/badge/brain-DeepSeek%20%2B%20本地工具-4a7dff.svg)](#架构)
 [![Voice](https://img.shields.io/badge/voice-MiniMax%20流式男声-d75cff.svg)](#架构)
@@ -34,11 +35,16 @@
 | 🗣️ **说完就停、答完等你** | 回答播完停在屏幕顶部 7 秒，期间直接用正常音量接着说即可追问，不用再喊唤醒词；只有够响的人声才算（底噪 0.0023，门槛 0.012） |
 | 🚪 **会自己退下** | 说「退下/休息吧/没事了」→ 先把话说完、语音播完，再收起；也可以点它一下取消 |
 | 🛑 **能被打断** | 回答中你开口（够响且持续）就立刻停声转听，不会把环境音当指令 |
-| 🧠 **跨会话记忆** | 本地 **LightRAG**（MIT）长期记忆：回答前检索相关旧内容，回合结束后异步入库。不依赖云端向量库；服务挂了就静默按无记忆回答 |
+| 🧠 **跨会话记忆** | 可选的本地 **LightRAG**（MIT）长期记忆：回答前检索相关旧内容，可后台入库。**自动入库默认关闭**（入库会把文本发给你配置的 LLM/Embedding 服务商）；服务挂了就静默按无记忆回答 |
 | 🖥️ **看得见屏幕** | 内置 `screenshot` + `view_image` 工具，问"屏幕上是什么"它真的会看（已修复参数名导致"看图工具坏了"的坑） |
 | 🛠️ **本机工具** | bash、读写文件、glob/grep、网页搜索；都能组合使用 |
 | 🔊 **不抢语音的音效** | 5 个 65–200ms 的轻音效（唤醒/采集结束/答完/退下/错误），比语音低 4–6 dB，独立进程播放，绝不会打断说话 |
 | 🎨 **可调的外观** | 尺寸 0.5–2.0、形状（球↔胶囊 / 始终球 / 一条线）、关闭动画；KDE 上还有 KWin 液态玻璃 |
+| 🌐 **三语 + 引导设置** | 设置与 9 步新手引导支持 **简体中文 / 繁體中文 / English**；引导用大字通俗说明"费加罗是什么、要做什么"、隐私、语言/地区、API key 与自检 |
+| 🔌 **自带 LLM** | DeepSeek、OpenAI、Gemini，或任意 OpenAI 兼容端点（含本地 Ollama/vLLM）；可在设置里切换 provider/模型并测试连接，旧 `deepseek.*` 配置继续兼容 |
+| 🌏 **按地区选模型源** | 中国大陆自动走国内源（ModelScope / hf-mirror / ghproxy，失败自动回退）；中国港澳台/海外走官方。`scripts/fetch-models.sh --probe --region …` 可查看实际源 |
+| 📦 **Linux 安装包** | deb（Ubuntu/Kubuntu/KDE neon）、AUR（Arch）、rpm（Fedora/openSUSE），CI 在每次 release tag 自动构建；见 [平台支持](docs/platform-support.md) |
+| 🔒 **隐私优先** | 无遥测、无账号、没有我们的服务器；唤醒/ASR/声纹全本地；Key 只在本机 600 文件；详见 [docs/privacy.md](docs/privacy.md) |
 | 🧭 **引导式自测** | 设置面板里五步向导：安静检查 → 增益 → 唤醒 → 转写 → 试听，跟着点就行 |
 | 🩺 **一键体检** | `figaro doctor` 检查服务/模型/密钥/麦克风/音频出口/热键/桌面能力/资源 |
 
@@ -48,8 +54,21 @@
 
 ## 快速开始
 
-**前置**：Linux + Wayland（KDE Plasma 6 实测）、[Quickshell](https://github.com/quickshell-mirror/quickshell)（`qs` 在 PATH）、Node ≥ 22、PipeWire、Python 3。
+**前置**：Linux + Wayland。**正式支持 KDE Plasma 6 Wayland**；Hyprland/sway 实验性支持（见 [平台支持](docs/platform-support.md)）。
+需要 [Quickshell](https://github.com/quickshell-mirror/quickshell)（`qs` 在 PATH）、Node ≥ 22、PipeWire、Python 3。
 KWin 液态玻璃是**可选**的：没有 KOS 插件时会自动退回半透明底，不影响使用。
+
+### 安装（v1.0）
+
+| 发行版 | 命令 |
+|---|---|
+| Ubuntu / Kubuntu / KDE neon 26.04 | 从 Release 下载 `figaro_1.0.0_amd64.deb`，`sudo apt install ./figaro_1.0.0_amd64.deb`，然后从菜单打开**费加罗**一次 |
+| Arch / EndeavourOS | `yay -S figaro`（AUR），或用 `packaging/aur/PKGBUILD` 构建 |
+| Fedora / openSUSE | 从 Release 下载 `figaro-1.0.0-*.rpm` 安装 |
+| 任意发行版（源码） | `git clone … && ./install.sh`（见下） |
+
+安装包只装程序和 systemd user units；**第一次启动会打开引导设置**（install-user + 向导），不会覆盖已有配置。
+模型在首次运行时按地区下载。
 
 ```bash
 git clone https://github.com/muzapar00/figaro.git && cd figaro

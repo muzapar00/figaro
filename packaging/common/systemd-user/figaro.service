@@ -1,0 +1,30 @@
+[Unit]
+Description=Figaro voice assistant daemon (DeepSeek brain + local voice IO)
+Documentation=file://@DOCDIR@/platform-support.md
+# The daemon owns a PipeWire microphone stream and a portal-backed global
+# shortcut, both of which belong to the graphical session.
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The launcher finds Node at run time (/usr/bin/node first, then $PATH), so this
+# unit contains no build-host path and no hard-coded account.
+ExecStart=/usr/bin/figaro daemon
+Environment=XDG_RUNTIME_DIR=%t
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# A missing or broken voice module degrades to text; it is not a crash loop.
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=10
+SyslogIdentifier=figaro
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# default.target keeps it available for text use after login; the graphical
+# target link is what brings it back after a logout/login cycle.
+WantedBy=default.target
+WantedBy=graphical-session.target

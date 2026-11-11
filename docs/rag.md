@@ -197,14 +197,16 @@ journalctl --user -u figaro-rag -u figaro-rag-embed --no-pager | grep -iE 'error
   "envFile": "",
   "mode": "mix",
   "timeoutMs": 1500,
-  "autoIngest": true
+  "autoIngest": false
 }
 ```
 
 - `apiKey` 留空时从 `envFile`（默认 `~/.local/share/figaro/lightrag/.env`）读
   `LIGHTRAG_API_KEY`；key 不写日志、不进 status。
 - `timeoutMs` 是**每轮召回的总预算**：超过就按"无记忆"继续，绝不拖慢语音。
-- `autoIngest=true` 时，回合结束后后台把「用户说/费加罗回答」写入 LightRAG（不阻塞回复）。
+- `autoIngest` **默认 false**（隐私：入库会把对话文本发给你配置的 LLM/Embedding 服务商）。
+  设为 true 后，回合结束后后台把「用户说/费加罗回答」写入 LightRAG（不阻塞回复）；
+  引导设置里会在用户明确同意后才打开。
 
 ### 一轮对话里发生什么
 

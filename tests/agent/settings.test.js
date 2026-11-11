@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
@@ -17,10 +18,13 @@ import {
   readConfigFile,
   testHomeAssistant,
   normalizeHaUrl,
+  createSettingsService,
 } from '../../src/agent/settings.js';
 import { makeTestConfig, silentLogger, waitFor } from './fake-llm.js';
 
 const SECRET = 'sk-REAL-SECRET-DO-NOT-LEAK';
+// Never hard-code the release version again: read it from package.json.
+const PKG_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 function makeFakeAsr() {
   const record = {
@@ -543,7 +547,7 @@ test('diagnostics aggregates config path, voice health, mic and recent errors', 
   assert.equal(reply.type, 'diagnostics');
   assert.equal(reply.id, 'diag-1');
   assert.equal(reply.configPath, ctx.configPath);
-  assert.equal(reply.version, '0.1.0');
+  assert.equal(reply.version, PKG_VERSION);
   assert.ok(reply.uptimeMs >= 0);
   assert.equal(reply.asr.available, true);
   assert.equal(reply.asr.sensitivity, 'low');
@@ -807,4 +811,146 @@ test('normalizeHaUrl adds a scheme, drops trailing slashes and rejects junk', ()
   assert.equal(normalizeHaUrl('https://ha.example.com/api/'), 'https://ha.example.com/api');
   assert.equal(normalizeHaUrl(''), '');
   assert.equal(normalizeHaUrl('ftp://ha.local'), '');
+});
+
+// ------------------------------------------------- generic LLM providers + memory
+
+function makeDirectService(t, overrides = {}) {
+  const state = { sent: [], effective: overrides.effective ?? { llm: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' } } };
+  const service = createSettingsService({
+    config: state.effective,
+    configPath: overrides.configPath ?? path.join(os.tmpdir(), 'figaro-settings-unused.json'),
+    logger: silentLogger,
+    context: {
+      getEffectiveConfig: () => state.effective,
+      reloadConfig: async () => state.effective,
+    },
+    testLlmConnection: overrides.testLlmConnection,
+  });
+  return { service, state };
+}
+
+async function directRequest(service, state, message) {
+  const sent = [];
+  const client = { send: (payload) => sent.push(payload) };
+  await service.handle(message, client);
+  const reply = sent.find((payload) => payload && payload.type !== 'state');
+  if (reply === undefined) throw new Error('no reply for ' + message.type);
+  state.sent.push(...sent);
+  return reply;
+}
+
+test('llm.test forwards a draft overlay (minus the masked key) and never echoes keys', async (t) => {
+  const calls = [];
+  const seam = async (args) => {
+    calls.push(args);
+    return {
+      ok: true,
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      status: 200,
+      message: '连接成功（openai/gpt-4o-mini）',
+      latencyMs: 42,
+    };
+  };
+  const { service, state } = makeDirectService(t, {
+    effective: { llm: { provider: 'deepseek', apiKey: 'sk-saved-key-123456' } },
+    testLlmConnection: seam,
+  });
+  const reply = await directRequest(service, state, {
+    type: 'llm.test',
+    id: 'llm-1',
+    llm: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: '***' },
+  });
+  assert.equal(reply.type, 'llm.test');
+  assert.equal(reply.id, 'llm-1');
+  assert.equal(reply.ok, true);
+  assert.equal(reply.provider, 'openai');
+  assert.equal(reply.apiKeyConfigured, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].llm.provider, 'openai');
+  assert.equal(calls[0].llm.baseUrl, 'https://api.openai.com/v1');
+  assert.equal('apiKey' in calls[0].llm, false, '*** means "use the saved key"');
+  assert.doesNotMatch(JSON.stringify(reply), /sk-saved-key/);
+});
+
+test('llm.test reports provider failures and scrubs sk- keys from messages', async (t) => {
+  const { service, state } = makeDirectService(t, {
+    testLlmConnection: async () => ({
+      ok: false,
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      status: 401,
+      message: 'API key 无效或权限不足（HTTP 401）sk-leakedkey-abcdef',
+      latencyMs: 12,
+    }),
+  });
+  const reply = await directRequest(service, state, { type: 'llm.test', id: 'llm-2', llm: { provider: 'openai' } });
+  assert.equal(reply.ok, false);
+  assert.equal(reply.status, 401);
+  assert.match(reply.message, /401/);
+  assert.doesNotMatch(reply.message, /sk-leakedkey/);
+  assert.match(reply.message, /sk-\*\*\*/);
+});
+
+test('llm.test falls back to the saved effective config when no draft is sent', async (t) => {
+  const calls = [];
+  const { service, state } = makeDirectService(t, {
+    effective: { llm: { provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.0-flash', apiKey: 'sk-gemini-saved' } },
+    testLlmConnection: async (args) => {
+      calls.push(args);
+      return { ok: true, provider: 'gemini', baseUrl: args.config.llm.baseUrl, model: args.config.llm.model, status: 200, message: '连接成功', latencyMs: 5 };
+    },
+  });
+  const reply = await directRequest(service, state, { type: 'llm.test', id: 'llm-3' });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.apiKeyConfigured, true);
+  assert.equal(calls[0].llm, null);
+  assert.equal(calls[0].config.llm.provider, 'gemini');
+});
+
+test('config.set accepts generic llm.* / models.region / rag.autoIngest and masks the key', async (t) => {
+  const { client, messages, ctx } = await startSettingsDaemon(t);
+  const reply = await request(client, messages, {
+    type: 'config.set',
+    id: 'cfg-llm',
+    patch: {
+      llm: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: 'sk-llm-secret-xyz' },
+      models: { region: 'hmt' },
+      rag: { autoIngest: true },
+    },
+  });
+  assert.equal(reply.ok, true);
+  // LLM settings are resolved per request, so they apply without a restart;
+  // the model-download region and RAG auto-ingest are read at startup only.
+  assert.deepEqual(reply.applied.sort(), ['llm.apiKey', 'llm.baseUrl', 'llm.model', 'llm.provider']);
+  assert.deepEqual(reply.restartRequired.sort(), ['models.region', 'rag.autoIngest']);
+  assert.equal(reply.config.llm.apiKey, '***');
+  assert.equal(reply.config.llm.provider, 'openai');
+  assert.equal(reply.config.models.region, 'hmt');
+  assert.equal(reply.config.rag.autoIngest, true);
+  const raw = JSON.parse(await fs.readFile(ctx.configPath, 'utf8'));
+  assert.equal(raw.llm.provider, 'openai');
+  assert.equal(raw.llm.apiKey, 'sk-llm-secret-xyz');
+  assert.equal(raw.models.region, 'hmt');
+  assert.equal(raw.rag.autoIngest, true);
+  assert.doesNotMatch(JSON.stringify(messages), /sk-llm-secret-xyz/);
+});
+
+test('config.set rejects invalid provider/region/memory values', async (t) => {
+  const { client, messages } = await startSettingsDaemon(t);
+  const before = await request(client, messages, { type: 'config.get', id: 'cfg-before' });
+  for (const patch of [
+    { llm: { provider: 'anthropic' } },
+    { models: { region: 'moon' } },
+    { rag: { autoIngest: 'yes' } },
+  ]) {
+    const reply = await request(client, messages, { type: 'config.set', id: 'cfg-bad-' + Object.keys(patch)[0], patch });
+    assert.equal(reply.ok, false);
+    assert.match(reply.errors.join(' '), /需要是/);
+  }
+  const after = await request(client, messages, { type: 'config.get', id: 'cfg-after' });
+  assert.deepEqual(after.config.llm, before.config.llm);
 });

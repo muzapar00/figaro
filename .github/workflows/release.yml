@@ -1,0 +1,223 @@
+name: release
+
+# Build the v1.0.0-style release artifacts on a tag push and publish them as
+# GitHub Release assets:
+#   * figaro_<version>_amd64.deb         (Ubuntu/KDE neon/Kubuntu)
+#   * figaro-<version>-<rel>*.rpm        (Fedora/openSUSE, built in a Fedora container)
+#   * AUR: .SRCINFO + source tarball + built .pkg.tar.zst (Arch container)
+#   * SHA256SUMS
+#
+# Everything is built from the tagged tree; the version in package.json must
+# match the tag or the pipeline fails before publishing anything.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'manual build (artifacts are uploaded, no Release is created unless the ref is a v* tag)'
+        required: false
+        default: 'manual rebuild'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  test:
+    name: tests + static packaging checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: install production + test dependencies
+        run: npm ci --no-audit --no-fund
+      - name: agent tests (no regression gate for packaging)
+        run: node --test tests/agent/*.test.js
+      - name: packaging static checks
+        run: bash packaging/validate.sh
+      - name: tag and package.json version agree
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "package.json version: $version"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            if [[ "v${version}" != "${GITHUB_REF_NAME}" ]]; then
+              echo "::error::tag ${GITHUB_REF_NAME} != v${version} in package.json"
+              exit 1
+            fi
+          fi
+
+  deb:
+    name: deb
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: build deb (dpkg-deb, no sudo)
+        run: bash packaging/deb/build-deb.sh
+      - name: inspect deb
+        run: |
+          deb="$(ls packaging/deb/out/*.deb | head -n1)"
+          echo "== $deb"
+          dpkg-deb -I "$deb"
+          dpkg-deb -c "$deb" | wc -l
+          dpkg-deb -c "$deb" | grep -E 'usr/bin/|systemd/user/|node_modules/sherpa' | head -20
+      - name: lintian (informational)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lintian
+          lintian --no-tag-display-limit packaging/deb/out/*.deb || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: packaging/deb/out/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  rpm:
+    name: rpm (Fedora container)
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      - name: base tools before checkout
+        run: dnf -y install git tar gzip
+      - uses: actions/checkout@v4
+      - name: build tools
+        run: dnf -y install rpm-build nodejs npm
+      - name: node production dependencies
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: rpmbuild (spec is the deliverable; dependencies are checked in CI only)
+        env:
+          RPMBUILD_OPTS: '--nodeps'
+        run: bash packaging/rpm/build-rpm.sh
+      - name: inspect rpm
+        run: |
+          rpm_path="$(find packaging/rpm/out/RPMS -name '*.rpm' | head -n1)"
+          echo "== $rpm_path"
+          rpm -qpi "$rpm_path"
+          rpm -qp --requires "$rpm_path"
+          rpm -qpl "$rpm_path" | head -40
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: |
+            packaging/rpm/out/RPMS/**/*.rpm
+            packaging/rpm/out/SRPMS/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  aur:
+    name: AUR package (Arch container)
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: base tools before checkout
+        run: pacman -Syu --noconfirm git nodejs npm
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: makepkg toolchain and unprivileged builder
+        run: |
+          pacman -S --noconfirm --needed base-devel
+          useradd -m builder
+          chown -R builder:builder "${GITHUB_WORKSPACE}"
+      - name: committed .SRCINFO matches PKGBUILD
+        working-directory: packaging/aur
+        run: |
+          runuser -u builder -- bash -c 'cd "$GITHUB_WORKSPACE/packaging/aur" && makepkg --printsrcinfo' > /tmp/generated.SRCINFO
+          # AUR cares about fields, not their order, so compare normalized lines
+          # and then use makepkg's own output as the released .SRCINFO.
+          normalize() { grep -v '^[[:space:]]*$' "$1" | sed 's/[[:space:]]*$//' | LC_ALL=C sort; }
+          if ! diff -u <(normalize .SRCINFO) <(normalize /tmp/generated.SRCINFO); then
+            echo "::error::packaging/aur/.SRCINFO 与 PKGBUILD 内容不一致 — 本地运行 'makepkg --printsrcinfo > .SRCINFO' 后提交"
+            exit 1
+          fi
+          cp /tmp/generated.SRCINFO .SRCINFO
+          echo "== canonical .SRCINFO from makepkg =="
+          cat .SRCINFO
+      - name: build package (no dependency installation; quickshell comes from the AUR for users)
+        working-directory: packaging/aur
+        run: |
+          runuser -u builder -- bash -c 'cd "$GITHUB_WORKSPACE/packaging/aur" && makepkg -f --nodeps --nocheck'
+          ls -la
+      - name: source package for the AUR + a non-hidden .SRCINFO copy for Release assets
+        working-directory: packaging/aur
+        run: |
+          runuser -u builder -- bash -c 'cd "$GITHUB_WORKSPACE/packaging/aur" && makepkg --source'
+          pkgver="$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)"
+          pkgrel="$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)"
+          cp .SRCINFO "figaro-${pkgver}-${pkgrel}-x86_64.SRCINFO"
+          ls -la
+      - name: namcap (informational)
+        continue-on-error: true
+        run: |
+          pacman -S --noconfirm --needed namcap
+          namcap packaging/aur/*.pkg.tar.zst || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur
+          include-hidden-files: true
+          path: |
+            packaging/aur/*.pkg.tar.zst
+            packaging/aur/*.src.tar.gz
+            packaging/aur/*.SRCINFO
+            packaging/aur/.SRCINFO
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: GitHub Release
+    needs: [deb, rpm, aur]
+    # Only tags create a Release; workflow_dispatch builds stay as artifacts.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: list artifacts and checksums
+        run: |
+          ls -la release-assets
+          cd release-assets
+          # include the AUR .SRCINFO (a dotfile) and every other asset
+          find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '.SRCINFO' -printf '%P\0' \
+            | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+          sha256sum .SRCINFO >> SHA256SUMS 2>/dev/null || true
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: 费加罗 ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            release-assets/*.deb
+            release-assets/*.rpm
+            release-assets/*.pkg.tar.zst
+            release-assets/*.src.tar.gz
+            release-assets/*.SRCINFO
+            release-assets/SHA256SUMS

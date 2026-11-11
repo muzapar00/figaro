@@ -24,10 +24,11 @@ export const SETTINGS_MESSAGE_TYPES = Object.freeze([
   'test.tts',
   'service.restart',
   'home.test',
+  'llm.test',
   'diagnostics',
 ]);
 
-export const SECRET_PATHS = Object.freeze(['deepseek.apiKey', 'minimax.apiKey', 'home.haToken']);
+export const SECRET_PATHS = Object.freeze(['deepseek.apiKey', 'minimax.apiKey', 'home.haToken', 'llm.apiKey']);
 
 // Paths the GUI may write. Everything else is rejected so a UI bug cannot
 // rewrite the API keys, socket path or model endpoints.
@@ -71,6 +72,19 @@ export const ALLOWED_CONFIG_PATHS = Object.freeze([
   'home.haUrl',
   'home.haToken',
   'home.defaultRoom',
+  // Generic LLM provider (v1.0): the runtime maps llm.* first and derives from
+  // the legacy deepseek.* keys when llm is absent. The GUI only writes llm.*.
+  'llm.provider',
+  'llm.baseUrl',
+  'llm.model',
+  'llm.apiKey',
+  'llm.reasoningEffort',
+  'llm.temperature',
+  // Model download region (scripts/fetch-models.sh): mainland | hmt | overseas
+  'models.region',
+  // Long-term memory auto-ingest (off by default: it sends chat text to the
+  // configured LLM/embedding provider).
+  'rag.autoIngest',
 ]);
 
 export const MIC_TEST_DEFAULT_MS = 4000;
@@ -151,6 +165,35 @@ export function validatePatchValues(patch) {
     if (!Number.isFinite(value) || value < 0 || value > 1) {
       invalid.push({ path: 'asr.speaker.threshold', message: '声纹阈值需要是 0–1 之间的数字' });
     }
+  }
+  const llm = isPlainObject(patch?.llm) ? patch.llm : null;
+  if (llm) {
+    if (llm.provider !== undefined && ['deepseek', 'openai', 'gemini', 'custom'].indexOf(llm.provider) < 0) {
+      invalid.push({ path: 'llm.provider', message: 'LLM 服务商需要是 deepseek/openai/gemini/custom' });
+    }
+    if (llm.baseUrl !== undefined && typeof llm.baseUrl !== 'string') {
+      invalid.push({ path: 'llm.baseUrl', message: 'LLM 地址需要是字符串' });
+    }
+    if (llm.model !== undefined && typeof llm.model !== 'string') {
+      invalid.push({ path: 'llm.model', message: '模型名称需要是字符串' });
+    }
+    if (llm.apiKey !== undefined && typeof llm.apiKey !== 'string') {
+      invalid.push({ path: 'llm.apiKey', message: 'API Key 需要是字符串' });
+    }
+    if (llm.temperature !== undefined) {
+      const value = Number(llm.temperature);
+      if (!Number.isFinite(value) || value < 0 || value > 2) {
+        invalid.push({ path: 'llm.temperature', message: 'temperature 需要在 0–2 之间' });
+      }
+    }
+  }
+  const models = isPlainObject(patch?.models) ? patch.models : null;
+  if (models && models.region !== undefined && ['mainland', 'hmt', 'overseas'].indexOf(models.region) < 0) {
+    invalid.push({ path: 'models.region', message: '模型下载地区需要是 mainland/hmt/overseas' });
+  }
+  const rag = isPlainObject(patch?.rag) ? patch.rag : null;
+  if (rag && rag.autoIngest !== undefined && typeof rag.autoIngest !== 'boolean') {
+    invalid.push({ path: 'rag.autoIngest', message: '长期记忆自动入库需要是 true/false' });
   }
   return invalid;
 }
@@ -313,6 +356,11 @@ export async function testHomeAssistant({ haUrl, haToken, timeoutMs = HOME_TEST_
   }
 }
 
+/** Never let a provider key leak through an error string. */
+function scrubSecrets(text) {
+  return String(text ?? '').replace(/sk-[A-Za-z0-9_\-]{6,}/g, 'sk-***');
+}
+
 function clamp01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
@@ -344,12 +392,16 @@ function finiteNumber(value, fallback = null) {
  *   getConfigPath() -> string
  * @param {string} [options.configPath]
  * @param {Function} [options.listSinks] test seam: async () => [{name, description, isDefault}]
+ * @param {Function} [options.testLlmConnection] test seam: async ({config, llm}) =>
+ *   {ok, provider, baseUrl, model, status, message, latencyMs}; defaults to the
+ *   real implementation exported by src/agent/llm.js.
  */
 export function createSettingsService(options = {}) {
   const log = options.logger ?? { info() {}, warn() {}, error() {} };
   const context = options.context ?? {};
   const configPath = options.configPath ?? CONFIG_PATH;
   const listSinks = options.listSinks ?? listAudioSinks;
+  const testLlmConnection = options.testLlmConnection ?? null;
 
   let micTest = null;
   let asrTest = null;
@@ -406,6 +458,69 @@ export function createSettingsService(options = {}) {
     log.info(`home.test ${result.ok ? 'ok' : 'failed'}${result.status ? ` (HTTP ${result.status})` : ''}`);
     if (message?.id !== undefined) result.id = message.id;
     reply(client, result);
+  }
+
+  // ------------------------------------------------------------- generic llm ----
+  async function handleLlmTest(message, client) {
+    const id = messageId(message);
+    const effective = context.getEffectiveConfig?.() ?? options.config ?? {};
+    let overlay = null;
+    if (isPlainObject(message?.llm)) {
+      overlay = {};
+      for (const key of ['provider', 'baseUrl', 'model', 'apiKey']) {
+        if (message.llm[key] === undefined || message.llm[key] === null) continue;
+        // "***" / "" mean "use the saved key" (the GUI never reads secrets back).
+        if (key === 'apiKey' && (message.llm.apiKey === '***' || String(message.llm.apiKey).trim() === '')) continue;
+        overlay[key] = message.llm[key];
+      }
+    }
+    const visibleKey = (value) => typeof value === 'string' && value.trim().length > 0 && value.trim() !== '***';
+    const savedKey = effective?.llm?.apiKey ?? effective?.deepseek?.apiKey;
+    const apiKeyConfigured = Boolean((overlay && visibleKey(overlay.apiKey)) || visibleKey(savedKey));
+
+    let impl = testLlmConnection;
+    if (typeof impl !== 'function') {
+      try {
+        const module = await import('./llm.js');
+        impl = module?.testLlmConnection;
+      } catch (err) {
+        impl = null;
+      }
+    }
+    if (typeof impl !== 'function') {
+      reply(client, withId(id, {
+        type: 'llm.test',
+        ok: false,
+        provider: overlay?.provider ?? null,
+        baseUrl: null,
+        model: null,
+        status: null,
+        message: '当前 daemon 尚未提供 LLM 连接测试（等待后端实现）',
+        latencyMs: 0,
+        apiKeyConfigured,
+      }));
+      return;
+    }
+    try {
+      const result = await impl({ config: effective, llm: overlay });
+      const clean = { ...result };
+      if (clean.message !== undefined) clean.message = scrubSecrets(clean.message);
+      if (Array.isArray(clean.errors)) clean.errors = clean.errors.map(scrubSecrets);
+      reply(client, withId(id, { type: 'llm.test', ...clean, apiKeyConfigured }));
+      log.info(`llm.test ${result?.ok ? 'ok' : 'failed'} (provider=${result?.provider ?? overlay?.provider ?? '?'}${result?.status ? `, HTTP ${result.status}` : ''})`);
+    } catch (err) {
+      reply(client, withId(id, {
+        type: 'llm.test',
+        ok: false,
+        provider: overlay?.provider ?? null,
+        baseUrl: null,
+        model: null,
+        status: null,
+        message: 'LLM 连接测试失败：' + scrubSecrets(err?.message || err),
+        latencyMs: 0,
+        apiKeyConfigured,
+      }));
+    }
   }
 
   async function handleConfigGet(message, client) {
@@ -951,6 +1066,9 @@ export function createSettingsService(options = {}) {
         return;
       case 'home.test':
         await handleHomeTest(message, client);
+        return;
+      case 'llm.test':
+        await handleLlmTest(message, client);
         return;
       case 'service.restart': {
         const via = context.describeRestart?.() ?? 'unknown';

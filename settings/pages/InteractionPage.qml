@@ -116,8 +116,8 @@ MPageScroll {
     }
 
     readonly property string followUpWindowLabel: page.followUpWindow <= 0
-        ? "关闭（回答完就退回 idle）"
-        : page.followUpWindow + " ms（" + (page.followUpWindow / 1000).toFixed(1) + " 秒）"
+        ? I18n.t("关闭（回答完就退回 idle）")
+        : page.followUpWindow + " ms（" + (page.followUpWindow / 1000).toFixed(1) + I18n.t(" 秒）")
 
     // Harness hook: write a distinctive set of values so shoot.sh can verify
     // both the GUI status chips and the daemon's config file.
@@ -137,7 +137,7 @@ MPageScroll {
 
     function snapshot() {
         return {
-            title: "交互",
+            title: I18n.t("交互"),
             bargeEnabled: page.bargeEnabled,
             bargeMinRms: page.bargeMinRms,
             bargeEchoFactor: page.bargeEchoFactor,
@@ -158,19 +158,19 @@ MPageScroll {
     Component.onCompleted: page.syncFromConfig()
 
     MPageHeader {
-        title: "交互"
-        subtitle: "打断播报、回答后等待窗口、退下/取消短语 —— 改动即时写回 daemon"
+        title: I18n.t("交互")
+        subtitle: I18n.t("打断播报、回答后等待窗口、退下/取消短语 —— 改动即时写回 daemon")
         icon: "chat"
     }
 
     // ------------------------------------------------------------ 打断播报
     MCard {
-        title: "打断播报（barge-in）"
-        subtitle: "说话即可打断 Figaro 的播报。声音要同时超过绝对响度门槛和 TTS 回声基线的倍数，并持续足够久。"
+        title: I18n.t("打断播报（barge-in）")
+        subtitle: I18n.t("说话即可打断 Figaro 的播报。声音要同时超过绝对响度门槛和 TTS 回声基线的倍数，并持续足够久。")
 
         MRow {
-            label: "允许打断"
-            subtitle: "asr.bargeIn.enabled · TTS 播放期间检测用户开口"
+            label: I18n.t("允许打断")
+            subtitle: I18n.t("asr.bargeIn.enabled · TTS 播放期间检测用户开口")
             RowLayout {
                 spacing: 8
                 MApplyStatus { paths: ["asr.bargeIn.enabled"] }
@@ -181,9 +181,9 @@ MPageScroll {
             }
         }
         MRow {
-            label: "响度门槛"
+            label: I18n.t("响度门槛")
             subtitleWrap: true
-            subtitle: "asr.bargeIn.minRms（0.02–0.20）· 实测：房间底噪 ≈ 0.0023、最轻音节 ≈ 0.012、正常说话中位 RMS ≈ 0.036；门槛越低越容易打断，也越容易被环境噪声误触发"
+            subtitle: I18n.t("asr.bargeIn.minRms（0.02–0.20）· 实测：房间底噪 ≈ 0.0023、最轻音节 ≈ 0.012、正常说话中位 RMS ≈ 0.036；门槛越低越容易打断，也越容易被环境噪声误触发")
             RowLayout {
                 spacing: 8
                 Text {
@@ -206,9 +206,9 @@ MPageScroll {
             }
         }
         MRow {
-            label: "回声倍数"
+            label: I18n.t("回声倍数")
             subtitleWrap: true
-            subtitle: "asr.bargeIn.echoFactor（1.0–5.0）· 要求响度 ≥ 播放时的回声水平 × 该倍数，防止把自己的声音当打断"
+            subtitle: I18n.t("asr.bargeIn.echoFactor（1.0–5.0）· 要求响度 ≥ 播放时的回声水平 × 该倍数，防止把自己的声音当打断")
             RowLayout {
                 spacing: 8
                 Text {
@@ -231,8 +231,8 @@ MPageScroll {
             }
         }
         MRow {
-            label: "持续时间"
-            subtitle: "asr.bargeIn.minMs（100–1000ms）· 声音连续超过门槛多久才算打断"
+            label: I18n.t("持续时间")
+            subtitle: I18n.t("asr.bargeIn.minMs（100–1000ms）· 声音连续超过门槛多久才算打断")
             showSeparator: false
             RowLayout {
                 spacing: 8
@@ -263,11 +263,11 @@ MPageScroll {
             Layout.fillWidth: true
             text: {
                 const d = page.bargeEffective();
-                return "daemon 当前生效：enabled=" + (d.enabled ? "true" : "false")
+                return I18n.t("daemon 当前生效：enabled=") + (d.enabled ? "true" : "false")
                     + " · minRms=" + Number(d.minRms).toFixed(3)
                     + " · echoFactor=" + Number(d.echoFactor).toFixed(1)
                     + " · minMs=" + d.minMs
-                    + " ｜ 调参建议：打断不灵 → 降低门槛/持续时间；被环境声误打断 → 提高门槛或回声倍数。";
+                    + I18n.t(" ｜ 调参建议：打断不灵 → 降低门槛/持续时间；被环境声误打断 → 提高门槛或回声倍数。");
             }
             color: Theme.textFaint
             font.family: Theme.fontSans
@@ -278,17 +278,17 @@ MPageScroll {
 
     // -------------------------------------------------------- 回答后等待
     MCard {
-        title: "回答后等待"
-        subtitle: "说完回答后先别急着退出：这段时间内再开口可以直接续问；0 = 说完就退回 idle。"
+        title: I18n.t("回答后等待")
+        subtitle: I18n.t("说完回答后先别急着退出：这段时间内再开口可以直接续问；0 = 说完就退回 idle。")
 
         MRow {
-            label: "等待窗口"
-            subtitle: "interaction.followUpWindowMs · 当前 " + page.followUpWindowLabel
+            label: I18n.t("等待窗口")
+            subtitle: I18n.t("interaction.followUpWindowMs · 当前 ") + page.followUpWindowLabel
             RowLayout {
                 spacing: 8
                 MSegmented {
                     Layout.preferredWidth: 300
-                    options: ["关闭", "3 秒", "5 秒", "7 秒", "10 秒"]
+                    options: [I18n.t("关闭"), I18n.t("3 秒"), I18n.t("5 秒"), I18n.t("7 秒"), I18n.t("10 秒")]
                     currentIndex: page.followUpIndex()
                     onActivated: (index, value) => {
                         const opts = [0, 3000, 5000, 7000, 10000];
@@ -299,9 +299,9 @@ MPageScroll {
             }
         }
         MRow {
-            label: "响度门槛"
+            label: I18n.t("响度门槛")
             subtitleWrap: true
-            subtitle: "interaction.followUpMinRms · 实测底噪 ≈ 0.0023 / 最轻音节 ≈ 0.012（默认 0.012）· 低于门槛的声音当环境噪声"
+            subtitle: I18n.t("interaction.followUpMinRms · 实测底噪 ≈ 0.0023 / 最轻音节 ≈ 0.012（默认 0.012）· 低于门槛的声音当环境噪声")
             RowLayout {
                 spacing: 8
                 Text {
@@ -324,8 +324,8 @@ MPageScroll {
             }
         }
         MRow {
-            label: "最短持续"
-            subtitle: "interaction.followUpMinMs（80–500ms，默认 180）· 声音要持续这么久才重新打开对话"
+            label: I18n.t("最短持续")
+            subtitle: I18n.t("interaction.followUpMinMs（80–500ms，默认 180）· 声音要持续这么久才重新打开对话")
             showSeparator: false
             RowLayout {
                 spacing: 8
@@ -356,10 +356,10 @@ MPageScroll {
             Layout.fillWidth: true
             text: {
                 const d = page.followUpEffective();
-                return "daemon 当前生效：followUpWindowMs=" + d.followUpWindowMs
+                return I18n.t("daemon 当前生效：followUpWindowMs=") + d.followUpWindowMs
                     + " · minRms=" + Number(d.followUpMinRms).toFixed(3)
                     + " · minMs=" + d.followUpMinMs
-                    + " ｜ 窗口越大越容易“接着聊”，也越容易把环境声当成回答。";
+                    + I18n.t(" ｜ 窗口越大越容易“接着聊”，也越容易把环境声当成回答。");
             }
             color: Theme.textFaint
             font.family: Theme.fontSans
@@ -370,29 +370,29 @@ MPageScroll {
 
     // ------------------------------------------------------------ 退下短语
     MCard {
-        title: "退下短语"
-        subtitle: "说完这些短语：先把当前这句回答说完，然后退出，不再等待后续 · interaction.dismissPhrases"
+        title: I18n.t("退下短语")
+        subtitle: I18n.t("说完这些短语：先把当前这句回答说完，然后退出，不再等待后续 · interaction.dismissPhrases")
 
         MChipEditor {
             Layout.fillWidth: true
             values: page.dismissPhrases
-            placeholder: "例如：退下"
-            addLabel: "添加退下短语"
-            emptyText: "（空：不会因为短语退出）"
+            placeholder: I18n.t("例如：退下")
+            addLabel: I18n.t("添加退下短语")
+            emptyText: I18n.t("（空：不会因为短语退出）")
             onEdited: (values) => page.setDismissPhrases(values)
         }
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: "恢复默认"
+                text: I18n.t("恢复默认")
                 icon: "refresh"
                 onClicked: page.setDismissPhrases(page.dismissDefaults.slice(0))
             }
             MApplyStatus { paths: ["interaction.dismissPhrases"] }
             Item { Layout.fillWidth: true }
             Text {
-                text: "共 " + page.dismissPhrases.length + " 条"
+                text: I18n.t("共 ") + page.dismissPhrases.length + I18n.t(" 条")
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -402,29 +402,29 @@ MPageScroll {
 
     // ------------------------------------------------------------ 取消短语
     MCard {
-        title: "取消短语"
-        subtitle: "说完这些短语：立刻停下思考/播报并回到 idle · interaction.cancelPhrases"
+        title: I18n.t("取消短语")
+        subtitle: I18n.t("说完这些短语：立刻停下思考/播报并回到 idle · interaction.cancelPhrases")
 
         MChipEditor {
             Layout.fillWidth: true
             values: page.cancelPhrases
-            placeholder: "例如：取消"
-            addLabel: "添加取消短语"
-            emptyText: "（空：不会因为短语取消）"
+            placeholder: I18n.t("例如：取消")
+            addLabel: I18n.t("添加取消短语")
+            emptyText: I18n.t("（空：不会因为短语取消）")
             onEdited: (values) => page.setCancelPhrases(values)
         }
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: "恢复默认"
+                text: I18n.t("恢复默认")
                 icon: "refresh"
                 onClicked: page.setCancelPhrases(page.cancelDefaults.slice(0))
             }
             MApplyStatus { paths: ["interaction.cancelPhrases"] }
             Item { Layout.fillWidth: true }
             Text {
-                text: "共 " + page.cancelPhrases.length + " 条"
+                text: I18n.t("共 ") + page.cancelPhrases.length + I18n.t(" 条")
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -432,7 +432,7 @@ MPageScroll {
         }
         Text {
             Layout.fillWidth: true
-            text: "短语匹配做的是规范化后的包含判断（去标点/空格）；太短的词（如「停」）容易误触发，建议保持 2 个字以上。"
+            text: I18n.t("短语匹配做的是规范化后的包含判断（去标点/空格）；太短的词（如「停」）容易误触发，建议保持 2 个字以上。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny

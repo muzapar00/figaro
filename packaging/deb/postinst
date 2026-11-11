@@ -1,0 +1,55 @@
+#!/bin/sh
+# Figaro deb postinst.
+#
+# Nothing here starts user services: a Debian package maintainer script runs as
+# root, while Figaro's services are *user* units (systemd --user) and its QML
+# lives under ~/.config. The package therefore installs the system half and
+# tells the human how to finish the per-user half with `figaro install-user`.
+#
+# This script must never fail the installation: it only refreshes caches and
+# prints instructions.
+set -e
+
+docdir="/usr/share/doc/figaro"
+
+case "$1" in
+  configure)
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    fi
+
+    cat >&2 <<'EOF'
+
+==================================================================
+ 费加罗已安装到 /usr/lib/figaro。还差最后一步（不要用 sudo）：
+
+     figaro install-user
+
+ 它会以你的用户身份创建 ~/.config/quickshell/figaro（overlay QML 与
+ 设置面板）、~/.config/figaro/config.json（配置脚手架，API key 留空）、
+ 渲染并启用 systemd user units，安装桌面图标。
+
+ 也可以直接点应用菜单里的「费加罗」：设置面板首次启动会自动完成
+ 这一步，并打开设置界面让你填 API key、下载本地语音模型。
+
+ 之后：
+     figaro doctor              # 体检（OS/桌面/依赖/模型/音频）
+     figaro ask "现在几点？"     # 试一句
+==================================================================
+
+EOF
+    if [ -x /usr/bin/figaro ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+      echo "提示：可以直接执行：su - $SUDO_USER -c 'figaro install-user'" >&2
+      echo "      （或退出 root 后以桌面用户运行）" >&2
+    fi
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+  *)
+    ;;
+esac
+
+exit 0

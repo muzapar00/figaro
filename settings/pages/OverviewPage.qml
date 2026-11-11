@@ -21,8 +21,8 @@ MPageScroll {
             return String(page.asrInfo.model);
         const mi = page.asrInfo.modelInfo || ({});
         const parts = [];
-        if (mi.offline) parts.push("离线 " + String(mi.offline));
-        if (mi.streaming) parts.push("流式");
+        if (mi.offline) parts.push(I18n.t("离线 ") + String(mi.offline));
+        if (mi.streaming) parts.push(I18n.t("流式"));
         if (mi.kws) parts.push("KWS");
         if (parts.length === 0) return "—";
         return parts.join(" · ");
@@ -51,16 +51,16 @@ MPageScroll {
 
     function stateText(s) {
         switch (s) {
-        case "listening": return "倾听中";
-        case "thinking": return "思考中";
-        case "speaking": return "播报中";
-        default: return "空闲";
+        case "listening": return I18n.t("倾听中");
+        case "thinking": return I18n.t("思考中");
+        case "speaking": return I18n.t("播报中");
+        default: return I18n.t("空闲");
         }
     }
 
     function snapshot() {
         return {
-            title: "概览",
+            title: I18n.t("概览"),
             diagnosticsLoaded: Ipc.diagnosticsLoaded,
             diagnosticsSupported: Ipc.supported("diagnostics"),
             version: page.diag.version || "",
@@ -73,8 +73,8 @@ MPageScroll {
     }
 
     MPageHeader {
-        title: "概览"
-        subtitle: "费加罗语音助手 · 运行状态与语音能力"
+        title: I18n.t("概览")
+        subtitle: I18n.t("费加罗语音助手 · 运行状态与语音能力")
         icon: "overview"
     }
 
@@ -96,8 +96,8 @@ MPageScroll {
                 MIcon { kind: "warning"; size: 16; color: Theme.yellow }
                 Text {
                     Layout.fillWidth: true
-                    text: "当前 daemon 不支持 §3.1 诊断接口（diagnostics / config.get 未响应）。"
-                        + "下面的状态来自 §3 基础协议，调参与自测功能不可用。"
+                    text: I18n.t("当前 daemon 不支持 §3.1 诊断接口（diagnostics / config.get 未响应）。")
+                        + I18n.t("下面的状态来自 §3 基础协议，调参与自测功能不可用。")
                     color: Theme.yellow
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
@@ -134,7 +134,7 @@ MPageScroll {
                     spacing: 2
                     Text {
                         Layout.fillWidth: true
-                        text: "第一次用？跟着引导走一遍"
+                        text: I18n.t("第一次用？跟着引导走一遍")
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 15
@@ -142,7 +142,7 @@ MPageScroll {
                     }
                     Text {
                         Layout.fillWidth: true
-                        text: "5 步测完麦克风、增益、唤醒、转写和扬声器，每步都有提示。"
+                        text: I18n.t("5 步测完麦克风、增益、唤醒、转写和扬声器，每步都有提示。")
                         color: Theme.textDim
                         font.family: Theme.fontSans
                         font.pixelSize: Theme.fsSmall
@@ -150,7 +150,7 @@ MPageScroll {
                     }
                 }
                 MButton {
-                    text: "开始引导测试 →"
+                    text: I18n.t("开始引导测试 →")
                     icon: "play"
                     primary: true
                     onClicked: page.startWizard()
@@ -161,17 +161,17 @@ MPageScroll {
 
     // ------------------------------------------------------------ 服务状态
     MCard {
-        title: "服务状态"
+        title: I18n.t("服务状态")
 
         MRow {
-            label: "连接"
+            label: I18n.t("连接")
             MPill {
-                text: Ipc.connected ? "已连接" : "未连接"
+                text: Ipc.connected ? I18n.t("已连接") : I18n.t("未连接")
                 tone: Ipc.connected ? Theme.green : Theme.red
             }
         }
         MRow {
-            label: "状态机"
+            label: I18n.t("状态机")
             property string state: Ipc.daemonState
             MPill {
                 text: page.stateText(Ipc.daemonState)
@@ -179,18 +179,18 @@ MPageScroll {
             }
         }
         MRow {
-            label: "端点"
-            subtitle: Ipc.socketPath + (Ipc.usingTestSocket ? "（测试 socket）" : "（生产 socket）")
+            label: I18n.t("端点")
+            subtitle: Ipc.socketPath + (Ipc.usingTestSocket ? I18n.t("（测试 socket）") : I18n.t("（生产 socket）"))
             controlMinWidth: 0
             Text {
-                text: Ipc.requestCount + " 请求 / " + Ipc.responseCount + " 响应"
+                text: Ipc.requestCount + I18n.t(" 请求 / ") + Ipc.responseCount + I18n.t(" 响应")
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
             }
         }
         MRow {
-            label: "版本"
+            label: I18n.t("版本")
             showSeparator: false
             Text {
                 text: page.diag.version !== undefined ? String(page.diag.version) : "—"
@@ -203,57 +203,57 @@ MPageScroll {
 
     // -------------------------------------------------------------- 延迟指标
     MCard {
-        title: "延迟指标"
-        subtitle: page.hasDiag ? "来自 daemon diagnostics" : "等待 daemon 的 diagnostics 响应"
+        title: I18n.t("延迟指标")
+        subtitle: page.hasDiag ? I18n.t("来自 daemon diagnostics") : I18n.t("等待 daemon 的 diagnostics 响应")
 
         RowLayout {
             Layout.fillWidth: true
             spacing: 12
 
             MStat {
-                label: "唤醒 → 应答"
+                label: I18n.t("唤醒 → 应答")
                 value: page.wakeToAckMs() !== undefined ? String(page.wakeToAckMs()) : "—"
                 unit: "ms"
                 tone: Theme.green
-                hint: "唤醒词命中到 ack 出声"
+                hint: I18n.t("唤醒词命中到 ack 出声")
             }
             MStat {
-                label: "TTS 首字"
+                label: I18n.t("TTS 首字")
                 value: page.ttsFirstMs() !== undefined ? String(page.ttsFirstMs()) : "—"
                 unit: "ms"
                 tone: Theme.accent
-                hint: "请求 → 第一声"
+                hint: I18n.t("请求 → 第一声")
             }
             MStat {
-                label: "ASR 最终"
+                label: I18n.t("ASR 最终")
                 value: page.asrFinalMs() !== undefined ? String(page.asrFinalMs()) : "—"
                 unit: "ms"
                 tone: Theme.text
-                hint: "一句话转写耗时"
+                hint: I18n.t("一句话转写耗时")
             }
             MStat {
-                label: "流式 partial"
+                label: I18n.t("流式 partial")
                 value: page.latency.asrPartialMs !== undefined ? String(page.latency.asrPartialMs) : "—"
                 unit: "ms"
                 tone: Theme.text
-                hint: "首个中间结果"
+                hint: I18n.t("首个中间结果")
             }
         }
     }
 
     // -------------------------------------------------------------- 语音能力
     MCard {
-        title: "语音能力"
+        title: I18n.t("语音能力")
 
         MRow {
-            label: "ASR 听写"
+            label: I18n.t("ASR 听写")
             MPill {
-                text: page.asrInfo.available === undefined ? "—" : (page.asrInfo.available ? "可用" : "不可用")
+                text: page.asrInfo.available === undefined ? "—" : (page.asrInfo.available ? I18n.t("可用") : I18n.t("不可用"))
                 tone: page.asrInfo.available ? Theme.green : Theme.red
             }
         }
         MRow {
-            label: "ASR 模型"
+            label: I18n.t("ASR 模型")
             Text {
                 text: page.asrModelText()
                 color: Theme.textDim
@@ -262,14 +262,14 @@ MPageScroll {
             }
         }
         MRow {
-            label: "TTS 播报"
+            label: I18n.t("TTS 播报")
             MPill {
-                text: page.ttsInfo.available === undefined ? "—" : (page.ttsInfo.available ? "可用" : "不可用")
+                text: page.ttsInfo.available === undefined ? "—" : (page.ttsInfo.available ? I18n.t("可用") : I18n.t("不可用"))
                 tone: page.ttsInfo.available ? Theme.green : Theme.red
             }
         }
         MRow {
-            label: "音色 / 输出"
+            label: I18n.t("音色 / 输出")
             Text {
                 text: (page.ttsInfo.voiceId !== undefined ? String(page.ttsInfo.voiceId) : "—")
                     + (page.ttsInfo.sink ? "  ·  " + String(page.ttsInfo.sink) : "")
@@ -279,10 +279,10 @@ MPageScroll {
             }
         }
         MRow {
-            label: "唤醒应答 (ack)"
+            label: I18n.t("唤醒应答 (ack)")
             showSeparator: false
             MPill {
-                text: page.ackInfo.enabled === undefined ? "—" : (page.ackInfo.enabled ? "已开启" : "已关闭")
+                text: page.ackInfo.enabled === undefined ? "—" : (page.ackInfo.enabled ? I18n.t("已开启") : I18n.t("已关闭"))
                 tone: page.ackInfo.enabled ? Theme.green : Theme.textDim
             }
         }
@@ -290,12 +290,12 @@ MPageScroll {
 
     // -------------------------------------------------------------- 最近错误
     MCard {
-        title: "最近错误"
+        title: I18n.t("最近错误")
 
         Text {
             visible: Ipc.recentErrors.length === 0
             Layout.fillWidth: true
-            text: "暂无错误。"
+            text: I18n.t("暂无错误。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -335,10 +335,10 @@ MPageScroll {
 
     // ---------------------------------------------------------------- 路径
     MCard {
-        title: "运行环境"
+        title: I18n.t("运行环境")
 
         MRow {
-            label: "配置文件"
+            label: I18n.t("配置文件")
             Text {
                 text: page.diag.configPath !== undefined ? String(page.diag.configPath) : Ipc.configPath
                 color: Theme.textDim
@@ -347,7 +347,7 @@ MPageScroll {
             }
         }
         MRow {
-            label: "日志"
+            label: I18n.t("日志")
             Text {
                 text: page.diag.logPath !== undefined ? String(page.diag.logPath) : "journalctl --user -u figaro"
                 color: Theme.textDim
@@ -356,7 +356,7 @@ MPageScroll {
             }
         }
         MRow {
-            label: "运行时长"
+            label: I18n.t("运行时长")
             showSeparator: false
             Text {
                 text: page.diag.uptimeMs !== undefined ? Ipc.fmtDuration(page.diag.uptimeMs) : "—"

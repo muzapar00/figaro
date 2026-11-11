@@ -12,6 +12,7 @@ Rectangle {
     property bool password: false
 
     signal accepted()
+    signal edited(string value)
 
     implicitWidth: inputWidth
     implicitHeight: Theme.controlH
@@ -37,6 +38,7 @@ Rectangle {
         clip: true
         selectByMouse: true
         onAccepted: root.accepted()
+        onTextEdited: root.edited(input.text)
     }
 
     Text {

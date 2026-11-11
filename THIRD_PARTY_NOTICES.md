@@ -41,3 +41,22 @@
 - **DeepSeek API**（对话/工具调用）与 **MiniMax TTS**（语音合成）是第三方商业服务，
   用户需自备 API Key 并遵守各自的服务条款。本仓库不包含、也不分发这两个服务的任何内容；
   费加罗的语音识别完全在本地运行，不需要联网或 Key。
+
+## 长期记忆 / RAG（v1.0 起）
+
+| 作品 | 方式 | 许可 | 说明 |
+|---|---|---|---|
+| [HKUDS/LightRAG](https://github.com/HKUDS/LightRAG) | 独立本地服务（systemd user unit），通过 HTTP 调用；**不随本仓库分发** | **MIT** | `docs/rag.md`。源码 clone 在 `vendor/LightRAG`（gitignore，不提交）；运行时由 `lightrag-hku` PyPI 包提供 |
+| MiniMax `embo-01` embedding | 用户自己的 MiniMax API key 调用；本地适配器 `scripts/rag/minimax-embed-proxy.mjs` 由本仓库编写 | 同本仓库（GPL-3.0-or-later） | 适配器只做协议转换，不含第三方代码 |
+
+## 模型文件（运行时由 `scripts/fetch-models.sh` 下载，不随仓库/安装包分发）
+
+| 模型 | 用途 | 上游许可（下载时以官方为准） |
+|---|---|---|
+| sherpa-onnx KWS zipformer (zh-en) | 唤醒词 | Apache-2.0（icefall / k2-fsa） |
+| sherpa-onnx paraformer / streaming zipformer | 语音识别 | Apache-2.0 / FunASR 上游许可 |
+| silero_vad.onnx | VAD | MIT |
+| CAM++ speaker embedding（3D-Speaker） | 声纹 | Apache-2.0（3D-Speaker 上游） |
+
+安装包与仓库**不包含**模型文件：容量与许可都由上游决定，首次安装/引导时按地区选择下载源
+（`docs/llm-providers.md` 与 `scripts/fetch-models.sh --help`）。

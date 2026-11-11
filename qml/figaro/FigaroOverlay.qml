@@ -67,6 +67,11 @@ PanelWindow {
     Component.onCompleted: {
         if (FigaroIpc.active)
             win.shown = true;
+        // One line in the journal so field reports can tell which desktop the
+        // overlay is on and whether real compositor glass is in play.
+        console.log("[figaro] desktop=" + (FigaroStyle.desktopName || "unknown")
+            + " session=" + (FigaroStyle.sessionType || "unknown")
+            + " glass=" + (FigaroStyle.useCompositorGlass ? "kos" : "translucent-fallback"));
     }
 
     // Leaving is a sequence: the pill first collapses back into the ball (a real

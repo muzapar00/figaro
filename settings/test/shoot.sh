@@ -257,37 +257,6 @@ act sfx-demo >/dev/null
 sleep 0.9
 shot 25-sfx
 
-page wizard
-act wizard-start >/dev/null
-sleep 0.6
-act wizard-run >/dev/null
-wait_status "d['wizard']['results'][0] in ('pass','fail')" 10 || true
-sleep 0.4
-shot 26-wizard-step1
-act wizard-next >/dev/null
-act wizard-run >/dev/null
-wait_status "d['wizard']['results'][1] in ('pass','fail')" 10 || true
-sleep 0.4
-shot 27-wizard-step2
-act wizard-next >/dev/null
-act wizard-run >/dev/null
-wait_status "d['wizard']['results'][2] in ('pass','fail')" 18 || true
-sleep 0.4
-shot 28-wizard-step3
-act wizard-next >/dev/null
-act wizard-run >/dev/null
-wait_status "d['wizard']['results'][3] in ('pass','fail')" 12 || true
-sleep 0.4
-shot 29-wizard-step4
-act wizard-next >/dev/null
-act wizard-run >/dev/null
-wait_status "d['wizard']['results'][4] in ('pass','fail')" 10 || true
-sleep 0.4
-shot 30-wizard-step5
-act wizard-finish >/dev/null
-sleep 0.6
-shot 31-wizard-summary
-
 # --------------------------------- voiceprint card + Home Assistant (task home/voiceprint)
 echo "[shoot] voiceprint card + Home Assistant card"
 
@@ -329,6 +298,107 @@ shot 43-api-home-test-401
 # leave a successful result in status.json for the assertions
 act api-home-test >/dev/null
 sleep 1.0
+
+# ---------------------------------------------------------- 新手引导（9 步）
+echo "[shoot] onboarding wizard (9 steps)"
+page wizard
+act wizard-start >/dev/null
+sleep 0.5
+shot 26-wizard-welcome
+act wizard-next >/dev/null
+sleep 0.4
+shot 27-wizard-privacy
+act wizard-next >/dev/null
+sleep 0.4
+shot 28-wizard-language
+act wizard-next >/dev/null
+sleep 0.3
+act wizard-region:hmt >/dev/null
+sleep 0.6
+shot 29-wizard-region
+act wizard-next >/dev/null
+sleep 0.3
+act wizard-goto:4 >/dev/null
+sleep 0.4
+shot 30-wizard-memory
+act wizard-memory:on >/dev/null
+sleep 0.4
+act wizard-next >/dev/null
+sleep 0.3
+act wizard-llm-demo >/dev/null
+sleep 0.5
+shot 31-wizard-llm
+act wizard-next >/dev/null
+sleep 0.4
+shot 32-wizard-voice
+act wizard-next >/dev/null
+sleep 0.4
+shot 33-wizard-selftest
+act wizard-selftest >/dev/null
+wait_status "d['wizard']['results'][7] in ('pass','fail')" 10 || true
+sleep 0.4
+shot 34-wizard-selftest-result
+act wizard-next >/dev/null
+sleep 0.3
+act wizard-finish >/dev/null
+sleep 0.7
+shot 35-wizard-summary
+
+# ------------------------------------------------------------ 三语切换
+echo "[shoot] three-language switch"
+page overview
+act lang:en >/dev/null
+sleep 0.7
+shot 46-i18n-en-overview
+page wizard
+act wizard-goto:1 >/dev/null
+sleep 0.4
+shot 47-i18n-en-wizard
+act lang:zh-TW >/dev/null
+sleep 0.7
+page overview
+sleep 0.4
+shot 48-i18n-tw-overview
+page wake
+sleep 0.3
+ipc act "scroll:300" >/dev/null
+sleep 0.4
+shot 49-i18n-tw-wake
+act lang:zh-CN >/dev/null
+sleep 0.5
+# restore the finished wizard state for the final status snapshot
+act wizard-goto:9 >/dev/null
+sleep 0.3
+
+# -------------------------------------------------- 通用 LLM 服务商页面
+echo "[shoot] model service (LLM) page"
+page llm
+act llm-demo >/dev/null
+sleep 0.4
+act llm-save >/dev/null
+sleep 1.0
+shot 50-llm-top
+act llm-test >/dev/null
+sleep 1.2
+shot 51-llm-test-ok
+ipc act "scroll-bottom" >/dev/null
+sleep 0.5
+shot 52-llm-providers
+act llm-info:deepseek >/dev/null
+sleep 0.6
+shot 53-llm-provider-info
+act info-close >/dev/null
+sleep 0.3
+page voice
+sleep 0.3
+ipc act "scroll:150" >/dev/null
+sleep 0.5
+shot 54-voice-minimax-provider
+act voice-minimax-info >/dev/null
+sleep 0.6
+shot 55-minimax-info
+act info-close >/dev/null
+sleep 0.3
 
 # ---------------------------------------------------------------- state dump
 sleep 0.5
@@ -468,9 +538,10 @@ check("minimax key marked restart-required", fs.get("minimax.apiKey", {}).get("s
 check("api page sees keys stored (masked)", api.get("deepseekStored") is True and api.get("minimaxStored") is True, str(api))
 check("secret values never leak into status.json", "placeholder" not in raw and "sk-test" not in raw)
 check("asr.modelDir marked restart-required", fs.get("asr.modelDir", {}).get("state") == "restart", str(fs.get("asr.modelDir")))
-check("wizard finished (step 5)", int(wiz.get("step", -1)) == 5, str(wiz.get("step")))
-check("wizard all passed", wiz.get("allPassed") is True, str(wiz.get("results")))
-check("wizard 5/5 pass", (wiz.get("results") or []).count("pass") == 5, str(wiz.get("results")))
+check("wizard finished (9/9 steps)", int(wiz.get("step", -1)) == int(wiz.get("totalSteps", -1)) == 9, str(wiz.get("step")))
+check("wizard all done", wiz.get("allPassed") is True, str(wiz.get("results")))
+check("wizard results all pass/skipped", all(r in ("pass", "skipped") for r in (wiz.get("results") or [])), str(wiz.get("results")))
+check("wizard language reset to zh-CN", wiz.get("language") == "zh-CN", str(wiz.get("language")))
 
 # config.json really contains the written values
 config_path = diag.get("configPath") or ""
@@ -497,6 +568,177 @@ if [[ "$task12_fails" -ne 0 ]]; then
   fail "task-12 config assertions ($task12_fails)"
 else
   pass "task-12 config assertions (appearance/API/model/sfx/wizard all verified)"
+fi
+
+# --- onboarding / i18n / model service -----------------------------------
+echo
+echo "[shoot] onboarding, three-language UI and model service"
+python3 - "$out/status.json" <<'PYEOF'
+import json, sys, os
+with open(sys.argv[1]) as f:
+    raw = f.read()
+d = json.loads(raw)
+checks = []
+
+def check(name, ok, detail=""):
+    checks.append((name, ok, detail))
+
+wiz = d.get("wizard", {}) or {}
+fs = d.get("fieldStatus", {}) or {}
+llm = d.get("llm", {}) or {}
+diag = d.get("daemonDiagnostics", {}) or {}
+d_llm = diag.get("llm", {}) or {}
+d_models = diag.get("models", {}) or {}
+d_rag = diag.get("rag", {}) or {}
+
+check("wizard finished 9/9", int(wiz.get("step", -1)) == int(wiz.get("totalSteps", -1)) == 9, str(wiz.get("step")))
+check("wizard all steps pass/skipped", all(r in ("pass", "skipped") for r in (wiz.get("results") or [])), str(wiz.get("results")))
+check("wizard region = hmt", wiz.get("region") == "hmt", str(wiz.get("region")))
+check("wizard long-term memory enabled", wiz.get("memory") is True, str(wiz.get("memory")))
+check("wizard llm provider = openai", wiz.get("llmProvider") == "openai", str(wiz.get("llmProvider")))
+check("wizard selftest mic passed", wiz.get("micPassed") is True, str(wiz.get("noiseRms")))
+check("wizard language back to zh-CN", wiz.get("language") == "zh-CN", str(wiz.get("language")))
+
+check("models.region marked restart-required", fs.get("models.region", {}).get("state") == "restart", str(fs.get("models.region")))
+check("rag.autoIngest marked restart-required", fs.get("rag.autoIngest", {}).get("state") == "restart", str(fs.get("rag.autoIngest")))
+check("llm.provider written", fs.get("llm.provider", {}).get("state") == "restart", str(fs.get("llm.provider")))
+check("llm.apiKey written", fs.get("llm.apiKey", {}).get("state") == "restart", str(fs.get("llm.apiKey")))
+check("llm page snapshot openai", llm.get("provider") == "openai", str(llm.get("provider")))
+check("llm page sees stored key", llm.get("keyStored") is True, str(llm.get("keyStored")))
+check("llm.test reported connected", (llm.get("test") or {}).get("ok") is True, str(llm.get("test")))
+check("llm.test message", "连接成功" in ((llm.get("test") or {}).get("message") or ""), str(llm.get("test")))
+check("daemon readback llm.provider = openai", d_llm.get("provider") == "openai", str(d_llm))
+check("daemon readback llm key configured", d_llm.get("apiKeyConfigured") is True, str(d_llm))
+check("daemon readback models.region = hmt", d_models.get("region") == "hmt", str(d_models))
+check("daemon readback rag.autoIngest = true", d_rag.get("autoIngest") is True, str(d_rag))
+check("test LLM key never leaks into status.json", "sk-test-llm-placeholder" not in raw)
+
+config_path = diag.get("configPath") or ""
+try:
+    with open(config_path) as f:
+        cfg = json.load(f)
+    check("config.json llm.provider = openai", cfg["llm"]["provider"] == "openai", str(cfg.get("llm")))
+    check("config.json llm.baseUrl written", cfg["llm"]["baseUrl"] == "https://api.openai.com/v1", str(cfg.get("llm")))
+    check("config.json llm.model written", cfg["llm"]["model"] == "gpt-4o-mini", str(cfg.get("llm")))
+    check("config.json llm.apiKey stored", cfg["llm"]["apiKey"] == "sk-test-llm-placeholder")
+    check("config.json models.region = hmt", cfg["models"]["region"] == "hmt")
+    check("config.json rag.autoIngest = true", cfg["rag"]["autoIngest"] is True)
+except Exception as e:
+    check("config.json readable (" + config_path + ")", False, str(e))
+
+for name in ["26-wizard-welcome.png", "27-wizard-privacy.png", "28-wizard-language.png",
+             "29-wizard-region.png", "30-wizard-memory.png", "31-wizard-llm.png",
+             "32-wizard-voice.png", "33-wizard-selftest.png", "34-wizard-selftest-result.png",
+             "35-wizard-summary.png", "46-i18n-en-overview.png", "47-i18n-en-wizard.png",
+             "48-i18n-tw-overview.png", "49-i18n-tw-wake.png", "50-llm-top.png",
+             "51-llm-test-ok.png", "52-llm-providers.png", "53-llm-provider-info.png",
+             "54-voice-minimax-provider.png", "55-minimax-info.png"]:
+    path = os.path.join(os.path.dirname(sys.argv[1]), name)
+    check("screenshot " + name, os.path.isfile(path) and os.path.getsize(path) > 10000, path)
+
+failed = [c for c in checks if not c[1]]
+for name, ok, detail in checks:
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""))
+sys.exit(1 if failed else 0)
+PYEOF
+task13_fails=$?
+if [[ "$task13_fails" -ne 0 ]]; then
+  fail "onboarding/i18n/LLM assertions ($task13_fails)"
+else
+  pass "onboarding/i18n/LLM assertions (wizard 9/9 + region + memory + llm + i18n screenshots)"
+fi
+
+# --- bundled translation catalogs ----------------------------------------
+echo "[shoot] i18n catalogs"
+python3 - "$repo/settings" <<'PYEOF'
+import glob, json, os, re, sys
+root = sys.argv[1]
+files = [f for f in glob.glob(os.path.join(root, '**', '*.qml'), recursive=True) if '/test/out/' not in f]
+cjk = re.compile(r'[\u4e00-\u9fff]')
+call = re.compile(r'I18n\.t\("((?:[^"\\]|\\.)*)"\)')
+strlit = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+def decode(s):
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c == '\\' and i + 1 < len(s):
+            n = s[i + 1]
+            mapping = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', '/': '/'}
+            if n in mapping:
+                out.append(mapping[n]); i += 2; continue
+            if n == 'u' and i + 5 < len(s):
+                out.append(chr(int(s[i + 2:i + 6], 16))); i += 6; continue
+            out.append(n); i += 2; continue
+        out.append(c); i += 1
+    return ''.join(out)
+
+sources = set()
+for f in files:
+    text = open(f).read()
+    for m in call.finditer(text):
+        sources.add(decode(m.group(1)))
+
+def load_map(name):
+    path = os.path.join(root, 'i18n', name)
+    text = open(path).read()
+    body = text.split('var map = ', 1)[1]
+    body = body.rsplit(';', 1)[0].replace('<\\/', '</')
+    return json.loads(body)
+
+en = load_map('en.js')
+tw = load_map('zh-TW.js')
+checks = []
+def check(name, ok, detail=''):
+    checks.append((name, ok, detail))
+
+check('i18n source strings collected', len(sources) > 500, str(len(sources)))
+missing_en = sorted(s for s in sources if s not in en)
+missing_tw = sorted(s for s in sources if s not in tw)
+check('every source has an English string', not missing_en, str(missing_en[:5]))
+check('every source has a zh-TW string', not missing_tw, str(missing_tw[:5]))
+leftover_cjk = [s for s, v in en.items() if cjk.search(v) and s not in ('简体中文', '繁體中文')]
+check('English catalog contains no Chinese', not leftover_cjk, str(leftover_cjk[:5]))
+bad_tw_terms = ['设置', '麦克风', '语音', '连接', '唤醒', '保存', '默认', '服务器', '信息', '软件', '网络', '用户', '数据', '加载', '支持', '识别', '声纹', '试听', '诊断', '外观', '概览']
+tw_hits = [(s, t) for s, v in tw.items() for t in bad_tw_terms if t in v]
+check('zh-TW uses Taiwan wording (no simplified terms)', not tw_hits, str(tw_hits[:3]))
+
+# No user-visible Chinese left unwrapped; these are spoken-config data values.
+allowed = [
+    ('pages/WakePage.qml', 'chineseDefaults'),
+    ('pages/WakePage.qml', 'asr.wakeWords", value'),
+    ('pages/InteractionPage.qml', 'dismissDefaults'),
+    ('pages/InteractionPage.qml', 'cancelDefaults'),
+    ('pages/InteractionPage.qml', 'dismissPhrases", value'),
+    ('Ipc.qml', 'wakeKeyword'),
+    ('pages/VoicePage.qml', 'let phrase ='),
+]
+leftovers = []
+for f in files:
+    for lineno, line in enumerate(open(f), 1):
+        stripped = line.strip()
+        if stripped.startswith('//') or stripped.startswith('*'):
+            continue
+        cleaned = call.sub('""', line)
+        for m in strlit.finditer(cleaned):
+            value = m.group(1)
+            if not cjk.search(value):
+                continue
+            if any(f.endswith(name) and marker in line for name, marker in allowed):
+                continue
+            leftovers.append(f'{os.path.relpath(f, root)}:{lineno}: {value[:40]}')
+check('no unwrapped user-visible Chinese strings', not leftovers, '; '.join(leftovers[:3]))
+
+failed = [c for c in checks if not c[1]]
+for name, ok, detail in checks:
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""))
+sys.exit(1 if failed else 0)
+PYEOF
+i18n_fails=$?
+if [[ "$i18n_fails" -ne 0 ]]; then
+  fail "i18n catalog assertions ($i18n_fails)"
+else
+  pass "i18n catalog assertions (all sources in en + zh-TW, Taiwan wording, no unwrapped UI strings)"
 fi
 
 # the wizard summary is the log/status evidence for a completed walk-through

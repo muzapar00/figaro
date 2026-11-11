@@ -76,6 +76,78 @@ export function findOnPath(command, env = process.env) {
   return null;
 }
 
+/** Read /etc/os-release into a plain object; empty when unavailable. */
+export function readOsRelease(env = process.env) {
+  const file = env.FIGARO_OS_RELEASE || '/etc/os-release';
+  const out = {};
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      const match = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
+      if (!match) continue;
+      out[match[1]] = match[2].replace(/^"|"$/g, '');
+    }
+  } catch {
+    /* no os-release (non-Linux or minimal container); caller falls back to os.* */
+  }
+  return out;
+}
+
+/**
+ * Classify session/compositor from the environment only: no shelling out, so it
+ * works in `figaro doctor` tests (fake env) and in CI containers with no desktop.
+ */
+export function detectPlatform(env = process.env) {
+  const desktop = String(env.XDG_CURRENT_DESKTOP ?? '').split(':').filter(Boolean).join(':');
+  const sessionType = String(env.XDG_SESSION_TYPE ?? '').toLowerCase();
+  const wayland = sessionType === 'wayland' || Boolean(env.WAYLAND_DISPLAY);
+  const x11 = !wayland && (sessionType === 'x11' || Boolean(env.DISPLAY));
+  const isKde = /kde|plasma/i.test(desktop)
+    || String(env.KDE_FULL_SESSION ?? '') === 'true'
+    || /plasma/i.test(String(env.XDG_SESSION_DESKTOP ?? ''));
+  const isGnome = /gnome|unity|pantheon|cinnamon/i.test(desktop)
+    || /gnome/i.test(String(env.XDG_SESSION_DESKTOP ?? ''));
+  const isWlroots = /sway|hyprland|river|wayfire|labwc|niri|wlroots/i.test(desktop)
+    || Boolean(env.SWAYSOCK) || Boolean(env.HYPRLAND_INSTANCE_SIGNATURE);
+  // wlr-layer-shell: KWin and every wlroots compositor implement it. GNOME's
+  // Mutter does not, and X11 has no layer-shell at all.
+  let layerShell = false;
+  let layerShellReason = '';
+  if (x11) {
+    layerShellReason = 'X11 没有 layer-shell';
+  } else if (wayland && (isKde || isWlroots)) {
+    layerShell = true;
+    layerShellReason = isKde ? 'KWin' : 'wlroots';
+  } else if (wayland && !isGnome) {
+    layerShell = true;
+    layerShellReason = 'Wayland（未识别的合成器，按 wlroots 处理）';
+  } else if (isGnome) {
+    layerShellReason = 'GNOME/Mutter 没有 wlr-layer-shell';
+  } else {
+    layerShellReason = '没有可用的 Wayland 会话信息';
+  }
+  return {
+    desktop: desktop || String(env.XDG_SESSION_DESKTOP ?? '') || '',
+    sessionType: sessionType || (wayland ? 'wayland' : (x11 ? 'x11' : '')),
+    wayland,
+    x11,
+    isKde,
+    isGnome,
+    isWlroots,
+    layerShell,
+    layerShellReason,
+    graphical: wayland || x11,
+  };
+}
+
+/** Copy-pasteable install hint for the desktop's screenshot backend. */
+export function screenshotBackendHint(platform = {}) {
+  if (platform.isKde) return 'sudo apt install spectacle      # 或 pacman -S spectacle';
+  if (platform.isWlroots) return 'sudo apt install grim          # 或 pacman -S grim';
+  if (platform.isGnome) return 'sudo apt install gnome-screenshot xdg-desktop-portal-gnome';
+  if (platform.x11) return 'sudo apt install scrot         # 或 imagemagick / import';
+  return 'sudo apt install xdg-desktop-portal   # 以及对应桌面后端；或 grim/spectacle';
+}
+
 function parseKib(text) {
   // df -kP: Filesystem 1024-blocks Used Available Capacity Mounted
   const match = /^\S+\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)%\s+/m.exec(text ?? '');
@@ -313,6 +385,22 @@ function resolveConfigModelDir(config, key, repoRoot) {
  */
 export async function collectDoctorReport({ env = process.env, net = false } = {}) {
   const run = createRunner(env);
+  // A plain TTY/SSH shell and the systemd *service* context often did not
+  // inherit the graphical-session variables (XDG_CURRENT_DESKTOP,
+  // WAYLAND_DISPLAY). The user manager knows them, so merge its environment in
+  // as a fallback; the real process environment always wins.
+  let sessionEnv = env;
+  {
+    const shown = await run('systemctl', ['--user', 'show-environment']);
+    if (shown.ok && shown.stdout.trim()) {
+      const fromManager = {};
+      for (const line of shown.stdout.split('\n')) {
+        const eq = line.indexOf('=');
+        if (eq > 0) fromManager[line.slice(0, eq)] = line.slice(eq + 1);
+      }
+      sessionEnv = { ...fromManager, ...env };
+    }
+  }
   const home = env.HOME || os.homedir();
   const repoRoot = env.FIGARO_DOCTOR_REPO_ROOT ? path.resolve(env.FIGARO_DOCTOR_REPO_ROOT) : REPO_ROOT;
   const configPath = env.FIGARO_CONFIG_PATH || CONFIG_PATH;
@@ -502,13 +590,23 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
       add(configGroup, 'ok', 'config.permissions', '配置文件权限 600');
     }
   }
-  const deepseekKey = config?.deepseek?.apiKey || env.FIGARO_DEEPSEEK_API_KEY || env.DEEPSEEK_API_KEY || '';
+  const llm = (config?.llm && typeof config.llm === 'object')
+    ? config.llm
+    : { provider: 'deepseek', baseUrl: config?.deepseek?.baseUrl, model: config?.deepseek?.model, apiKey: config?.deepseek?.apiKey };
+  const provider = String(llm.provider || 'deepseek');
+  const providerEnvKey = {
+    deepseek: ['FIGARO_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'],
+    openai: ['FIGARO_OPENAI_API_KEY', 'OPENAI_API_KEY'],
+    gemini: ['FIGARO_GEMINI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+    custom: ['FIGARO_LLM_API_KEY'],
+  }[provider] ?? ['FIGARO_LLM_API_KEY'];
+  const llmKey = llm.apiKey || env.FIGARO_LLM_API_KEY || providerEnvKey.map((key) => env[key]).find(Boolean) || '';
   const minimaxKey = config?.minimax?.apiKey || env.FIGARO_MINIMAX_API_KEY || env.MINIMAX_API_KEY || '';
-  if (deepseekKey) {
-    add(configGroup, 'ok', 'config.deepseek-key', `DeepSeek key: ${maskSecret(deepseekKey)}`);
+  if (llmKey || provider === 'custom') {
+    add(configGroup, 'ok', 'config.llm-key', `LLM key（${provider}）: ${llmKey ? maskSecret(llmKey) : '自定义端点无需 key'}`);
   } else {
-    add(configGroup, 'fail', 'config.deepseek-key', 'DeepSeek key: 未配置', '大脑不可用（ask/语音问答都会失败）', {
-      fix: commandFix(`$EDITOR ${configPath}   # 填写 deepseek.apiKey`, '填写 DeepSeek key'),
+    add(configGroup, 'fail', 'config.llm-key', `LLM key（${provider}）: 未配置`, '大脑不可用（ask/语音问答都会失败）', {
+      fix: commandFix(`$EDITOR ${configPath}   # 填写 llm.apiKey（服务商：${provider}）`, '填写 LLM key'),
     });
   }
   if (minimaxKey) {
@@ -518,20 +616,58 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
       fix: commandFix(`$EDITOR ${configPath}   # 填写 minimax.apiKey`, '填写 MiniMax key'),
     });
   }
-  const model = config?.deepseek?.model;
+  const model = llm.model ?? config?.deepseek?.model;
   const voiceId = config?.minimax?.voiceId;
   if (model && voiceId) {
-    add(configGroup, 'info', 'config.tunables', `模型: ${model} · 音色: ${voiceId}`);
+    add(configGroup, 'info', 'config.tunables', `模型: ${provider} / ${model} · 音色: ${voiceId}`);
   } else {
     add(configGroup, 'warn', 'config.tunables', `模型/音色配置不完整（model=${model ?? '?'} voiceId=${voiceId ?? '?'}）`);
   }
+
+  // How this Figaro was installed decides where models and user units belong;
+  // print it once so field reports are unambiguous (deb/rpm vs git checkout).
+  const packagedLayout = /^\/usr\/lib(?:64)?\/figaro$/.test(repoRoot);
+  add(configGroup, 'info', 'config.layout', `安装布局: ${packagedLayout ? 'deb/rpm 系统包' : '源码 checkout'}（${repoRoot}）`);
 
   // -------------------------------------------------------------- 4. models
   const models = group('models', '本地模型');
   const kwsDir = resolveConfigModelDir(config, 'kwsModelDir', repoRoot);
   const offlineDir = resolveConfigModelDir(config, 'offlineModelDir', repoRoot);
   const streamDir = resolveConfigModelDir(config, 'streamingModelDir', repoRoot);
-  const vadDir = path.join(path.dirname(kwsDir ?? path.join(repoRoot, 'models', 'kws')), 'vad');
+  const modelsRoot = path.dirname(kwsDir ?? path.join(repoRoot, 'models', 'kws'));
+  const vadDir = path.join(modelsRoot, 'vad');
+  const xdgDataDir = env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  // Suggestions must be runnable by the user: a deb/rpm install keeps /usr
+  // read-only, so the fetch command points at a writable model root.
+  const writableModelsRoot = (() => {
+    for (const dir of [modelsRoot, path.join(xdgDataDir, 'figaro', 'models')]) {
+      try {
+        fs.accessSync(fs.existsSync(dir) ? dir : path.dirname(dir), fs.constants.W_OK);
+        return dir;
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    return path.join(xdgDataDir, 'figaro', 'models');
+  })();
+  const fetchModelsFix = (only, reason) => ({
+    command: `FIGARO_MODELS_DIR=${writableModelsRoot} bash ${path.join(repoRoot, 'scripts', 'fetch-models.sh')} --only=${only}`,
+    reason,
+  });
+  const modelsRootWritable = (() => {
+    try {
+      fs.accessSync(modelsRoot, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  add(models, 'info', 'models.root', `模型根目录: ${modelsRoot}（${modelsRootWritable ? '可写' : '不可写'}）`);
+  if (!modelsRootWritable) {
+    add(models, 'warn', 'models.root-writable', `模型目录不可写: ${modelsRoot}`, '系统包布局下 /usr 只读；运行 figaro install-user 后把 asr.*ModelDir 指到可写目录', {
+      fix: commandFix('figaro install-user', '生成可写的模型目录配置'),
+    });
+  }
   const kwsFiles = {
     encoder: findFirst(kwsDir, [/^encoder.*\.onnx$/]),
     decoder: findFirst(kwsDir, [/^decoder.*\.onnx$/]),
@@ -545,12 +681,12 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
     add(models, 'ok', 'models.kws', `唤醒词模型: 完整（${bilingual ? '中英双语 zh-en' : 'legacy 中文'}）`, kwsDir);
     if (!bilingual) {
       add(models, 'warn', 'models.kws-bilingual', 'KWS 是 legacy 中文模型', '「figaro」英文唤醒不可用；建议更新为 zh-en 双语模型', {
-        fix: commandFix(`cd ${repoRoot} && bash scripts/fetch-models.sh --force --only=kws`, '更新为 zh-en 双语 KWS'),
+        fix: fetchModelsFix('kws', '更新为 zh-en 双语 KWS（--force 可加在命令末尾）'),
       });
     }
   } else {
     add(models, 'fail', 'models.kws', `唤醒词模型不完整: 缺 ${missingKws.join('/')}`, kwsDir ?? '(未配置)', {
-      fix: commandFix(`cd ${repoRoot} && bash scripts/fetch-models.sh --only=kws`, '下载唤醒词模型'),
+      fix: fetchModelsFix('kws', '下载唤醒词模型'),
     });
   }
   const offlineModel = findFirst(offlineDir, [/^(model|paraformer|sensevoice).*\.onnx$/, /\.onnx$/]);
@@ -559,7 +695,7 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
     add(models, 'ok', 'models.offline', `离线识别模型: 完整（${path.basename(offlineModel)}）`, offlineDir);
   } else {
     add(models, 'fail', 'models.offline', '离线识别模型缺失', offlineDir ?? '(未配置)', {
-      fix: commandFix(`cd ${repoRoot} && bash scripts/fetch-models.sh --only=asr`, '下载离线 ASR 模型'),
+      fix: fetchModelsFix('asr', '下载离线 ASR 模型'),
     });
   }
   const streamOk = findFirst(streamDir, [/^encoder.*\.onnx$/]) && findFirst(streamDir, [/^decoder.*\.onnx$/]) && findFirst(streamDir, [/^joiner.*\.onnx$/]) && streamDir && fs.existsSync(path.join(streamDir, 'tokens.txt'));
@@ -567,14 +703,14 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
     add(models, 'ok', 'models.streaming', '流式识别模型: 完整（实时 partial）');
   } else {
     add(models, 'warn', 'models.streaming', '流式识别模型缺失', '没有实时字幕，只影响 partial 体验', {
-      fix: commandFix(`cd ${repoRoot} && bash scripts/fetch-models.sh --only=asr`, '下载流式 ASR 模型'),
+      fix: fetchModelsFix('asr', '下载流式 ASR 模型'),
     });
   }
   if (vadDir && fs.existsSync(path.join(vadDir, 'silero_vad.onnx'))) {
     add(models, 'ok', 'models.vad', 'VAD 模型: 完整（silero_vad.onnx）');
   } else {
     add(models, 'warn', 'models.vad', 'VAD 模型缺失', '断句/静音检测会退化', {
-      fix: commandFix(`cd ${repoRoot} && bash scripts/fetch-models.sh --only=vad`, '下载 VAD 模型'),
+      fix: fetchModelsFix('vad', '下载 VAD 模型'),
     });
   }
   add(models, 'info', 'models.check', '模型自检命令: bash scripts/fetch-models.sh --check');
@@ -703,31 +839,29 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
   const netGroup = group('network', 'TTS / LLM 连通性');
   if (!net) {
     add(netGroup, 'skip', 'net.skipped', '未联网检测（加 --net 做真实请求）', '默认只检查 key 是否配置');
-    add(netGroup, deepseekKey ? 'ok' : 'fail', 'net.deepseek-key', `DeepSeek key: ${deepseekKey ? '已配置' : '未配置'}`);
+    add(netGroup, (llmKey || provider === 'custom') ? 'ok' : 'fail', 'net.llm-key', `LLM key（${provider}）: ${llmKey ? '已配置' : (provider === 'custom' ? '自定义端点' : '未配置')}`);
     add(netGroup, minimaxKey ? 'ok' : 'fail', 'net.minimax-key', `MiniMax key: ${minimaxKey ? '已配置' : '未配置'}`);
   } else {
-    if (deepseekKey) {
+    if (llmKey || provider === 'custom') {
       const started = performance.now();
       try {
-        const response = await fetch(`${String(config?.deepseek?.baseUrl ?? 'https://api.deepseek.com').replace(/\/+$/, '')}/models`, {
-          headers: { Authorization: `Bearer ${deepseekKey}` },
-          signal: AbortSignal.timeout(8000),
-        });
+        const { testLlmConnection } = await import('./agent/llm.js');
+        const result = await testLlmConnection({ config, timeoutMs: 8000 });
         const ms = Math.round(performance.now() - started);
-        if (response.ok) {
-          add(netGroup, 'ok', 'net.deepseek', `DeepSeek 连通（/models ${response.status}，${ms}ms）`);
+        if (result.ok) {
+          add(netGroup, 'ok', 'net.llm', `LLM 连通（${provider} / ${result.model ?? llm.model ?? '?'}，HTTP ${result.status}，${ms}ms）`);
         } else {
-          add(netGroup, 'fail', 'net.deepseek', `DeepSeek 请求失败 HTTP ${response.status}（${ms}ms）`, maskText(await response.text().catch(() => '')), {
-            fix: commandFix(`curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $DEEPSEEK_KEY" ${config?.deepseek?.baseUrl ?? 'https://api.deepseek.com'}/models`, '检查 key/网络/余额'),
+          add(netGroup, 'fail', 'net.llm', `LLM 请求失败（${provider}，HTTP ${result.status ?? '?'}，${ms}ms）: ${maskText(result.message || '')}`, '', {
+            fix: commandFix('figaro status   # 再检查设置里的 provider/baseUrl/model/key', '检查 LLM 配置'),
           });
         }
       } catch (err) {
-        add(netGroup, 'fail', 'net.deepseek', `DeepSeek 连不上: ${maskText(err?.message || err)}`, '', {
-          fix: commandFix('ping -c1 api.deepseek.com', '检查网络'),
+        add(netGroup, 'fail', 'net.llm', `LLM 连不上（${provider}）: ${maskText(err?.message || err)}`, '', {
+          fix: commandFix('figaro status', '检查网络与 LLM 配置'),
         });
       }
     } else {
-      add(netGroup, 'fail', 'net.deepseek', 'DeepSeek key: 未配置');
+      add(netGroup, 'fail', 'net.llm', `LLM key（${provider}）: 未配置`);
     }
     if (minimaxKey) {
       try {
@@ -789,48 +923,146 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
 
   // ------------------------------------------------------------- 9. desktop
   const desktop = group('desktop', '桌面能力');
+  const platform = detectPlatform(sessionEnv);
+  const osRelease = readOsRelease(env);
+  const osLabel = osRelease.PRETTY_NAME || `${os.type()} ${os.release()}`;
+  add(desktop, 'info', 'desktop.os', `系统: ${osLabel}（${os.arch()}，内核 ${os.release()}）`);
+  add(desktop, 'info', 'desktop.node', `Node.js: ${process.versions.node}（${process.execPath}）`);
+  const sessionLine = `会话: ${platform.sessionType || '未知'} · 桌面: ${platform.desktop || '未知'}`;
+  if (platform.x11) {
+    add(desktop, 'warn', 'desktop.session', sessionLine, 'Quickshell overlay 仅支持 Wayland；X11 下语音/CLI 可用，overlay 无法显示（见 docs/platform-support.md）', {
+      fix: commandFix('echo "$XDG_SESSION_TYPE $XDG_CURRENT_DESKTOP"; loginctl show-session "$XDG_SESSION_ID" -p Type 2>/dev/null', '确认会话类型；overlay 需要 Wayland'),
+    });
+  } else {
+    add(desktop, 'info', 'desktop.session', sessionLine);
+  }
+
+  if (platform.layerShell) {
+    add(desktop, 'ok', 'desktop.layer-shell', `layer-shell: 可用（${platform.layerShellReason}）`);
+  } else if (platform.isGnome) {
+    add(desktop, 'warn', 'desktop.layer-shell', 'GNOME Wayland: 没有 wlr-layer-shell', 'Quickshell overlay 无法显示；语音与 CLI 仍可用。替代方案见 docs/platform-support.md', {
+      fix: commandFix('figaro ask "你好"   # GNOME 下用 CLI/语音；overlay 需要 KDE/sway/Hyprland', 'GNOME 无 layer-shell，overlay 不可用'),
+    });
+  } else if (platform.x11) {
+    add(desktop, 'warn', 'desktop.layer-shell', 'X11: 没有 wlr-layer-shell', 'overlay 只在 Wayland 显示；CLI/语音不受影响', {
+      fix: commandFix('figaro ask "你好"', 'X11 下使用 CLI/语音'),
+    });
+  } else {
+    add(desktop, 'info', 'desktop.layer-shell', `layer-shell: 无法判断（${platform.layerShellReason}）`);
+  }
+
+  // Optional everywhere: Kos.SurfaceShape is KDE-only, and the overlay falls
+  // back to its own translucent fill when it is missing. Never a failure.
   const kosShape = path.join(xdgConfig, 'quickshell', 'kos', 'Kos', 'SurfaceShape');
   if (fs.existsSync(kosShape)) {
-    add(desktop, 'ok', 'desktop.kos', `KWin 液态玻璃插件: 存在（${kosShape}）`);
+    add(desktop, 'ok', 'desktop.kos', `液态玻璃（KOS SurfaceShape）: 存在（${kosShape}）`);
   } else {
-    add(desktop, 'fail', 'desktop.kos', `KWin 液态玻璃插件缺失: ${kosShape}`, 'overlay 的 QML 会加载失败（球体/背景不显示）', {
-      fix: commandFix(`ls ${path.join(xdgConfig, 'quickshell', 'kos', 'Kos')}   # 需要 KOS 的 SurfaceShape 组件；重装 KOS/Quickshell 配置`, '恢复 KOS 的 SurfaceShape'),
-    });
+    add(desktop, 'info', 'desktop.kos', `液态玻璃（KOS SurfaceShape）: 未安装（${kosShape}）`, '非必需：overlay 自动回退半透明背景；只有 KDE + KOS 才有真玻璃效果');
   }
-  const installedUiUnit = path.join(home, '.config', 'systemd', 'user', 'figaro-ui.service');
-  const uiUnitPath = fs.existsSync(installedUiUnit) ? installedUiUnit : path.join(repoRoot, 'systemd', 'figaro-ui.service');
-  const uiUnitText = readFileSafe(uiUnitPath);
-  if (uiUnitText === null) {
-    add(desktop, 'warn', 'desktop.qmlpath', `找不到 figaro-ui.service（${uiUnitPath}）`, 'overlay 未安装', {
-      fix: commandFix(`cp ${path.join(repoRoot, 'systemd', 'figaro-ui.service')} ${installedUiUnit} && systemctl --user daemon-reload`, '安装 overlay unit'),
+
+  // Overlay unit: install-user renders a per-user unit; deb/rpm also ship a
+  // machine-independent one under /usr/lib/systemd/user.
+  const uiUnitCandidates = [
+    path.join(home, '.config', 'systemd', 'user', 'figaro-ui.service'),
+    '/usr/lib/systemd/user/figaro-ui.service',
+    path.join(repoRoot, 'systemd', 'figaro-ui.service'),
+    path.join(repoRoot, 'systemd', 'figaro-ui.service.in'),
+  ];
+  const uiUnitPath = uiUnitCandidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  const uiUnitText = uiUnitPath ? readFileSafe(uiUnitPath) : null;
+  const uiUnitIsTemplate = Boolean(uiUnitText && /@QS@|@WAYLAND_DISPLAY@|@REPO@/.test(uiUnitText));
+  if (!uiUnitPath || uiUnitText === null) {
+    add(desktop, 'warn', 'desktop.unit', '找不到 figaro-ui.service', 'overlay 未注册为 systemd user unit', {
+      fix: commandFix('figaro install-user', '安装/修复用户级 overlay unit'),
+    });
+    add(desktop, 'warn', 'desktop.qs', '无法从 unit 定位 Quickshell', 'overlay 起不来（语音/CLI 不受影响）', {
+      fix: commandFix('figaro install-user', '重新安装 overlay unit'),
     });
   } else {
     const match = /^\s*Environment=.*QML2_IMPORT_PATH=(\S+)/m.exec(uiUnitText);
     const qmlPath = match?.[1] ?? null;
     if (qmlPath && qmlPath.includes('quickshell/kos')) {
       add(desktop, 'ok', 'desktop.qmlpath', `QML2_IMPORT_PATH 已配置: ${qmlPath}`);
-    } else {
-      add(desktop, 'fail', 'desktop.qmlpath', 'figaro-ui unit 缺少 QML2_IMPORT_PATH', 'Kos.SurfaceShape 导入失败 → QML 加载错误', {
-        fix: commandFix(`# 在 ${uiUnitPath} 的 [Service] 里加：Environment=QML2_IMPORT_PATH=%h/.config/quickshell/kos 然后 systemctl --user daemon-reload && systemctl --user restart figaro-ui`, '补上 QML2_IMPORT_PATH'),
+    } else if (uiUnitIsTemplate) {
+      add(desktop, 'info', 'desktop.qmlpath', 'figaro-ui unit 是未渲染的模板', '运行 figaro install-user 生成实际的 user unit');
+    } else if (platform.isKde) {
+      add(desktop, 'warn', 'desktop.qmlpath', 'figaro-ui unit 缺少 QML2_IMPORT_PATH', 'KDE 上装了 KOS 时玻璃效果需要该路径（没有 KOS 时无影响）', {
+        fix: commandFix('figaro install-user', '重新渲染 overlay unit'),
       });
+    } else {
+      add(desktop, 'info', 'desktop.qmlpath', '非 KDE 桌面：不需要 QML2_IMPORT_PATH', 'KOS 玻璃只属于 KDE；overlay 使用半透明回退');
     }
     const execMatch = /^\s*ExecStart=(\S+)/m.exec(uiUnitText);
     const execPath = execMatch?.[1]?.replace(/^%h/, home) ?? '';
-    if (execPath && findOnPath(execPath, env)) {
-      add(desktop, 'ok', 'desktop.qs', `Quickshell: ${execPath}`);
-    } else if (findOnPath('qs', env)) {
-      add(desktop, 'ok', 'desktop.qs', 'Quickshell: qs 在 PATH 中');
+    const qsCandidates = [execPath, findOnPath('qs', env), path.join(home, '.local', 'bin', 'qs'), '/usr/bin/qs'].filter(Boolean);
+    // The packaged unit starts the /usr/bin/figaro-ui launcher, which finds qs
+    // itself; the launcher is not Quickshell, so look for qs separately.
+    if (execPath && /figaro-ui$/.test(execPath)) {
+      qsCandidates.unshift(findOnPath('qs', env), path.join(home, '.local', 'bin', 'qs'), '/usr/bin/qs');
+    }
+    const qsPath = qsCandidates.find((candidate) => findOnPath(candidate, env));
+    if (qsPath) {
+      add(desktop, 'ok', 'desktop.qs', `Quickshell: ${qsPath}`);
     } else {
-      add(desktop, 'fail', 'desktop.qs', '找不到 Quickshell（qs）', 'overlay 起不来', {
-        fix: commandFix(`ls ${path.join(home, '.local', 'bin', 'qs')}`, '安装 Quickshell'),
+      add(desktop, 'warn', 'desktop.qs', '找不到 Quickshell（qs）', platform.layerShell ? 'overlay 起不来（语音/CLI 不受影响）' : '当前桌面本来就不支持 overlay，不影响语音/CLI', {
+        fix: commandFix('figaro install-user   # 或按发行版安装 quickshell / 从 AUR 安装', '安装 Quickshell'),
       });
     }
   }
-  for (const tool of ['spectacle', 'ffmpeg']) {
-    const found = findOnPath(tool, env);
-    if (found) add(desktop, 'ok', `desktop.${tool}`, `截屏依赖: ${tool}（${found}）`);
-    else add(desktop, 'warn', `desktop.${tool}`, `缺少 ${tool}`, '截图/录屏相关能力不可用', {
-      fix: commandFix(`sudo apt install ${tool}`, `安装 ${tool}`),
+
+  // Screenshot backends: spectacle (KDE) -> grim (wlroots) -> portal -> GNOME -> X11.
+  const screenshotBackends = [];
+  for (const [command, note] of [['spectacle', 'KDE'], ['grim', 'wlroots'], ['gdbus', 'portal'], ['gnome-screenshot', 'GNOME'], ['scrot', 'X11']]) {
+    if (findOnPath(command, env)) screenshotBackends.push(`${command}(${note})`);
+  }
+  if (screenshotBackends.length > 0) {
+    add(desktop, 'ok', 'desktop.screenshot', `截图后端: ${screenshotBackends.join(', ')}`);
+  } else if (platform.graphical) {
+    add(desktop, 'warn', 'desktop.screenshot', '没有可用的截图后端', 'screenshot 工具不可用（spectacle/grim/portal/gnome-screenshot/scrot 都没有）', {
+      fix: commandFix(screenshotBackendHint(platform), '安装截图后端'),
+    });
+  } else {
+    add(desktop, 'info', 'desktop.screenshot', '截图后端: 未检测（没有图形会话）');
+  }
+
+  const portalUnit = await run('systemctl', ['--user', 'is-active', 'xdg-desktop-portal']);
+  const portalState = portalUnit.stdout.trim();
+  if (portalState === 'active') {
+    add(desktop, 'ok', 'desktop.portal', 'xdg-desktop-portal: active（热键/截图回退/portal 能力）');
+  } else if (portalState.length === 0) {
+    add(desktop, 'info', 'desktop.portal', 'xdg-desktop-portal: 状态未知（systemctl --user 未返回状态）');
+  } else if (platform.graphical) {
+    add(desktop, 'warn', 'desktop.portal', `xdg-desktop-portal: ${portalState}`, '全局热键与 portal 截图回退不可用', {
+      fix: commandFix('systemctl --user status xdg-desktop-portal xdg-desktop-portal-kde   # 按发行版安装对应后端后重新登录', '启动 xdg-desktop-portal'),
+    });
+  } else {
+    add(desktop, 'info', 'desktop.portal', `xdg-desktop-portal: ${portalState}`);
+  }
+
+  const pipewireSocket = path.join(xdgRuntime, 'pipewire-0');
+  if (fs.existsSync(pipewireSocket)) {
+    add(desktop, 'ok', 'desktop.pipewire', `PipeWire socket: ${pipewireSocket}`);
+  } else {
+    add(desktop, 'info', 'desktop.pipewire', `PipeWire socket 未发现（${pipewireSocket}）`, '也许由 PulseAudio 提供或服务尚未启动；音频检查见「麦克风/音频出口」组');
+  }
+
+  const ragConfig = config?.rag ?? {};
+  const ragUnit = await run('systemctl', ['--user', 'is-active', 'figaro-rag']);
+  const ragState = ragUnit.stdout.trim();
+  if (ragConfig.enabled === false) {
+    add(desktop, 'info', 'desktop.rag', '长期记忆 RAG（可选）: 已关闭');
+  } else if (ragState === 'active') {
+    add(desktop, 'ok', 'desktop.rag', `长期记忆 RAG（可选）: active（${ragConfig.host ?? '?'}）`);
+  } else {
+    add(desktop, 'info', 'desktop.rag', `长期记忆 RAG（可选）: ${ragState || '未运行'}（${ragConfig.host ?? '?'}）`, '没有它也能正常对话，只是不跨会话记忆；安装见 docs/rag.md');
+  }
+
+  const ffmpegPath = findOnPath('ffmpeg', env);
+  if (ffmpegPath) {
+    add(desktop, 'ok', 'desktop.ffmpeg', `view_image 依赖: ffmpeg（${ffmpegPath}）`);
+  } else {
+    add(desktop, 'warn', 'desktop.ffmpeg', '缺少 ffmpeg', 'view_image 无法缩放图片（screenshot 仍可用）', {
+      fix: commandFix('sudo apt install ffmpeg   # 或 pacman -S ffmpeg', '安装 ffmpeg'),
     });
   }
 
@@ -909,11 +1141,58 @@ export async function collectDoctorReport({ env = process.env, net = false } = {
       fixes.push({ kind: check.fix.kind, data: check.fix.data ?? {}, command: check.fix.command, reason: check.fix.reason, check: check.id });
     }
   }
+  // Platform guidance that is not a failure but is worth copying into a
+  // terminal: which desktops can show the overlay and which screenshot backend
+  // is expected. Rendered in its own section, not mixed into fix suggestions.
+  const platformHints = [];
+  if (platform.isGnome) {
+    platformHints.push({
+      command: 'figaro ask "你好"',
+      reason: 'GNOME Wayland 没有 wlr-layer-shell：用 CLI/语音；overlay 需要 KDE/sway/Hyprland（docs/platform-support.md）',
+    });
+    platformHints.push({ command: 'systemctl --user disable --now figaro-ui', reason: 'GNOME 下 overlay unit 启动会失败，建议关掉它（语音/CLI 不受影响）' });
+  } else if (platform.x11) {
+    platformHints.push({
+      command: 'echo "$XDG_SESSION_TYPE"',
+      reason: 'X11 不支持 Quickshell overlay：登录 Wayland 会话后可显示浮层，CLI/语音不受影响',
+    });
+  } else if (platform.wayland && !platform.isKde) {
+    platformHints.push({
+      command: `systemctl --user status figaro-ui`,
+      reason: `非 KDE 桌面（${platform.desktop || '未知'}）：layer-shell 可用，但 KOS 玻璃回退为半透明；截图走 grim/portal`,
+    });
+  }
+  if (platform.graphical && screenshotBackends.length === 0) {
+    platformHints.push({ command: screenshotBackendHint(platform), reason: '安装一个截图后端，screenshot 工具才能工作' });
+  }
+  if (packagedLayout && !modelsRootWritable) {
+    platformHints.push({ command: 'figaro install-user', reason: '包布局下模型目录在 /usr 只读区：生成用户级绝对路径后重新下载模型' });
+  }
+
   return {
     ok: summary.fail === 0,
     generatedAt: new Date().toISOString(),
     version: VERSION,
     host: os.hostname(),
+    platform: {
+      desktop: platform.desktop,
+      sessionType: platform.sessionType,
+      wayland: platform.wayland,
+      x11: platform.x11,
+      isKde: platform.isKde,
+      isGnome: platform.isGnome,
+      isWlroots: platform.isWlroots,
+      layerShell: platform.layerShell,
+      layerShellReason: platform.layerShellReason,
+    },
+    os: {
+      prettyName: osRelease.PRETTY_NAME ?? null,
+      id: osRelease.ID ?? null,
+      versionId: osRelease.VERSION_ID ?? null,
+      kernel: os.release(),
+      arch: os.arch(),
+    },
+    platformHints,
     repoRoot,
     configPath,
     socketPath,
@@ -976,6 +1255,14 @@ export function formatDoctorReport(report, { fixResults = [] } = {}) {
     lines.push('已执行修复:');
     for (const result of fixResults) {
       lines.push(`  ${result.ok ? '✓' : '✗'} ${result.command}${result.error ? `  (${result.error})` : ''}`);
+    }
+  }
+  if (report.platformHints?.length > 0) {
+    lines.push('');
+    lines.push('平台提示:');
+    for (const hint of report.platformHints) {
+      lines.push(`  $ ${hint.command}`);
+      lines.push(`    # ${hint.reason}`);
     }
   }
   lines.push('');

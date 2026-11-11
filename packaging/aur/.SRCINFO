@@ -1,0 +1,28 @@
+pkgbase = figaro
+	pkgdesc = System-level voice assistant for the Linux desktop (DeepSeek brain, local bilingual wake word, MiniMax streaming speech)
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/muzapar00/figaro
+	arch = x86_64
+	license = GPL-3.0-or-later
+	makedepends = git
+	makedepends = nodejs
+	makedepends = npm
+	depends = nodejs>=22
+	depends = quickshell
+	depends = pipewire
+	depends = xdg-desktop-portal
+	optdepends = xdg-desktop-portal-kde: global-shortcut and screenshot portal backend on KDE
+	optdepends = xdg-desktop-portal-wlr: global-shortcut portal backend on sway/Hyprland
+	optdepends = spectacle: screenshot backend on KDE (preferred, then portal fallback)
+	optdepends = grim: screenshot backend on wlroots compositors
+	optdepends = ffmpeg: downscaling images for the view_image tool
+	optdepends = curl: model downloader (scripts/fetch-models.sh)
+	optdepends = tar: model downloader (scripts/fetch-models.sh)
+	optdepends = bzip2: model downloader (scripts/fetch-models.sh)
+	optdepends = python: optional LightRAG long-term-memory service
+	options = !strip
+	source = git+https://github.com/muzapar00/figaro.git#tag=v1.0.0
+	sha256sums = SKIP
+
+pkgname = figaro

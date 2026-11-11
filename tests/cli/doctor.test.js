@@ -294,11 +294,11 @@ test('doctor flags missing keys without leaking anything', async (t) => {
   await world.writeConfig();
   const { code, stdout } = await world.run();
   assert.notEqual(code, 0);
-  assert.match(stdout, /✗ DeepSeek key: 未配置/);
+  assert.match(stdout, /✗ LLM key（deepseek）: 未配置/);
   assert.match(stdout, /✗ MiniMax key: 未配置/);
   const report = parseJson((await world.run(['--json'])).stdout);
   const failing = report.groups.flatMap((group) => group.checks).filter((check) => check.status === 'fail');
-  assert.ok(failing.some((check) => check.id === 'config.deepseek-key'));
+  assert.ok(failing.some((check) => check.id === 'config.llm-key'));
   assert.ok(failing.some((check) => check.id === 'config.minimax-key'));
 });
 

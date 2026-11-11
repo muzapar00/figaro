@@ -102,6 +102,11 @@ Singleton {
     property var homeTestResult: ({})   // last {type:"home.test", ok, status, message}
     property int homeTestSeq: 0
 
+    // ---------------------------------------------------------- generic llm
+    property bool llmTestRunning: false
+    property var llmTestResult: ({})   // last {type:"llm.test", ...}
+    property int llmTestSeq: 0
+
     // ---------------------------------------------------------- service restart
     property bool restartPending: false
     property string restartState: ""  // "" | sent | accepted | unsupported | restarting | done
@@ -198,7 +203,7 @@ Singleton {
             root.requestCount += 1;
             return true;
         } catch (e) {
-            root.noteError("发送失败: " + e);
+            root.noteError(I18n.t("发送失败: ") + e);
             return false;
         }
     }
@@ -279,9 +284,9 @@ Singleton {
         root.capabilities = next;
     }
     function featureLabel(type) {
-        if (root.feature(type) === "supported") return "已支持";
-        if (root.feature(type) === "unsupported") return "当前 daemon 不支持此功能";
-        return "等待响应…";
+        if (root.feature(type) === "supported") return I18n.t("已支持");
+        if (root.feature(type) === "unsupported") return I18n.t("当前 daemon 不支持此功能");
+        return I18n.t("等待响应…");
     }
     function noteError(message) {
         root.lastError = message;
@@ -373,7 +378,7 @@ Singleton {
             if (Array.isArray(msg.restartRequired)) root.configRestartRequired = msg.restartRequired;
             root.markCapability("config.get", "supported");
             root.markCapability("config.set", "supported");
-            if (msg.forbidden && msg.forbidden.length) root.configErrors = msg.forbidden.map(f => "不允许修改：" + f);
+            if (msg.forbidden && msg.forbidden.length) root.configErrors = msg.forbidden.map(f => I18n.t("不允许修改：") + f);
             if (msg.id) root.resolvePending(msg.id, msg);
             break;
         case "diagnostics":
@@ -476,6 +481,13 @@ Singleton {
             if (msg.id) root.resolvePending(msg.id, msg);
             root.markCapability("home.test", "supported");
             break;
+        case "llm.test":
+            root.llmTestRunning = false;
+            root.llmTestResult = msg;
+            root.llmTestSeq += 1;
+            if (msg.id) root.resolvePending(msg.id, msg);
+            root.markCapability("llm.test", "supported");
+            break;
         default:
             if (msg.id) root.resolvePending(msg.id, msg, false);
             break;
@@ -526,10 +538,10 @@ Singleton {
     }
 
     function secretPlaceholder(path, hint) {
-        if (!root.configLoaded) return "读取中…";
-        if (!root.secretStored(path)) return (hint || "未设置");
-        if (root.secretMaskedOnly(path)) return "已保存（daemon 只回传掩码，不回显）";
-        return "已保存";
+        if (!root.configLoaded) return I18n.t("读取中…");
+        if (!root.secretStored(path)) return (hint || I18n.t("未设置"));
+        if (root.secretMaskedOnly(path)) return I18n.t("已保存（daemon 只回传掩码，不回显）");
+        return I18n.t("已保存");
     }
 
     // Read a config value with a fallback (daemon may not have answered yet).
@@ -552,12 +564,12 @@ Singleton {
                 root.configDirty = false;
                 const ok = !(msg && msg.ok === false);
                 if (!ok) {
-                    root.noteError((msg.errors && msg.errors.length ? msg.errors.join("；") : "配置被 daemon 拒绝"));
+                    root.noteError((msg.errors && msg.errors.length ? msg.errors.join("；") : I18n.t("配置被 daemon 拒绝")));
                 }
                 if (onDone) onDone(ok, msg);
             },
             onTimeout: function() {
-                root.noteError("config.set 未响应：当前 daemon 可能不支持配置写入");
+                root.noteError(I18n.t("config.set 未响应：当前 daemon 可能不支持配置写入"));
                 if (onDone) onDone(false, null);
             },
             onError: function(msg) {
@@ -582,7 +594,7 @@ Singleton {
         if (!root.connected) {
             const paths0 = [];
             for (let i = 0; i < entries.length; i++) paths0.push(entries[i].path);
-            root.markFieldStatus(paths0, "error", "daemon 未连接");
+            root.markFieldStatus(paths0, "error", I18n.t("daemon 未连接"));
             if (opts.onDone) opts.onDone(null);
             return paths0.join(",");
         }
@@ -599,7 +611,7 @@ Singleton {
             }
             node[parts[parts.length - 1]] = entries[i].value;
         }
-        root.markFieldStatus(paths, "pending", "写入中…");
+        root.markFieldStatus(paths, "pending", I18n.t("写入中…"));
         root.call("config.set", { patch: patch }, {
             timeoutMs: 2500,
             onReply: function(msg) {
@@ -607,11 +619,11 @@ Singleton {
                 if (opts.onDone) opts.onDone(msg);
             },
             onTimeout: function() {
-                root.markFieldStatus(paths, "error", "config.set 未响应（daemon 可能不支持写入）");
+                root.markFieldStatus(paths, "error", I18n.t("config.set 未响应（daemon 可能不支持写入）"));
                 if (opts.onDone) opts.onDone(null);
             },
             onError: function(msg) {
-                root.markFieldStatus(paths, "error", (msg && msg.message) || "写入失败");
+                root.markFieldStatus(paths, "error", (msg && msg.message) || I18n.t("写入失败"));
                 if (opts.onDone) opts.onDone(msg);
             },
         });
@@ -635,22 +647,22 @@ Singleton {
         for (let i = 0; i < paths.length; i++) {
             const path = paths[i];
             if (root.pathMatches(forbidden, path)) {
-                root.markFieldStatus([path], "forbidden", "daemon 未开放该配置（settings.js 白名单缺失）");
+                root.markFieldStatus([path], "forbidden", I18n.t("daemon 未开放该配置（settings.js 白名单缺失）"));
             } else if (root.pathMatches(restart, path)) {
-                root.markFieldStatus([path], "restart", "已写入，重启 daemon 后生效");
+                root.markFieldStatus([path], "restart", I18n.t("已写入，重启 daemon 后生效"));
             } else if (root.pathMatches(applied, path)) {
-                root.markFieldStatus([path], "applied", "已生效");
+                root.markFieldStatus([path], "applied", I18n.t("已生效"));
             } else if (Array.isArray(msg && msg.applied) && Array.isArray(msg && msg.restartRequired)
                        && applied.length === 0 && restart.length === 0 && forbidden.length === 0) {
                 // The daemon accepted and wrote the value but reported no apply
                 // path for it: it may need a restart or silently ignore it.
-                root.markFieldStatus([path], "unknown", "已写入 · daemon 未报告是否生效");
+                root.markFieldStatus([path], "unknown", I18n.t("已写入 · daemon 未报告是否生效"));
             } else if (msg && msg.ok === false) {
-                root.markFieldStatus([path], "forbidden", "daemon 拒绝写入");
+                root.markFieldStatus([path], "forbidden", I18n.t("daemon 拒绝写入"));
             } else if (errors.length > 0) {
                 root.markFieldStatus([path], "error", String(errors[0]));
             } else {
-                root.markFieldStatus([path], "applied", "已生效");
+                root.markFieldStatus([path], "applied", I18n.t("已生效"));
             }
         }
     }
@@ -716,7 +728,7 @@ Singleton {
             },
             onError: function(msg) {
                 root.micRunning = false;
-                root.noteError(msg.message || "麦克风测试启动失败");
+                root.noteError(msg.message || I18n.t("麦克风测试启动失败"));
             },
         });
     }
@@ -832,12 +844,40 @@ Singleton {
             },
             onTimeout: function() {
                 root.homeTestRunning = false;
-                root.homeTestResult = { ok: false, message: "daemon 没有响应连接测试（当前 daemon 可能不支持 home.test）" };
+                root.homeTestResult = { ok: false, message: I18n.t("daemon 没有响应连接测试（当前 daemon 可能不支持 home.test）") };
             },
             onError: function(msg) {
                 root.homeTestRunning = false;
-                root.homeTestResult = { ok: false, message: (msg && msg.message) || "连接测试失败" };
+                root.homeTestResult = { ok: false, message: (msg && msg.message) || I18n.t("连接测试失败") };
                 if (msg && msg.code === "unsupported") root.markCapability("home.test", "unsupported");
+            },
+        });
+    }
+
+    // --------------------------------------------------------- generic llm
+    // Draft values are allowed so "test before save" works; the daemon overlays
+    // them on the saved effective config. A masked key ("***") means the daemon
+    // should use the saved key.
+    function llmTest(draft) {
+        root.llmTestRunning = true;
+        root.llmTestResult = ({});
+        const params = {};
+        if (draft && typeof draft === "object") params.llm = draft;
+        root.call("llm.test", params, {
+            timeoutMs: 12000,
+            onReply: function(msg) {
+                root.llmTestRunning = false;
+                root.llmTestResult = msg;
+                if (msg && msg.type === "llm.test") root.markCapability("llm.test", "supported");
+            },
+            onTimeout: function() {
+                root.llmTestRunning = false;
+                root.llmTestResult = { ok: false, message: I18n.t("daemon 没有响应 LLM 连接测试（当前 daemon 可能不支持 llm.test）") };
+            },
+            onError: function(msg) {
+                root.llmTestRunning = false;
+                root.llmTestResult = { ok: false, message: (msg && msg.message) || I18n.t("LLM 连接测试失败") };
+                if (msg && msg.code === "unsupported") root.markCapability("llm.test", "unsupported");
             },
         });
     }
@@ -859,7 +899,7 @@ Singleton {
             onError: function(msg) {
                 root.restartState = "unsupported";
                 root.restartPending = false;
-                root.noteError(msg.message || "重启请求失败");
+                root.noteError(msg.message || I18n.t("重启请求失败"));
             },
         });
     }
@@ -883,9 +923,9 @@ Singleton {
         const h = Math.floor(s / 3600);
         const m = Math.floor((s % 3600) / 60);
         const sec = s % 60;
-        if (h > 0) return h + " 小时 " + m + " 分";
-        if (m > 0) return m + " 分 " + sec + " 秒";
-        return sec + " 秒";
+        if (h > 0) return h + I18n.t(" 小时 ") + m + I18n.t(" 分");
+        if (m > 0) return m + I18n.t(" 分 ") + sec + I18n.t(" 秒");
+        return sec + I18n.t(" 秒");
     }
     function errorTime(err) {
         if (!err) return 0;

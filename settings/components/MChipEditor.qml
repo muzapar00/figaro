@@ -10,10 +10,10 @@ Item {
     id: root
 
     property var values: []
-    property string placeholder: "输入短语后回车"
+    property string placeholder: I18n.t("输入短语后回车")
     property bool editable: true
-    property string addLabel: "添加"
-    property string emptyText: "（空）"
+    property string addLabel: I18n.t("添加")
+    property string emptyText: I18n.t("（空）")
 
     signal edited(var values)
 

@@ -1,6 +1,46 @@
 # Changelog
 
-## 未发布
+## v1.0.0（2026-11-11）
+
+第一个正式版：面向普通用户的 Linux 桌面语音助手。发布物包含源码、deb/AUR/rpm 安装包，
+设置界面三语、新手引导、通用 LLM、按地区选择的模型下载，以及独立的隐私说明。
+
+### 三语 GUI 与引导
+- 设置窗口与新手引导支持**简体中文 / 繁體中文 / English**（672 条键，默认跟随系统语言，
+  设置里可切换，无需重启；繁中使用台湾用语）。
+- 新手引导重做为 9 步大字流程：费加罗是什么 → 隐私 → 语言 → 地区 → 长期记忆（默认关闭，
+  含数据流说明）→ LLM 服务 → 语音服务 → 麦克风/F9/声纹自检 → 完成总结。
+- 服务商引导卡片：DeepSeek / OpenAI / Gemini / MiniMax，附官方取 key 链接、"推荐服务商"小字
+  与 ⓘ 说明（不提供托管服务、key 只存本机 600、可选本地 OpenAI 兼容端点）。
+
+### 通用 LLM API
+- 新增 `llm.provider`：DeepSeek / OpenAI / Gemini / Custom（OpenAI 兼容，含 Ollama/vLLM）；
+  OpenAI 兼容与 Gemini 原生流式、工具调用都可用；旧 `deepseek.*` 配置自动兼容。
+- 设置里可切换 provider/baseUrl/model/key 并测试连接（`llm.test`，key 不回显、错误脱敏）；
+  SSRF 防护（仅 https 或回环 http）、重定向限制、401/5xx/429/超时语义统一。
+
+### 按地区的模型下载
+- `scripts/fetch-models.sh --region=mainland|hmt|overseas|auto`：
+  中国大陆自动国内源（ModelScope / hf-mirror / ghproxy，失败自动回退）；
+  中国港澳台与海外走官方源；`auto` 只按 locale/时区猜且提示可覆盖。
+- `--probe` 打印最终目录、地区、源顺序与每个 artifact 的 URL 并做小文件校验；
+  `--models-dir/FIGARO_MODELS_DIR` 支持包安装到 `~/.local/share/figaro/models`。
+
+### Linux 打包与兼容性
+- 新增 deb / AUR / rpm 打包（`packaging/`）与 CI release workflow（tag v* 自动构建并上传）；
+  包内不含模型、config 或 key；首次启动由 `figaro install-user` / GUI 引导完成用户级安装。
+- `figaro install-user`：幂等安装 QML、systemd user units、desktop、图标，缺配置时生成脚手架，
+  **绝不覆盖已有 config/key**。
+- 平台兼容：KDE Plasma 6 Wayland 正式支持；非 KDE 跳过 KOS 玻璃、半透明回退；
+  截图回退链 spectacle → grim → portal → gnome-screenshot → scrot；`figaro doctor` 增加
+  OS/桌面/layer-shell/portal/PipeWire/截图后端检查（矩阵见 `docs/platform-support.md`）。
+- systemd units 去掉 KDE/wayland-0 写死，install-user 按当前会话渲染。
+
+### 隐私与自由
+- 新增 `docs/privacy.md`：数据流向、长期记忆的数据披露、key 存储、数据删除方法；无遥测/账号/托管服务。
+- 长期记忆（LightRAG，MIT）自动入库默认关闭；开启前明确说明会发送文本给 LLM/Embedding 服务商。
+- 依赖与模型许可补入 `THIRD_PARTY_NOTICES.md`。
+
 
 ### 唤醒/倾听审计修复
 

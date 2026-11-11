@@ -1,0 +1,149 @@
+# Maintainer: muzapar00 <mzpr00@163.com>
+# Figaro AUR package.
+#
+# Source is the git tag v$pkgver (not a release tarball) so the package carries
+# the exact released tree; the Node production dependencies are installed from
+# package-lock.json during build because the sherpa-onnx native binding is a
+# platform package and cannot be vendored sensibly for every arch.
+#
+# Models are NOT bundled: scripts/fetch-models.sh downloads them at run time
+# (region-aware mirrors), and they live in the user's data directory.
+#
+# Layout matches the deb/rpm packages:
+#   /usr/lib/figaro/{bin,src,node_modules,scripts,qml,settings,systemd,assets,config,package.json}
+#   /usr/bin/{figaro,figaro-ui,figaro-settings}
+#   /usr/lib/systemd/user/{figaro,figaro-ui}.service
+#   /usr/share/{applications,icons}
+#   /usr/share/doc/figaro, /usr/share/licenses/figaro
+pkgname=figaro
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="System-level voice assistant for the Linux desktop (DeepSeek brain, local bilingual wake word, MiniMax streaming speech)"
+arch=('x86_64')
+url="https://github.com/muzapar00/figaro"
+license=('GPL-3.0-or-later')
+depends=('nodejs>=22' 'quickshell' 'pipewire' 'xdg-desktop-portal')
+makedepends=('git' 'nodejs' 'npm')
+optdepends=(
+  'xdg-desktop-portal-kde: global-shortcut and screenshot portal backend on KDE'
+  'xdg-desktop-portal-wlr: global-shortcut portal backend on sway/Hyprland'
+  'spectacle: screenshot backend on KDE (preferred, then portal fallback)'
+  'grim: screenshot backend on wlroots compositors'
+  'ffmpeg: downscaling images for the view_image tool'
+  'curl: model downloader (scripts/fetch-models.sh)'
+  'tar: model downloader (scripts/fetch-models.sh)'
+  'bzip2: model downloader (scripts/fetch-models.sh)'
+  'python: optional LightRAG long-term-memory service'
+)
+options=('!strip')
+source=("git+${url}.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/${pkgname}"
+  npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+}
+
+check() {
+  cd "${srcdir}/${pkgname}"
+  node --test tests/agent/*.test.js
+}
+
+package() {
+  cd "${srcdir}/${pkgname}"
+
+  install -d "${pkgdir}/usr/lib/${pkgname}"
+  for tree in bin src scripts qml settings systemd assets config; do
+    cp -a "${tree}" "${pkgdir}/usr/lib/${pkgname}/"
+  done
+  cp -a package.json package-lock.json "${pkgdir}/usr/lib/${pkgname}/"
+  cp -a node_modules "${pkgdir}/usr/lib/${pkgname}/node_modules"
+
+  # Runtime-only payload: dev helpers and self-test evidence stay out.
+  rm -rf "${pkgdir}/usr/lib/${pkgname}/qml/test"
+  rm -f  "${pkgdir}/usr/lib/${pkgname}/qml/ctl.sh" "${pkgdir}/usr/lib/${pkgname}/qml/deploy.sh"
+  rm -rf "${pkgdir}/usr/lib/${pkgname}/settings/test"
+  rm -f  "${pkgdir}/usr/lib/${pkgname}/settings/"*.sh
+  # Never ship a real config or secrets.
+  rm -f  "${pkgdir}/usr/lib/${pkgname}/config/config.json"
+
+  chmod 755 "${pkgdir}/usr/lib/${pkgname}/bin/figaro"
+  find "${pkgdir}/usr/lib/${pkgname}/scripts" -name '*.sh' -exec chmod 755 {} +
+
+  # --- launchers (paths rendered from the shared packaging templates) --------
+  install -d "${pkgdir}/usr/bin"
+  for launcher in figaro figaro-ui figaro-settings; do
+    sed -e "s|@LIBDIR@|/usr/lib/${pkgname}|g" \
+        -e "s|@DOCDIR@|/usr/share/doc/${pkgname}|g" \
+        "packaging/common/launcher-${launcher}.sh" > "${pkgdir}/usr/bin/${launcher}"
+    chmod 755 "${pkgdir}/usr/bin/${launcher}"
+  done
+
+  # --- systemd user units ----------------------------------------------------
+  install -d "${pkgdir}/usr/lib/systemd/user"
+  for unit in figaro figaro-ui; do
+    sed -e "s|@DOCDIR@|/usr/share/doc/${pkgname}|g" \
+        "packaging/common/systemd-user/${unit}.service" > "${pkgdir}/usr/lib/systemd/user/${unit}.service"
+    chmod 644 "${pkgdir}/usr/lib/systemd/user/${unit}.service"
+  done
+
+  # --- desktop entry + icons -------------------------------------------------
+  install -Dm644 packaging/common/desktop/figaro-settings.desktop \
+    "${pkgdir}/usr/share/applications/figaro-settings.desktop"
+  for size in 512 256 128 64 48 32; do
+    [[ -f "assets/icons/figaro-${size}.png" ]] || continue
+    install -Dm644 "assets/icons/figaro-${size}.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/figaro.png"
+  done
+
+  # --- docs + license --------------------------------------------------------
+  install -d "${pkgdir}/usr/share/doc/${pkgname}"
+  install -m644 README.md README.zh-CN.md CHANGELOG.md THIRD_PARTY_NOTICES.md \
+    "${pkgdir}/usr/share/doc/${pkgname}/"
+  for doc in platform-support.md ipc.md motion.md privacy.md rag.md voice-interaction.md smarthome-integration.md; do
+    [[ -f "docs/${doc}" ]] && install -m644 "docs/${doc}" "${pkgdir}/usr/share/doc/${pkgname}/${doc}"
+  done
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+  install -Dm644 packaging/deb/README.Debian "${pkgdir}/usr/share/doc/${pkgname}/README.package"
+}
+
+post_install() {
+  cat <<'EOF'
+
+==================================================================
+ 费加罗已安装。还差最后一步（不要用 sudo）：
+
+     figaro install-user
+
+ 它会以你的用户身份创建 ~/.config/quickshell/figaro（overlay/设置面板 QML）、
+ ~/.config/figaro/config.json（脚手架，key 留空）、启用 systemd user units。
+ 也可以直接点应用菜单里的「费加罗」，首次启动会自动完成并打开设置。
+
+ 之后：figaro doctor · figaro ask "现在几点？"
+==================================================================
+
+EOF
+}
+
+post_upgrade() {
+  cat <<'EOF'
+
+费加罗已升级。用户级 QML/units 需要刷新：
+     figaro install-user
+（已有的 ~/.config/figaro/config.json 与 API key 不会被覆盖。）
+
+EOF
+}
+
+pre_remove() {
+  cat <<'EOF'
+
+移除前请以桌面用户执行（否则 user units 会指向已删除的文件）：
+     systemctl --user disable --now figaro figaro-ui
+     figaro install-user --help   # 查看用户级文件位置
+
+用户数据不会被删除：~/.config/figaro（key/声纹）、~/.local/share/figaro/models。
+
+EOF
+}

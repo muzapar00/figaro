@@ -181,7 +181,10 @@ export const DEFAULTS = {
     envFile: '', // '' => ~/.local/share/figaro/lightrag/.env
     mode: 'mix', // mix | local | global | hybrid | naive
     timeoutMs: 1500, // recall budget (voice latency); raise for slower hosts
-    autoIngest: true, // index each finished exchange in the background
+    // Privacy default: OFF. Auto-ingest sends conversation text to the
+    // configured LLM/embedding providers; enable it in the guided setup only
+    // after the user has seen that disclosure.
+    autoIngest: false,
   },
   sfx: {
     // Short, quiet UI sounds played next to (never over) the voice. They are
@@ -191,6 +194,176 @@ export const DEFAULTS = {
     events: { listenStart: true, listenEnd: true, answerDone: true, dismiss: true, error: true },
   },
 };
+
+// --- LLM providers -----------------------------------------------------------
+// One generic shape for every chat backend. `llm.*` is authoritative at runtime;
+// when it is not configured the legacy `deepseek.*` block is used to derive it,
+// so a 0.x config.json keeps working as-is.
+export const LLM_PROVIDERS = Object.freeze(['deepseek', 'openai', 'gemini', 'custom']);
+
+export const LLM_PROVIDER_DEFAULTS = Object.freeze({
+  deepseek: Object.freeze({
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-flash',
+    apiKeys: Object.freeze(['FIGARO_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY']),
+  }),
+  openai: Object.freeze({
+    // Includes /v1: OpenAI-compatible clients POST {baseUrl}/chat/completions.
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    apiKeys: Object.freeze(['FIGARO_OPENAI_API_KEY', 'OPENAI_API_KEY']),
+  }),
+  gemini: Object.freeze({
+    // Gemini is not OpenAI-compatible; the native client appends
+    // /v1beta/models/{model}:streamGenerateContent itself.
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-2.5-flash',
+    apiKeys: Object.freeze(['FIGARO_GEMINI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY']),
+  }),
+  custom: Object.freeze({
+    // Any OpenAI-compatible server (Ollama, vLLM, LM Studio, a proxy...).
+    baseUrl: '',
+    model: '',
+    apiKeys: Object.freeze(['FIGARO_LLM_API_KEY', 'LLM_API_KEY']),
+  }),
+});
+
+export function isLlmProvider(value) {
+  return typeof value === 'string' && LLM_PROVIDERS.includes(value.trim().toLowerCase());
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeBaseUrl(value) {
+  return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
+}
+
+function finiteInt(value, { min = 0 } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  const i = Math.floor(n);
+  return i >= min ? i : undefined;
+}
+
+/**
+ * Provider for an `llm` block that does not name one: an explicit non-DeepSeek
+ * baseUrl means "some OpenAI-compatible server", anything else stays DeepSeek.
+ */
+function inferLlmProvider(llm) {
+  if (nonEmptyString(llm?.provider)) return llm.provider.trim().toLowerCase();
+  const base = nonEmptyString(llm?.baseUrl) ? llm.baseUrl.trim() : '';
+  if (base.length > 0 && !/^https?:\/\/(api\.)?deepseek\.com(\/|$)/i.test(base)) return 'custom';
+  return '';
+}
+
+/**
+ * Effective LLM settings for a config object.
+ *
+ * Precedence: `config.llm.*` > legacy `config.deepseek.*` (only when the
+ * provider is DeepSeek, so a DeepSeek key never gets sent to another vendor) >
+ * per-provider preset defaults. Pure function: environment variables are
+ * applied by loadConfig() before this runs, so tests can call it directly.
+ *
+ * @param {{deepseek?: object, llm?: object}} [config]
+ * @returns {{provider: string, configured: boolean, baseUrl: string, model: string,
+ *   apiKey: string, reasoningEffort: string, temperature?: number,
+ *   maxToolRounds?: number, maxRetries?: number, requestTimeoutMs?: number,
+ *   requestOptions: object}}
+ */
+export function resolveLlmConfig(config = {}) {
+  const deepseek = isPlainObject(config?.deepseek) ? config.deepseek : {};
+  const explicit = isPlainObject(config?.llm) ? config.llm : {};
+  const configured =
+    nonEmptyString(explicit.provider) ||
+    nonEmptyString(explicit.baseUrl) ||
+    nonEmptyString(explicit.model) ||
+    nonEmptyString(explicit.apiKey);
+
+  const provider = (nonEmptyString(explicit.provider) ? explicit.provider.trim().toLowerCase() : '')
+    || inferLlmProvider(explicit)
+    || 'deepseek';
+  const preset = LLM_PROVIDER_DEFAULTS[provider] ?? LLM_PROVIDER_DEFAULTS.custom;
+  const deriveLegacy = provider === 'deepseek';
+
+  const baseUrl = normalizeBaseUrl(
+    nonEmptyString(explicit.baseUrl)
+      ? explicit.baseUrl
+      : deriveLegacy && nonEmptyString(deepseek.baseUrl)
+        ? deepseek.baseUrl
+        : preset.baseUrl,
+  );
+  const model = (
+    nonEmptyString(explicit.model)
+      ? explicit.model.trim()
+      : deriveLegacy && nonEmptyString(deepseek.model)
+        ? String(deepseek.model).trim()
+        : preset.model
+  ).replace(/^models\//, '');
+  const apiKey = nonEmptyString(explicit.apiKey)
+    ? explicit.apiKey.trim()
+    : deriveLegacy && nonEmptyString(deepseek.apiKey)
+      ? String(deepseek.apiKey).trim()
+      : '';
+
+  const pick = (key, legacy, fallback) => {
+    const value = explicit[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+    if (deriveLegacy && legacy !== undefined && legacy !== null && legacy !== '') return legacy;
+    return fallback;
+  };
+
+  const reasoningEffort = String(pick('reasoningEffort', deepseek.reasoningEffort, '') ?? '').trim();
+  const temperatureRaw = pick('temperature', deepseek.temperature, undefined);
+  const temperature = typeof temperatureRaw === 'number' && Number.isFinite(temperatureRaw) ? temperatureRaw : undefined;
+  const maxToolRounds = finiteInt(pick('maxToolRounds', deepseek.maxToolRounds, undefined), { min: 1 });
+  const maxRetries = finiteInt(pick('maxRetries', deepseek.maxRetries, undefined));
+  const requestTimeoutMs = finiteInt(pick('requestTimeoutMs', deepseek.requestTimeoutMs, undefined), { min: 1 });
+  const requestOptionsRaw = pick('requestOptions', deepseek.requestOptions, {});
+  const requestOptions = isPlainObject(requestOptionsRaw) ? { ...requestOptionsRaw } : {};
+
+  return {
+    provider,
+    configured,
+    baseUrl,
+    model,
+    apiKey,
+    reasoningEffort,
+    temperature,
+    maxToolRounds,
+    maxRetries,
+    requestTimeoutMs,
+    requestOptions,
+  };
+}
+
+/** Env overrides for the generic LLM config; explicit config wins for most
+ *  fields, while FIGARO_LLM_API_KEY wins over the file (matching how
+ *  FIGARO_DEEPSEEK_API_KEY has always worked). */
+function llmWithEnv(fileLlm) {
+  const out = isPlainObject(fileLlm) ? { ...fileLlm } : {};
+  if (!nonEmptyString(out.provider) && isLlmProvider(process.env.FIGARO_LLM_PROVIDER)) {
+    out.provider = process.env.FIGARO_LLM_PROVIDER;
+  }
+  if (!nonEmptyString(out.baseUrl) && nonEmptyString(process.env.FIGARO_LLM_BASE_URL)) {
+    out.baseUrl = process.env.FIGARO_LLM_BASE_URL;
+  }
+  if (!nonEmptyString(out.model) && nonEmptyString(process.env.FIGARO_LLM_MODEL)) {
+    out.model = process.env.FIGARO_LLM_MODEL;
+  }
+  const provider = isLlmProvider(out.provider) ? out.provider.trim().toLowerCase() : '';
+  const providerKey = provider
+    ? (LLM_PROVIDER_DEFAULTS[provider]?.apiKeys ?? []).map((name) => process.env[name]).find(nonEmptyString) ?? ''
+    : '';
+  const apiKey = nonEmptyString(process.env.FIGARO_LLM_API_KEY)
+    ? process.env.FIGARO_LLM_API_KEY
+    : nonEmptyString(out.apiKey)
+      ? out.apiKey
+      : providerKey;
+  if (apiKey) out.apiKey = apiKey;
+  return out;
+}
 
 function isPlainObject(v) {
   return v && typeof v === 'object' && !Array.isArray(v);
@@ -218,12 +391,40 @@ export function loadConfigFile() {
 }
 
 export function loadConfig() {
-  const cfg = deepMerge(DEFAULTS, loadConfigFile());
+  const fileConfig = loadConfigFile();
+  const cfg = deepMerge(DEFAULTS, fileConfig);
   // Secrets may also come from the environment (preferred for CI/headless use).
   cfg.deepseek.apiKey =
     process.env.FIGARO_DEEPSEEK_API_KEY || cfg.deepseek.apiKey || process.env.DEEPSEEK_API_KEY || '';
   cfg.minimax.apiKey =
     process.env.FIGARO_MINIMAX_API_KEY || cfg.minimax.apiKey || process.env.MINIMAX_API_KEY || '';
+
+  // Generic LLM: an explicit `llm` block (file or env) wins; otherwise it is
+  // derived from the legacy `deepseek` block. Always fully populated, so the
+  // agent and the settings GUI can read one canonical object.
+  cfg.llm = resolveLlmConfig({
+    deepseek: cfg.deepseek,
+    llm: llmWithEnv(isPlainObject(fileConfig.llm) ? fileConfig.llm : undefined),
+  });
+
+  // Backward compatibility: old call sites (daemon health/model log, doctor,
+  // tool-loop tunables) still read `config.deepseek.*`. Mirror the effective
+  // model/tunables there so they keep reporting the truth after migrating to
+  // `llm`. Never mirror the key of a non-compatible provider (Gemini speaks a
+  // different protocol, so pointing the DeepSeek probe at it would only lie).
+  const effective = cfg.llm;
+  cfg.deepseek = {
+    ...cfg.deepseek,
+    model: effective.model || cfg.deepseek.model,
+    maxToolRounds: effective.maxToolRounds ?? cfg.deepseek.maxToolRounds,
+    maxRetries: effective.maxRetries ?? cfg.deepseek.maxRetries,
+    ...(effective.reasoningEffort ? { reasoningEffort: effective.reasoningEffort } : {}),
+    ...(effective.requestTimeoutMs !== undefined ? { requestTimeoutMs: effective.requestTimeoutMs } : {}),
+    ...(effective.provider !== 'gemini'
+      ? { baseUrl: effective.baseUrl || cfg.deepseek.baseUrl, apiKey: effective.apiKey || cfg.deepseek.apiKey }
+      : {}),
+  };
+
   cfg.ui.socket =
     cfg.ui.socket ||
     process.env.FIGARO_SOCKET ||

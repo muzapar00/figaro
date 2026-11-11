@@ -1,16 +1,18 @@
 # 费加罗设置 / 自测面板（`qs -c figaro-settings`）
 
 macOS 系统设置风格的独立 Quickshell 窗口，既是设置面板，也是**误唤醒/环境音/麦克风/识别**
-的完整自测工具。常用页只保留 4 个（概览、引导测试、外观、连接），其余 6 个（唤醒、交互、
-麦克风、语音、识别、诊断）收进侧边栏「高级」折叠组。
+的完整自测工具。常用页只保留 5 个（概览、新手引导、模型服务、外观、连接），其余 6 个（唤醒、
+交互、麦克风、语音、识别、诊断）收进侧边栏「高级」折叠组；界面支持简体中文 / 繁體中文 / English
+三语，默认跟随系统 locale。
 
 ```
 settings/
 ├── shell.qml              # Quickshell 入口：FloatingWindow + IpcHandler 自测钩子
-├── App.qml                # 标题栏 + sidebar + 七页堆栈
+├── App.qml                # 标题栏 + sidebar + 页面堆栈（5 常用 + 6 高级）
 ├── Theme.qml / Ipc.qml    # 单例：macOS 深色主题 / NDJSON IPC 客户端（docs/ipc.md §3+§3.1）
-├── components/            # 自绘控件：Toggle/Slider/Segmented/电平条/下拉/卡片/交通灯…
-├── pages/                 # 10 个分区（向导 / 外观 / 连接 / 交互 / 唤醒 / 麦克风 / 语音 / 识别 / 诊断 / 概览）
+├── I18n.qml / i18n/       # 三语单例 + en.js / zh-TW.js 词表（source-string 键，672 条）
+├── components/            # 自绘控件：Toggle/Slider/Segmented/电平条/下拉/卡片/交通灯/信息弹窗…
+├── pages/                 # 11 个分区（新手引导 / 模型服务 / 外观 / 连接 / 唤醒 / 交互 / 麦克风 / 语音 / 识别 / 诊断 / 概览）
 ├── kwin-noborder.js       # 运行时 KWin 脚本：去掉服务端标题栏（否则会和 macOS 标题栏重复）
 ├── ctl.sh                 # start/stop/restart/logs/deploy/install-desktop
 └── test/
@@ -54,7 +56,7 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 `shoot.sh` 会驱动 GUI 做：唤醒测试（KWS 分数/命中/延迟）、环境音抑制统计（误唤醒表格 +
 CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 partial vs final 与字级正确率、
 诊断 JSON 导出、复制日志；task-8 的打断/等待窗口/短语/中英唤醒词/音色写回；task-12 的
-外观四字段、两个 API Key（占位值）、ASR 模型路径、音效音量、以及**完整的 5 步引导向导**
+外观四字段、两个 API Key（占位值）、ASR 模型路径、音效音量，以及**完整的 9 步新手引导**
 （截图 20–31，断言向导 5/5 通过）。最后断言状态并打印 PASS/FAIL；也可以用
 `qs ipc call figaro-settings writeB64 <path> <base64-json>` 单独写一个字段。
 
@@ -107,8 +109,8 @@ CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 
   encoder/decoder/joiner/tokens 轻量校验；写入后需重启 daemon。
 - **音效**（`sfx.enabled` / `sfx.volume`）：语音页新增开关 + 0–1 音量滑块（默认 0.35），
   说明“音效比语音低 4–6 dB，不会盖住说话”。
-- **引导测试**（新页，概览页有入口）：5 步卡片式向导（安静检查→麦克风增益→唤醒词→
-  一句话转写→音色试听），顶部步骤进度、每步一个主按钮与结果状态，完成显示“全部通过 ✓”。
+- **新手引导**（概览页有入口）：v1.0 已升级为 9 步大字版（认识费加罗 / 隐私 / 语言 / 地区 /
+  长期记忆 / 模型服务 / 语音服务 / 自检 / 完成），详见下一节。
 - **简化界面**：侧边栏只保留 4 个常用页，其余 6 页在「高级」折叠组；唤醒页的热键/防抖、
   Mic 页的底噪测量、语音页的语速/唤醒应答都收进「高级」折叠卡片。
 
@@ -159,6 +161,70 @@ CSV）、麦克风实时电平与底噪测量、TTS 首字延迟、识别流式 
 当前会话里 Qt **software** 后端启动 Quickshell 会段错误（`QWaylandShmBackingStore` 双绘制，
 未修改的 HEAD 基线同样崩），因此 `settings/test/dev.sh` 新增 `FIGARO_SETTINGS_GL=1` 走 GPU；
 `ctl.sh` 仍保留 `FIGARO_SETTINGS_GL=1` 开关。部署桌面入口默认 software，需要 Lead 决定是否切默认。
+
+## v1.0：三语 i18n / 新手引导 / 服务商引导 / 通用 LLM（task-13）
+
+### 三语界面（zh-CN / zh-TW / en）
+- `I18n.qml` 单例 + `i18n/en.js`、`i18n/zh-TW.js` 词表，键是 **zh-CN 源字符串**（gettext 风格）：
+  QML 里写 `I18n.t("唤醒")`，运行时按当前语言查表，查不到回退源串。
+- 语言来源：`LC_ALL`→`LC_MESSAGES`→`LANG`→`LANGUAGE`；含 `hant`/`_tw`/`_hk`/`_mo` → zh-TW，
+  含 `en`（词边界）→ en，否则 zh-CN。用户可在「外观 → 语言」或新手引导第 3 步切换，选择写入
+  `~/.config/figaro/settings-ui.json`，重启设置窗口后保留（**不写 daemon config**）。
+- 现有 672 条键三语齐全；`settings/test/shoot.sh` 会断言：每个 QML 源串在 en/tw 都有条目、
+  en 不含中文、zh-TW 不含大陆用语（设置/麦克风/语音/连接/唤醒/保存/默认…）、QML 里没有
+  未包 `I18n.t()` 的用户可见中文（配置数据值如唤醒词除外）。
+- 新增字符串流程：QML 里先写中文源串并用 `I18n.t("…")` 包起来，然后在 `i18n/en.js` /
+  `i18n/zh-TW.js` 里各补一条；繁中不要直接简繁转换（用台湾用语：設定/麥克風/語音/連線/喚醒/
+  聲紋/儲存/預設…）。
+
+### 新手引导（9 步，可逐步跳过）
+1. 认识费加罗（大字说明 + 为什么需要你自己的 API Key）；2. 隐私（本地唤醒/识别、无遥测、Key 只
+在本机 600、长记忆目录可删）；3. 语言；4. 地区（中国大陆 / 中国港澳台 / 海外及其他 →
+写 `models.region = mainland|hmt|overseas`，影响脚本下载模型的镜像）；5. **长期记忆**（默认关闭，
+开关写 `rag.autoIngest`，ⓘ 说明对话摘要会发给所选 LLM/Embedding 服务商、我们没有服务器、数据
+在本机）；6. 模型服务（选 DeepSeek/OpenAI/Gemini/Custom + 填 Key，可稍后；写 `llm.*`）；
+7. 语音服务（MiniMax Key，可稍后，写 `minimax.apiKey` 兼容旧键）；8. 自检（3 秒麦克风底噪 +
+F9/声纹状态，可跳过）；9. 完成总结（语言/地区/记忆/模型/语音/自检一览 + 重来/进入）。
+
+### 服务商引导卡片
+- 「模型服务」页：DeepSeek / OpenAI / Gemini 三张卡片 + Custom；「语音」页：MiniMax 卡片。
+- 每张卡带「推荐服务商」小字和圆圈 ⓘ，点开说明：**我们无法直接提供高质量实时的 LLM/TTS
+  服务，需要你自己向服务商申请 API Key；Key 只保存在本机（config.json 权限 600）、不上传、
+  不写日志；这些是推荐服务商，非唯一选择；Custom 可填本地/第三方 OpenAI 兼容端点（Ollama /
+  vLLM 等）**。卡片按钮直接打开官方 Key 页面：[DeepSeek](https://platform.deepseek.com/api_keys)、
+  [OpenAI](https://platform.openai.com/api-keys)、[Gemini](https://aistudio.google.com/app/apikey)、
+  [MiniMax](https://platform.minimaxi.com/user-center/basic-information/interface-key)。
+
+### 通用 LLM 设置（模型服务页）
+- 字段：provider（DeepSeek/OpenAI/Gemini/Custom OpenAI 兼容）、baseUrl、model、apiKey（密码框，
+  只写不读，`***` 不覆盖原值）；高级折叠：reasoningEffort、temperature。写 `config.llm.*`，
+  旧 `deepseek.*` 保持不动（后端会自动派生/回退旧 key）。
+- 「测试连接」走 daemon 的 `llm.test` IPC（GUI 不直接发网络请求）：settings.js 动态导入
+  `src/agent/llm.js` 的 `testLlmConnection({config, llm, timeoutMs})`，支持**未保存草稿**
+  （provider/baseUrl/model/apiKey overlay）；返回 `{ok, provider, baseUrl, model, status,
+  message, latencyMs, apiKeyConfigured}`，key 绝不回显/写日志（错误串里的 sk- 也会被打码）。
+  daemon 未加载新版 settings.js 时，GUI 会显示"尚未提供 LLM 连接测试"。
+  与后端已对齐并端到端验证（真实 `testLlmConnection` + 本地 mock）：OpenAI 兼容探测
+  `GET ${baseUrl}/models` + Bearer，Gemini 探测 `GET ${baseUrl}/v1beta/models?pageSize=1&key=…`，
+  默认 8s 超时；custom 的 `/models` 404 视为"服务可达"（Ollama/LM Studio 常见）；401/403/429/5xx/
+  超时为 ok:false + 中文 message，均不含 key（Gemini URL key 已打码）；`llm` 草稿覆盖不修改已保存
+  config，GUI 传 `***` 时 daemon 用已保存 key；custom 允许无 key（本地服务），其余三家缺 key 直接失败。
+- 与后端约定：`llm.provider: deepseek|openai|gemini|custom`、`llm.baseUrl/model/apiKey`、
+  可选 `reasoningEffort/temperature/maxToolRounds/maxRetries/requestTimeoutMs/requestOptions`；
+  `models.region: mainland|hmt|overseas`（不写=auto）；`rag.autoIngest` 默认 false。
+- settings.js 白名单新增 `llm.provider/baseUrl/model/apiKey/reasoningEffort/temperature`、
+  `models.region`、`rag.autoIngest`；`llm.apiKey` 加入 SECRET_PATHS（config.get 掩码）。
+
+### 验收截图（`test/out/`）
+`26-wizard-welcome`…`35-wizard-summary`（9 步引导）、`46-i18n-en-overview` / `47-i18n-en-wizard`
+/ `48-i18n-tw-overview` / `49-i18n-tw-wake`（三语切换）、`50-llm-top` / `51-llm-test-ok` /
+`52-llm-providers` / `53-llm-provider-info`（LLM 页 + 推荐服务商 + ⓘ 弹窗）、
+`54-voice-minimax-provider` / `55-minimax-info`（语音页 MiniMax 卡片）。
+
+### 已知环境问题
+Qt **software** 后端在本会话里启动 Quickshell 会段错误（`QWaylandShmBackingStore` 双绘制，
+未修改的 HEAD 基线同样崩），所以 `settings/test/dev.sh` 支持 `FIGARO_SETTINGS_GL=1`；部署窗口
+用 GL 启动，`ctl.sh` 仍保留 software 默认，需 Lead 决定是否切换桌面入口默认后端。
 
 ## 待 Lead 集成（install.sh）
 

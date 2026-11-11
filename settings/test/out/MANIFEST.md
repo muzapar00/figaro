@@ -68,8 +68,12 @@ FIGARO_SETTINGS_IPC=config settings/test/shoot.sh
 | `23-api.png` | 连接（task-12） | DeepSeek / MiniMax 两个密码输入框；只写不读，占位显示“已保存（daemon 只回传掩码）”，DeepSeek 已生效、MiniMax 需重启 |
 | `24-asr-model.png` | 识别（task-12） | ASR 模型路径：默认“仓库自带（中英双语）”，可填绝对路径 + 目录校验 + 恢复默认，需重启生效 |
 | `25-sfx.png` | 语音（task-12） | 音效开关 + 音量滑块（50% 已生效）+ “比语音低 4–6 dB”说明 |
-| `26-wizard-step1.png` … `30-wizard-step5.png` | 引导测试（task-12） | 5 步向导的每一步：进度 1/5…5/5、主按钮、结果状态（安静/增益/唤醒命中/转写/试听） |
-| `31-wizard-summary.png` | 引导测试（task-12） | 全部通过 ✓ 汇总（5/5 pass）与“重来/回到概览” |
+| `26-wizard-welcome.png` … `35-wizard-summary.png` | 新手引导（v1.0） | 9 步引导：认识费加罗 / 隐私（无遥测、Key 只在本机）/ 语言 / 地区（大陆·港澳台·海外）/ 长期记忆（默认关闭 + ⓘ 说明）/ 模型服务 Key 引导 / MiniMax 语音 Key / 麦克风+热键+声纹自检 / 完成总结 |
+| `46-i18n-en-overview.png` / `47-i18n-en-wizard.png` | 三语（v1.0） | 英文界面：概览与新手引导（导航/标题/说明全部英文） |
+| `48-i18n-tw-overview.png` / `49-i18n-tw-wake.png` | 三语（v1.0） | 繁體中文（台灣用語）：概覽/連線/喚醒/聲紋/儲存等 |
+| `50-llm-top.png` / `51-llm-test-ok.png` | 通用 LLM（v1.0） | 模型服務頁：服务商选择、baseUrl/model/Key、测试连接成功 |
+| `52-llm-providers.png` / `53-llm-provider-info.png` | 服务商引导（v1.0） | DeepSeek/OpenAI/Gemini 推荐卡片（推荐服务商小字 + ⓘ）及说明弹窗 |
+| `54-voice-minimax-provider.png` / `55-minimax-info.png` | 服务商引导（v1.0） | 语音页 MiniMax 推荐卡片与 ⓘ 说明弹窗 |
 | `33-real-appearance-applied.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 ui.*：四个字段全部绿色「已生效」 |
 | `34-real-api-restart.png` | 真 daemon（task-12） | 真 daemon 代码实例上写两个 API Key（占位值）：DeepSeek 已生效、MiniMax 需重启 |
 | `35-real-model-restart.png` | 真 daemon（task-12） | 真 daemon 代码实例上写 `asr.modelDir`：显示「已写入 · 需重启 daemon」 |

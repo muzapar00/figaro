@@ -12,7 +12,7 @@ ShellRoot {
     FloatingWindow {
         id: win
         visible: true
-        title: "费加罗"
+        title: I18n.t("费加罗")
         color: Theme.contentBg
         implicitWidth: Theme.windowW
         implicitHeight: Theme.windowH

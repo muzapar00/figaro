@@ -140,10 +140,14 @@ Item {
     // The declaration lives in FigaroGlass.qml because a missing plugin must not
     // break the overlay: on machines without KOS the Loader fails, reports it
     // once, and the capsule keeps its own translucent background.
+    //
+    // KOS is KDE/KWin-only, so the probe only runs on a KDE Wayland session;
+    // sway/Hyprland and other compositors use the translucent background
+    // directly instead of logging a plugin error on every start.
     Loader {
         id: glassLoader
         source: "FigaroGlass.qml"
-        active: true
+        active: FigaroStyle.useCompositorGlass
         onStatusChanged: if (status === Loader.Error) console.log("[glass] KOS SurfaceShape unavailable; using the plain background")
         onLoaded: {
             item.pill = capsule;
@@ -171,9 +175,11 @@ Item {
         // With KOS glass the compositor owns the finish and the tint, so the
         // client paints nothing. Without it (plain Plasma, another compositor,
         // a machine with no KOS plugin) this is the pill's only background.
+        // Non-KDE compositors have no compositor glass, so the fallback fill is
+        // slightly more opaque to keep the caption legible on any wallpaper.
         color: glassLoader.status === Loader.Ready
             ? "transparent"
-            : Qt.rgba(0.05, 0.06, 0.12, 0.78)
+            : Qt.rgba(0.05, 0.06, 0.12, FigaroStyle.useCompositorGlass ? 0.78 : 0.86)
         // KWin draws the rim; keep only a faint state-tinted inner edge so the
         // assistant still reads blue / violet / magenta through the glass.
         border.width: shell.morphProgress > 0.05 ? 1 : 0

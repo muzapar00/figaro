@@ -10,7 +10,7 @@ Item {
 
     property var items: []          // [{id, label}] or ["a", "b"]
     property string currentId: ""
-    property string placeholder: "选择…"
+    property string placeholder: I18n.t("选择…")
     property bool interactive: true
 
     signal picked(string id)

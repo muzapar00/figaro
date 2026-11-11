@@ -35,7 +35,7 @@ Item {
             "printf '%s' \"$1\" | wl-copy 2>/dev/null || printf '%s' \"$1\" | xclip -selection clipboard 2>/dev/null",
             "sh", root.command,
         ]);
-        root.copiedText = "已复制到剪贴板";
+        root.copiedText = I18n.t("已复制到剪贴板");
         copiedTimer.restart();
     }
 
@@ -123,12 +123,12 @@ Item {
                 }
                 Item { Layout.fillWidth: true }
                 MButton {
-                    text: "复制命令"
+                    text: I18n.t("复制命令")
                     primary: true
                     onClicked: root.copyCommand()
                 }
                 MButton {
-                    text: "关闭"
+                    text: I18n.t("关闭")
                     onClicked: root.close()
                 }
             }

@@ -1,22 +1,25 @@
 [Unit]
 Description=Figaro assistant overlay (Quickshell, Siri-style orb)
-Documentation=https://github.com/figaro
+Documentation=https://github.com/muzapar00/figaro/blob/main/docs/platform-support.md
 PartOf=graphical-session.target
-After=graphical-session.target plasma-kwin_wayland.service
+After=graphical-session.target
+# KWin owns the Wayland socket on Plasma; on wlroots compositors this unit does
+# not exist and systemd simply ignores the ordering hint.
+After=plasma-kwin_wayland.service
 # The overlay only shows a layer-shell surface; it must not start before the
 # compositor has a Wayland socket, or qs aborts on "could not connect to display".
-After=plasma-kwin_wayland.service
 # A logout/login cycle can restart the unit within seconds; without this a
 # couple of early failures get it rate-limited into "failed" for the session.
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-# Login-time unit ordering starts before the compositor exports its socket, and
-# the user manager's environment does not always carry these.
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=XDG_CURRENT_DESKTOP=KDE
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 150); do [ -S "${XDG_RUNTIME_DIR}/wayland-0" ] && exit 0; sleep 0.2; done; exit 0'
+# The user manager's environment does not always carry these, and the socket is
+# not always wayland-0 (sway uses wayland-1). install-user renders the values it
+# detected in the current session; do not hard-code KDE here.
+Environment=WAYLAND_DISPLAY=@WAYLAND_DISPLAY@
+Environment=XDG_CURRENT_DESKTOP=@DESKTOP@
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 150); do [ -S "${XDG_RUNTIME_DIR}/@WAYLAND_DISPLAY@" ] && exit 0; sleep 0.2; done; exit 0'
 # The installed config directory is rsync'd on every deploy; a watcher can catch
 # a half-written QML file and crash the shell. Deploys restart the unit instead.
 Environment=QS_DISABLE_FILE_WATCHER=1

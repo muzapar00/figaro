@@ -10,8 +10,9 @@
 // ask/say auto-start the daemon when it is not running yet; --no-tts keeps the
 // auto-started daemon from using the speaker.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createIpcClient } from '../src/ipc.js';
 import { loadConfig } from '../src/config.js';
@@ -27,6 +28,8 @@ const USAGE = `用法:
   figaro talk                            唤醒一次（等同喊「费加罗」，可绑到桌面快捷键）
   figaro status [--json]                 查看状态与健康
   figaro doctor [--json] [--fix] [--net] 一键体检（服务/模型/麦克风/音频出口/热键/桌面/资源）
+  figaro install-user [--no-start] [--no-ui] [--models-dir=路径]
+                                         用户级安装/修复：QML、systemd user units、配置脚手架、桌面图标
   figaro enroll-voice [--samples=3] [--seconds=3] [--device=源] [--threshold=0.65] [--dry-run]
                                          录你的声纹，之后只认你的声音唤醒
   figaro help                            显示帮助
@@ -495,7 +498,8 @@ async function commandStatus(flags) {
   console.log('figaro: 运行中');
   console.log(`  状态: ${pong.state}`);
   console.log(`  PID: ${pong.pid}`);
-  console.log(`  模型: ${pong.model ?? '?'}`);
+  const provider = pong.provider ?? 'deepseek';
+  console.log(`  模型: ${pong.model ?? '?'}（${provider}）`);
   console.log(`  语音: ASR ${pong.voice?.asr ? '可用' : '不可用'}，TTS ${pong.voice?.tts ? '可用' : '不可用'}`);
   if (pong.rag) {
     console.log(`  长期记忆: ${pong.rag.enabled ? `LightRAG ${pong.rag.host}（mode=${pong.rag.mode}，${pong.rag.recallHits ?? 0} 次召回）` : '关闭'}`);
@@ -551,6 +555,574 @@ async function commandStatus(flags) {
   console.log(`  socket: ${pong.socket ?? config.ui.socket}`);
   if (pong.lastError) console.log(`  最近错误: ${pong.lastError}`);
   process.exit(0);
+}
+
+// ------------------------------------------------------------ install-user
+//
+// User-level installation, shared by install.sh (a git checkout) and by the
+// deb/rpm packages. The package itself is installed by root into /usr/lib; the
+// per-user half (QML, systemd user units, config scaffold, desktop entry) must
+// run as the normal user, which is exactly what this command does.
+//
+//   git checkout : QML from <checkout>/qml, models under <checkout>/models
+//   deb/rpm      : QML from /usr/lib/figaro/qml, models under
+//                  ~/.local/share/figaro/models (the system tree is read-only)
+//
+// Rules that matter:
+//   * never runs as root, never uses sudo;
+//   * never overwrites an existing config.json (secrets live there) — it is only
+//     created when missing, from config/config.example.json with empty keys;
+//   * idempotent: files are rewritten only when their content changed, so a
+//     re-run does not churn the QML watcher or restart healthy services;
+//   * does not bundle or download models; it creates the (empty) model dir and
+//     prints the scripts/fetch-models.sh command.
+
+const INSTALL_ROOT = path.resolve(path.dirname(SELF), '..');
+
+function isPackagedLayout() {
+  if (process.env.FIGARO_PACKAGED === '1') return true;
+  return /^\/usr\/lib(?:64)?\/figaro$/.test(INSTALL_ROOT);
+}
+
+function firstOnPath(names) {
+  for (const name of names.filter(Boolean)) {
+    if (name.includes('/')) {
+      try {
+        fs.accessSync(name, fs.constants.X_OK);
+        return path.resolve(name);
+      } catch {
+        continue;
+      }
+    }
+    for (const dir of String(process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+      const candidate = path.join(dir, name);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {
+        /* keep looking */
+      }
+    }
+  }
+  return null;
+}
+
+function tryExec(command, args, { timeout = 20000 } = {}) {
+  try {
+    const stdout = execFileSync(command, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { ok: true, stdout: String(stdout ?? ''), stderr: '' };
+  } catch (err) {
+    return { ok: false, stdout: String(err?.stdout ?? ''), stderr: String(err?.stderr ?? err?.message ?? '') };
+  }
+}
+
+function trySpawnQuiet(command, args) {
+  try {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true, env: process.env });
+    child.on('error', () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureDir(dir, mode = 0o755) {
+  fs.mkdirSync(dir, { recursive: true, mode });
+  try {
+    fs.chmodSync(dir, mode);
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Write a file only when the content changed; returns true when it was written. */
+function writeIfChanged(file, content, mode = 0o644) {
+  try {
+    if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === content) {
+      try { fs.chmodSync(file, mode); } catch { /* ignore */ }
+      return false;
+    }
+  } catch {
+    /* fall through and write */
+  }
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, content, { mode });
+  try { fs.chmodSync(file, mode); } catch { /* ignore */ }
+  return true;
+}
+
+function renderTemplate(file, vars) {
+  let text = fs.readFileSync(file, 'utf8');
+  for (const [key, value] of Object.entries(vars)) {
+    text = text.split(`@${key}@`).join(String(value ?? ''));
+  }
+  return text;
+}
+
+/**
+ * Mirror `source` into `target` (app-owned trees only), skipping top-level
+ * entries that match `skip` (names or RegExp). Symlinks are not followed: the
+ * QML tree is plain files, and copying foreign links is not something an
+ * installer should do.
+ */
+function syncTree(source, target, { skip = [] } = {}) {
+  const matches = (name) => skip.some((entry) => (typeof entry === 'string' ? entry === name : entry.test(name)));
+  const seen = new Set();
+  let changed = 0;
+  const walk = (relative) => {
+    const dir = path.join(source, relative);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (relative === '' && matches(entry.name)) continue;
+      const rel = relative ? path.join(relative, entry.name) : entry.name;
+      if (entry.isDirectory()) {
+        ensureDir(path.join(target, rel));
+        walk(rel);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      seen.add(rel);
+      const srcFile = path.join(source, rel);
+      const dstFile = path.join(target, rel);
+      const data = fs.readFileSync(srcFile);
+      const mode = (fs.statSync(srcFile).mode & 0o111) !== 0 ? 0o755 : 0o644;
+      let same = false;
+      try {
+        same = fs.readFileSync(dstFile).equals(data);
+      } catch {
+        same = false;
+      }
+      if (same) {
+        try { fs.chmodSync(dstFile, mode); } catch { /* ignore */ }
+        continue;
+      }
+      ensureDir(path.dirname(dstFile));
+      fs.writeFileSync(dstFile, data, { mode });
+      try { fs.chmodSync(dstFile, mode); } catch { /* ignore */ }
+      changed += 1;
+    }
+  };
+  walk('');
+  return { seen, changed };
+}
+
+/** Remove files in `target` that the last syncTree() did not produce (old versions). */
+function pruneTree(target, seen) {
+  let removed = 0;
+  const walk = (relative) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(path.join(target, relative), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = relative ? path.join(relative, entry.name) : entry.name;
+      if (entry.isDirectory()) {
+        walk(rel);
+      } else if (entry.isFile() && !seen.has(rel)) {
+        try {
+          fs.rmSync(path.join(target, rel), { force: true });
+          removed += 1;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  };
+  walk('');
+  return removed;
+}
+
+/**
+ * Pick the Wayland socket to hand to the overlay unit. The systemd user manager
+ * does not always carry WAYLAND_DISPLAY for login-time units, and the socket is
+ * not always wayland-0 (sway uses wayland-1, others differ), so it is detected
+ * at install time instead of hard-coded to KDE's wayland-0.
+ */
+/** True when the runtime dir already exposes a Wayland socket. */
+function hasWaylandSocket(runtimeDir) {
+  if (process.env.WAYLAND_DISPLAY) return true;
+  try {
+    return fs.readdirSync(runtimeDir).some((name) => /^wayland-\d+$/.test(name));
+  } catch {
+    return false;
+  }
+}
+
+function detectWaylandDisplay(runtimeDir) {
+  const fromEnv = process.env.WAYLAND_DISPLAY;
+  if (fromEnv) return fromEnv;
+  try {
+    const sockets = fs.readdirSync(runtimeDir).filter((name) => /^wayland-\d+$/.test(name));
+    sockets.sort((a, b) => Number(a.slice('wayland-'.length)) - Number(b.slice('wayland-'.length)));
+    if (sockets.length > 0) return sockets[0];
+  } catch {
+    /* no runtime dir yet: fall back below */
+  }
+  return 'wayland-0';
+}
+
+function detectDesktopName() {
+  const name = String(process.env.XDG_CURRENT_DESKTOP ?? '').trim();
+  if (name) return name;
+  if (String(process.env.KDE_FULL_SESSION ?? '') === 'true') return 'KDE';
+  // A TTY/SSH shell does not inherit the graphical-session variables; the
+  // systemd user manager usually knows the desktop, and the rendered overlay
+  // unit needs a real XDG_CURRENT_DESKTOP to get the right Qt platform theme.
+  try {
+    const shown = execFileSync('systemctl', ['--user', 'show-environment'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    for (const line of String(shown).split('\n')) {
+      const eq = line.indexOf('=');
+      if (eq <= 0) continue;
+      if (line.slice(0, eq) !== 'XDG_CURRENT_DESKTOP') continue;
+      const value = line.slice(eq + 1).trim();
+      if (value) return value;
+    }
+  } catch {
+    /* no user manager in this context (container, CI) */
+  }
+  return '';
+}
+
+/**
+ * Create (never modify) ~/.config/figaro/config.json.
+ * @returns {{created: boolean, message: string, hint: string[]}}
+ */
+function ensureUserConfig({ configPath, exampleFile, absoluteModels, modelsDir }) {
+  if (fs.existsSync(configPath)) {
+    return { created: false, message: `配置已存在，未改动（不会覆盖你的 key）：${configPath}`, hint: [] };
+  }
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(exampleFile, 'utf8'));
+  } catch (err) {
+    return { created: false, message: `找不到可用的配置模板（${exampleFile}）：${err?.message || err}`, hint: [] };
+  }
+  // The example carries placeholder keys ("sk-..."). They must be empty in a
+  // fresh install, otherwise `figaro doctor` would believe keys are configured
+  // and the first request would fail with 401. Walk every section so a new
+  // provider block (llm/deepseek/…) is covered without touching this command.
+  const clearPlaceholderKeys = (node) => {
+    if (!node || typeof node !== 'object') return;
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') clearPlaceholderKeys(value);
+    }
+    if (typeof node.apiKey === 'string' && /^sk-(?:api-)?\.\.\.$/.test(node.apiKey)) node.apiKey = '';
+  };
+  clearPlaceholderKeys(raw);
+  if (absoluteModels) {
+    raw.asr = raw.asr && typeof raw.asr === 'object' ? raw.asr : {};
+    raw.asr.kwsModelDir = path.join(modelsDir, 'kws');
+    raw.asr.streamingModelDir = path.join(modelsDir, 'asr-stream');
+    raw.asr.offlineModelDir = path.join(modelsDir, 'asr-offline');
+    raw.asr.speaker = raw.asr.speaker && typeof raw.asr.speaker === 'object' ? raw.asr.speaker : {};
+    raw.asr.speaker.model = path.join(modelsDir, 'speaker', '3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx');
+  }
+  ensureDir(path.dirname(configPath), 0o700);
+  fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  try { fs.chmodSync(configPath, 0o600); } catch { /* ignore */ }
+  return { created: true, message: `已创建配置脚手架：${configPath}（600，API key 留空）`, hint: [] };
+}
+
+async function commandInstallUser(flags) {
+  const flagValue = (name) => {
+    for (const entry of flags) {
+      if (entry.startsWith(`${name}=`)) return entry.slice(name.length + 1);
+    }
+    return undefined;
+  };
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    fail('请以普通用户运行（不要 sudo）：figaro install-user');
+  }
+  const packaged = isPackagedLayout();
+  const home = os.homedir();
+  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+  const xdgData = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || path.join('/run/user', String(typeof process.getuid === 'function' ? process.getuid() : 1000));
+  const qsCfg = path.join(xdgConfig, 'quickshell', 'figaro');
+  const qsCfgSettings = path.join(xdgConfig, 'quickshell', 'figaro-settings');
+  const unitDir = path.join(xdgConfig, 'systemd', 'user');
+  const configDir = process.env.FIGARO_CONFIG_DIR || path.join(xdgConfig, 'figaro');
+  const configPath = path.join(configDir, 'config.json');
+  const modelsDir = path.resolve(
+    flagValue('models-dir') ?? process.env.FIGARO_MODELS_DIR ?? (packaged ? path.join(xdgData, 'figaro', 'models') : path.join(INSTALL_ROOT, 'models')),
+  );
+  const node = process.execPath;
+  const nodeBinDir = path.dirname(node);
+  // FIGARO_QS wins when it points at an executable; otherwise look on PATH and
+  // in the two usual locations (source installs use ~/.local/bin, packages /usr/bin).
+  const qs = firstOnPath([process.env.FIGARO_QS])
+    || firstOnPath(['qs'])
+    || [path.join(home, '.local', 'bin', 'qs'), '/usr/bin/qs'].find((candidate) => {
+      try { fs.accessSync(candidate, fs.constants.X_OK); return true; } catch { return false; }
+    })
+    || null;
+  const systemctl = firstOnPath(['systemctl']);
+  const desktopName = detectDesktopName();
+  const isKde = /KDE|Plasma/i.test(desktopName);
+  const isGnome = /GNOME|Unity|Pantheon|Cinnamon/i.test(desktopName);
+  const isWayland = String(process.env.XDG_SESSION_TYPE ?? '') === 'wayland'
+    || Boolean(process.env.WAYLAND_DISPLAY)
+    || hasWaylandSocket(runtimeDir);
+  const waylandDisplay = detectWaylandDisplay(runtimeDir);
+  const start = !flags.has('no-start');
+
+  console.log(`费加罗 · 用户级安装${packaged ? '（deb/rpm 包布局）' : '（源码 checkout）'}`);
+  console.log(`  程序目录: ${INSTALL_ROOT}`);
+  console.log(`  node: ${node}${qs ? ` · qs: ${qs}` : ' · qs: 未找到'}`);
+
+  // ----------------------------------------------------------- 1. QML trees
+  const qmlSource = path.join(INSTALL_ROOT, 'qml');
+  if (fs.existsSync(qmlSource)) {
+    ensureDir(qsCfg, 0o700);
+    const synced = syncTree(qmlSource, qsCfg, { skip: ['test', 'ctl.sh', 'deploy.sh'] });
+    const removed = pruneTree(qsCfg, synced.seen);
+    console.log(`  overlay QML -> ${qsCfg}${synced.changed > 0 ? `（更新 ${synced.changed} 个文件）` : '（已是最新）'}`);
+    if (removed > 0) console.log(`  清理了 ${removed} 个旧文件`);
+  } else {
+    console.error(`  ! 缺少 QML 目录: ${qmlSource}（安装不完整？）`);
+  }
+  const settingsSource = path.join(INSTALL_ROOT, 'settings');
+  if (fs.existsSync(settingsSource)) {
+    ensureDir(qsCfgSettings, 0o700);
+    const synced = syncTree(settingsSource, qsCfgSettings, { skip: ['test', /\.sh$/] });
+    const removed = pruneTree(qsCfgSettings, synced.seen);
+    console.log(`  设置面板 QML -> ${qsCfgSettings}${synced.changed > 0 ? `（更新 ${synced.changed} 个文件）` : '（已是最新）'}`);
+    if (removed > 0) console.log(`  清理了 ${removed} 个旧文件`);
+  } else {
+    console.log(`  · 没有设置面板 QML（${settingsSource}），跳过`);
+  }
+
+  // ------------------------------------------------ 2. systemd user units
+  const unitVars = {
+    REPO: INSTALL_ROOT,
+    NODE: node,
+    NODE_BIN_DIR: nodeBinDir,
+    // systemd needs an absolute ExecStart path; /usr/bin/qs is the fallback
+    // location when Quickshell is not installed yet (the UI unit is not enabled
+    // in that case, see below).
+    QS: qs ?? '/usr/bin/qs',
+    HOME: home,
+    WAYLAND_DISPLAY: waylandDisplay,
+    DESKTOP: desktopName,
+  };
+  ensureDir(unitDir, 0o700);
+  const templates = [
+    ['figaro.service.in', 'figaro.service'],
+    ['figaro-ui.service.in', 'figaro-ui.service'],
+  ];
+  for (const [template, unit] of templates) {
+    const source = path.join(INSTALL_ROOT, 'systemd', template);
+    if (!fs.existsSync(source)) continue;
+    let text = renderTemplate(source, unitVars);
+    if (desktopName.length === 0) {
+      // A blank XDG_CURRENT_DESKTOP= would actively confuse Qt; drop the line.
+      text = text.replace(/^Environment=XDG_CURRENT_DESKTOP=.*$/m, '# XDG_CURRENT_DESKTOP was not set when install-user ran; the login session exports it.');
+    }
+    writeIfChanged(path.join(unitDir, unit), text, 0o644);
+  }
+  console.log(`  systemd user units -> ${unitDir}`);
+  if (!qs) console.log('  · 未找到 Quickshell（qs）：figaro-ui.service 里的 qs 先写 /usr/bin/qs，装好 qs 后重跑本命令');
+
+  // RAG units are optional: they only make sense when a LightRAG venv exists.
+  const ragHome = path.resolve(process.env.FIGARO_LIGHTRAG_HOME ?? path.join(xdgData, 'figaro', 'lightrag'));
+  const ragServer = path.join(ragHome, 'venv', 'bin', 'lightrag-server');
+  const ragInstalled = fs.existsSync(ragServer) && fs.existsSync(path.join(ragHome, '.env'));
+  if (ragInstalled) {
+    for (const [template, unit] of [
+      ['figaro-rag-embed.service.in', 'figaro-rag-embed.service'],
+      ['figaro-rag.service.in', 'figaro-rag.service'],
+    ]) {
+      const source = path.join(INSTALL_ROOT, 'systemd', template);
+      if (fs.existsSync(source)) writeIfChanged(path.join(unitDir, unit), renderTemplate(source, { ...unitVars, LIGHTRAG_HOME: ragHome }), 0o644);
+    }
+    console.log(`  长期记忆 RAG units -> ${ragHome}`);
+  } else {
+    console.log(`  · 跳过 RAG units（未检测到 ${ragServer}；见 docs/rag.md）`);
+  }
+
+  // ------------------------------------------------- 3. config + model dirs
+  ensureDir(configDir, 0o700);
+  const absoluteModels = packaged || Boolean(flagValue('models-dir')) || Boolean(process.env.FIGARO_MODELS_DIR);
+  const configState = ensureUserConfig({
+    configPath,
+    exampleFile: path.join(INSTALL_ROOT, 'config', 'config.example.json'),
+    absoluteModels,
+    modelsDir,
+  });
+  console.log(`  ${configState.message}`);
+  for (const sub of ['kws', 'asr-stream', 'asr-offline', 'vad', 'speaker', '.cache']) ensureDir(path.join(modelsDir, sub), 0o755);
+  console.log(`  模型目录: ${modelsDir}（模型不随包分发，运行时下载）`);
+  if (!configState.created && absoluteModels) {
+    // An existing config may point at relative model paths, which resolve inside
+    // the (read-only) /usr/lib tree. We never edit config.json, so print the
+    // exact keys and values the user can paste instead.
+    let raw = null;
+    try {
+      raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch {
+      raw = null;
+    }
+    const asr = raw?.asr ?? {};
+    const relative = [asr.kwsModelDir, asr.streamingModelDir, asr.offlineModelDir]
+      .filter((value) => typeof value === 'string' && value.length > 0 && !path.isAbsolute(value));
+    if (relative.length > 0) {
+      console.log('  ! 你的 config.json 里是相对模型路径；包布局下 /usr/lib 不可写，请把 config.asr 的这三项改成绝对路径：');
+      console.log(`      "kwsModelDir": "${path.join(modelsDir, 'kws')}",`);
+      console.log(`      "streamingModelDir": "${path.join(modelsDir, 'asr-stream')}",`);
+      console.log(`      "offlineModelDir": "${path.join(modelsDir, 'asr-offline')}"`);
+      console.log('    （改完运行 figaro doctor 复查）');
+    }
+  }
+
+  // -------------------------------------------- 4. desktop entry + icons
+  const desktopTemplate = path.join(INSTALL_ROOT, 'systemd', 'figaro-settings.desktop.in');
+  if (fs.existsSync(desktopTemplate) && qs) {
+    const applications = path.join(xdgData, 'applications');
+    ensureDir(applications);
+    writeIfChanged(
+      path.join(applications, 'figaro-settings.desktop'),
+      renderTemplate(desktopTemplate, { QS: qs }),
+      0o644,
+    );
+    let icons = 0;
+    for (const size of [512, 256, 128, 64, 48, 32]) {
+      const sourceIcon = path.join(INSTALL_ROOT, 'assets', 'icons', `figaro-${size}.png`);
+      if (!fs.existsSync(sourceIcon)) continue;
+      const targetIcon = path.join(xdgData, 'icons', 'hicolor', `${size}x${size}`, 'apps', 'figaro.png');
+      ensureDir(path.dirname(targetIcon));
+      try {
+        fs.copyFileSync(sourceIcon, targetIcon);
+        fs.chmodSync(targetIcon, 0o644);
+        icons += 1;
+      } catch {
+        /* ignore one unreadable icon */
+      }
+    }
+    trySpawnQuiet('gtk-update-icon-cache', ['-f', '-t', path.join(xdgData, 'icons', 'hicolor')]);
+    trySpawnQuiet('update-desktop-database', [applications]);
+    console.log(`  桌面入口 + ${icons} 个图标 -> ${applications}`);
+  } else {
+    console.log(`  · 跳过桌面入口（${qs ? '模板缺失' : '未找到 qs'}）`);
+  }
+
+  // The settings window draws its own title bar; on KWin the server-side
+  // decoration must be turned off or the buttons appear twice. Best effort, KDE only.
+  if (isKde && fs.existsSync(path.join(INSTALL_ROOT, 'scripts', 'install-kwin-rule.mjs'))) {
+    const result = tryExec(node, [path.join(INSTALL_ROOT, 'scripts', 'install-kwin-rule.mjs')]);
+    if (result.ok) {
+      trySpawnQuiet('qdbus6', ['org.kde.KWin', '/KWin', 'org.kde.KWin.reconfigure']);
+      console.log('  KWin 无边框规则已合并到 ~/.config/kwinrulesrc');
+    } else {
+      console.log('  · KWin 无边框规则未安装（设置窗口会多一条标题栏）：见 scripts/install-kwin-rule.mjs');
+    }
+  }
+
+  // ------------------------------------------------- 5. CLI launcher (source)
+  if (!packaged) {
+    const localBin = path.join(home, '.local', 'bin');
+    ensureDir(localBin);
+    const cliWrapper = `#!/bin/sh
+# Figaro CLI launcher (generated by "figaro install-user"; re-run it after moving the checkout)
+if [ -z "\${XDG_RUNTIME_DIR:-}" ]; then
+  XDG_RUNTIME_DIR="/run/user/\$(id -u)"
+  export XDG_RUNTIME_DIR
+fi
+FIGARO_QS="\${FIGARO_QS:-${qs ?? path.join(home, '.local', 'bin', 'qs')}}"
+export FIGARO_QS
+exec "${node}" "${INSTALL_ROOT}/bin/figaro" "\$@"
+`;
+    if (writeIfChanged(path.join(localBin, 'figaro'), cliWrapper, 0o755)) {
+      console.log(`  CLI 启动器 -> ${path.join(localBin, 'figaro')}`);
+    }
+    const pathEntries = String(process.env.PATH ?? '').split(path.delimiter);
+    if (!pathEntries.includes(localBin)) {
+      const rc = path.join(home, '.bashrc');
+      let text = '';
+      try {
+        text = fs.readFileSync(rc, 'utf8');
+      } catch {
+        text = '';
+      }
+      if (!text.includes('figaro CLI: ~/.local/bin')) {
+        try {
+          fs.appendFileSync(rc, `\n# figaro CLI: ~/.local/bin on PATH\ncase ":$PATH:" in *":${localBin}:"*) ;; *) export PATH="${localBin}:$PATH" ;; esac\n`);
+          console.log(`  已将 ${localBin} 写入 ~/.bashrc（新终端生效）`);
+        } catch {
+          /* non-fatal */
+        }
+      }
+    }
+  } else {
+    const staleWrapper = path.join(home, '.local', 'bin', 'figaro');
+    if (fs.existsSync(staleWrapper)) {
+      console.log(`  ! ${staleWrapper} 会遮住包安装的 /usr/bin/figaro（以前从源码安装过？）`);
+      console.log(`    建议删除：rm ${staleWrapper}`);
+    }
+  }
+
+  // ------------------------------------------------------- 6. user services
+  if (!systemctl) {
+    console.log('  ! 没有 systemctl，跳过服务注册；手动启动: figaro daemon');
+  } else {
+    tryExec(systemctl, ['--user', 'daemon-reload']);
+    const daemonCommand = start ? ['--user', 'enable', '--now', 'figaro.service'] : ['--user', 'enable', 'figaro.service'];
+    const daemon = tryExec(systemctl, daemonCommand);
+    if (!daemon.ok) {
+      console.log(`  ! figaro.service 注册失败：${daemon.stderr.trim().split('\n').at(-1) ?? '未知错误'}`);
+      console.log('    修复后重试：systemctl --user enable --now figaro.service');
+    } else {
+      const state = tryExec(systemctl, ['--user', 'is-active', 'figaro.service']).stdout.trim() || (start ? 'inactive' : '已启用');
+      console.log(`  figaro.service: ${state}`);
+      if (start && state !== 'active') {
+        console.log('  ! 服务没起来，看日志：journalctl --user -u figaro -n 80 --no-pager');
+      }
+    }
+    if (flags.has('no-ui')) {
+      console.log('  · 按 --no-ui 跳过 overlay（figaro-ui.service 已写入但未启用）');
+    } else if (isGnome) {
+      console.log('  · 跳过 overlay：GNOME Wayland 没有 wlr-layer-shell，Quickshell 无法显示（见 docs/platform-support.md）');
+      console.log('    语音/CLI 仍可用；其他桌面请手动 systemctl --user enable --now figaro-ui');
+    } else if (!isWayland) {
+      console.log('  · 跳过 overlay：当前不是 Wayland 会话（Quickshell 仅支持 Wayland）；登录 Wayland 后运行 systemctl --user enable --now figaro-ui');
+    } else if (!qs) {
+      console.log('  ! 未找到 Quickshell（qs）：装好后运行 systemctl --user enable --now figaro-ui');
+    } else {
+      const uiCommand = start ? ['--user', 'enable', '--now', 'figaro-ui.service'] : ['--user', 'enable', 'figaro-ui.service'];
+      const ui = tryExec(systemctl, uiCommand);
+      if (!ui.ok) {
+        console.log(`  ! figaro-ui.service 注册失败：${ui.stderr.trim().split('\n').at(-1) ?? '未知错误'}`);
+        console.log('    修复后重试：systemctl --user enable --now figaro-ui.service');
+      } else {
+        const state = tryExec(systemctl, ['--user', 'is-active', 'figaro-ui.service']).stdout.trim() || (start ? 'inactive' : '已启用');
+        console.log(`  figaro-ui.service: ${state}`);
+        if (start && state !== 'active') {
+          console.log('  ! overlay 没起来，看日志：journalctl --user -u figaro-ui -n 80 --no-pager');
+          console.log('    Wayland 套接字变量：WAYLAND_DISPLAY=' + detectWaylandDisplay(runtimeDir));
+        }
+      }
+    }
+    if (ragInstalled) {
+      for (const unit of ['figaro-rag-embed.service', 'figaro-rag.service']) {
+        const result = tryExec(systemctl, start ? ['--user', 'enable', '--now', unit] : ['--user', 'enable', unit]);
+        console.log(`  ${unit}: ${result.ok ? '已注册' : `注册失败（${result.stderr.trim().split('\n').at(-1) ?? '未知'}）`}`);
+      }
+    }
+  }
+
+  // --------------------------------------------------------------- 7. next
+  const fetchScript = path.join(INSTALL_ROOT, 'scripts', 'fetch-models.sh');
+  console.log('');
+  console.log('下一步:');
+  console.log(`  1. 填入 API key：$EDITOR ${configPath}`);
+  console.log(`  2. 下载本地语音模型：FIGARO_MODELS_DIR=${modelsDir} bash ${fetchScript}`);
+  console.log('     （新版 fetch-models.sh 也支持 --models-dir，等价）');
+  console.log('  3. 体检：figaro doctor');
+  if (packaged) console.log('  4. 卸载：先 systemctl --user disable --now figaro figaro-ui，再移除包；用户数据保留在 ~/.config/figaro');
+  console.log('');
 }
 
 async function main() {
@@ -618,6 +1190,10 @@ async function main() {
         net: flags.has('net'),
       });
       process.exitCode = code;
+      break;
+    }
+    case 'install-user': {
+      await commandInstallUser(flags);
       break;
     }
     case 'help':

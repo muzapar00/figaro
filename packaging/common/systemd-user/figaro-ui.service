@@ -1,0 +1,25 @@
+[Unit]
+Description=Figaro assistant overlay (Quickshell, Siri-style orb)
+Documentation=file://@DOCDIR@/platform-support.md
+PartOf=graphical-session.target
+After=graphical-session.target
+# A logout/login cycle can restart the unit within seconds; without this a
+# couple of early failures get it rate-limited into "failed" for the session.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The launcher discovers WAYLAND_DISPLAY and qs at run time; the unit itself
+# stays machine-independent (installed in /usr/lib/systemd/user, not generated).
+ExecStart=/usr/bin/figaro-ui
+Environment=XDG_RUNTIME_DIR=%t
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=2
+KillMode=process
+SyslogIdentifier=figaro-ui
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

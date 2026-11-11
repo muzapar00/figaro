@@ -53,7 +53,7 @@ Item {
             if (pts.length < 2) {
                 ctx.fillStyle = Theme.textFaint;
                 ctx.font = "10px " + Theme.fontSans;
-                ctx.fillText("等待 KWS 分数…", 6, h / 2);
+                ctx.fillText(I18n.t("等待 KWS 分数…"), 6, h / 2);
                 return;
             }
             const step = w / (pts.length - 1);

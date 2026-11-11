@@ -74,6 +74,21 @@ try {
 // ---------------------------------------------------------------------------
 const DEFAULTS = {
   deepseek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', maxToolRounds: 24 },
+  // Generic LLM provider (v1.0); llm.* wins over the legacy deepseek.* keys.
+  llm: {
+    provider: 'deepseek',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-flash',
+    apiKey: '',
+  },
+  models: {
+    region: '',
+  },
+  rag: {
+    // Auto-ingest is OFF by default: it sends chat text to the configured
+    // LLM/embedding vendors.
+    autoIngest: false,
+  },
   minimax: {
     baseUrl: 'https://api.minimax.cn',
     model: 'speech-2.6-turbo',
@@ -266,6 +281,9 @@ function publicConfig() {
     ? '***' : '';
   c.home = c.home || {};
   c.home.haToken = config.home && typeof config.home.haToken === 'string' && config.home.haToken.length > 0
+    ? '***' : '';
+  c.llm = { ...(c.llm || {}) };
+  c.llm.apiKey = config.llm && typeof config.llm.apiKey === 'string' && config.llm.apiKey.length > 0
     ? '***' : '';
   return c;
 }
@@ -476,6 +494,34 @@ function handle(socket, msg) {
       return;
 
     // ---- §3.1 config ------------------------------------------------------
+    case 'llm.test': {
+      // Deterministic canned LLM connectivity test (the real settings service
+      // forwards to src/agent/llm.js testLlmConnection()).
+      const draft = msg.llm && typeof msg.llm === 'object' ? msg.llm : {};
+      const pick = (key, fallback) => (typeof draft[key] === 'string' && draft[key].trim().length > 0 ? draft[key].trim() : fallback);
+      const provider = pick('provider', config.llm?.provider || 'deepseek');
+      const baseUrl = pick('baseUrl', config.llm?.baseUrl || '');
+      const model = pick('model', config.llm?.model || '');
+      const draftKey = typeof draft.apiKey === 'string' && draft.apiKey.trim() !== '***' ? draft.apiKey.trim() : '';
+      const savedKey = (config.llm?.apiKey || config.deepseek?.apiKey || '').trim();
+      const apiKeyConfigured = Boolean(draftKey || savedKey);
+      if (!apiKeyConfigured) {
+        return send(socket, { type: 'llm.test', id: msg.id, ok: false, provider, baseUrl, model, status: null, message: '还没有填 API Key', latencyMs: 1, apiKeyConfigured: false });
+      }
+      if (/bad|wrong|invalid/i.test(draftKey || savedKey) || /unreachable/i.test(baseUrl)) {
+        const unauthorized = !/unreachable/i.test(baseUrl);
+        return send(socket, {
+          type: 'llm.test', id: msg.id, ok: false, provider, baseUrl, model,
+          status: unauthorized ? 401 : null,
+          message: unauthorized ? 'API key 无效或权限不足（HTTP 401）' : `连不上 ${baseUrl}（网络错误）`,
+          latencyMs: 12, apiKeyConfigured: true,
+        });
+      }
+      return send(socket, {
+        type: 'llm.test', id: msg.id, ok: true, provider, baseUrl, model, status: 200,
+        message: `连接成功（${provider}/${model || '默认模型'}）`, latencyMs: 42, apiKeyConfigured: true,
+      });
+    }
     case 'home.test': {
       // Deterministic canned probe: the fake daemon never talks to a real HA.
       // The real daemon forwards `${haUrl}/api/` through Node fetch (see
@@ -847,6 +893,23 @@ function diagnostics() {
       { at: new Date(fakeErrorTimes[1]).toISOString(), message: 'KWS 模型热加载完成（fake）' },
     ],
     ui: uiSnapshot(),
+    llm: {
+      provider: config.llm?.provider || 'deepseek',
+      baseUrl: config.llm?.baseUrl || '',
+      model: config.llm?.model || '',
+      apiKeyConfigured: Boolean(
+        (config.llm && typeof config.llm.apiKey === 'string' && config.llm.apiKey.length > 0)
+        || (config.deepseek && typeof config.deepseek.apiKey === 'string' && config.deepseek.apiKey.length > 0),
+      ),
+      legacyDeepseekKey: Boolean(typeof config.deepseek?.apiKey === 'string' && config.deepseek.apiKey.length > 0),
+    },
+    models: {
+      region: config.models?.region || '',
+    },
+    rag: {
+      autoIngest: config.rag?.autoIngest === true,
+      dataDir: '~/.local/share/figaro/lightrag/data',
+    },
     sfx: {
       enabled: config.sfx.enabled !== false,
       volume: Number(config.sfx.volume),

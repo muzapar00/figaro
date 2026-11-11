@@ -1,6 +1,6 @@
 {
   "name": "figaro",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Figaro — a system-level voice assistant with a DeepSeek brain, local wake-word ASR, and MiniMax speech.",

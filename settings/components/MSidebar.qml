@@ -10,8 +10,8 @@ Rectangle {
     property int currentIndex: 0
     property string currentKey: ""
     property var model: []
-    property string appName: "费加罗"
-    property string appSubtitle: "系统设置"
+    property string appName: I18n.t("费加罗")
+    property string appSubtitle: I18n.t("系统设置")
     property string footerText: ""
 
     property bool advancedOpen: false
@@ -175,7 +175,7 @@ Rectangle {
                         }
                     }
                     Text {
-                        text: "高级"
+                        text: I18n.t("高级")
                         color: Theme.textFaint
                         font.family: Theme.fontSans
                         font.pixelSize: Theme.fsSmall

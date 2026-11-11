@@ -1,0 +1,29 @@
+# Figaro deb 包的中文说明 / Debian packaging notes
+#
+# 这个包只安装“系统级”的那一半：/usr/lib/figaro 程序树、/usr/bin 启动器、
+# /usr/lib/systemd/user 的静态 units、桌面入口和图标。用户级的那一半必须由
+# 桌面用户自己运行（Debian 包脚本以 root 运行，不能替你启用 user units）：
+#
+#     figaro install-user
+#
+# 或者直接点应用菜单里的「费加罗」，设置面板首次启动会自动完成用户级安装。
+#
+# 安装后
+#   1. figaro install-user            # 用户级安装（QML、user units、配置脚手架）
+#   2. $EDITOR ~/.config/figaro/config.json   # 填 DeepSeek / MiniMax API key
+#   3. FIGARO_MODELS_DIR=~/.local/share/figaro/models \
+#        bash /usr/lib/figaro/scripts/fetch-models.sh     # 下载语音模型（不随包分发）
+#   4. figaro doctor                  # 体检
+#
+# 支持与不支持
+#   * KDE Plasma 6 Wayland：正式支持（含 KWin 液态玻璃，若装了 KOS）
+#   * sway / Hyprland 等 wlroots：overlay 可显示（layer-shell），玻璃效果回退为半透明；
+#     截图走 grim/xdg-desktop-portal；热键走 portal
+#   * GNOME Wayland：没有 wlr-layer-shell，Quickshell overlay 无法显示；语音/CLI 仍可用
+#   * X11：不支持（Quickshell 仅 Wayland）
+#   详见 /usr/share/doc/figaro/platform-support.md
+#
+# 卸载
+#   先以用户身份：systemctl --user disable --now figaro figaro-ui
+#   再 sudo apt remove figaro
+#   ~/.config/figaro（key、声纹）与 ~/.local/share/figaro/models 不会被删除。

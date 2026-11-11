@@ -296,7 +296,8 @@ export function createDaemon(options = {}) {
       pid: process.pid,
       socket: socketPath,
       uptimeMs: startedAt > 0 ? Date.now() - startedAt : 0,
-      model: config.deepseek?.model ?? null,
+      model: config.llm?.model ?? config.deepseek?.model ?? null,
+      provider: config.llm?.provider ?? config.deepseek?.provider ?? 'deepseek',
       voice: { asr: Boolean(voice.asr), tts: Boolean(voice.tts) },
       asrCapturing: Boolean(voice.asr?.capturing),
       wakeMuted: Boolean(wakeMuted),
@@ -1629,6 +1630,19 @@ export function createDaemon(options = {}) {
 
     const keyPaths = changedPaths.filter((path) => path === 'deepseek.apiKey');
     if (keyPaths.length > 0) applied.push(...keyPaths); // the agent reads config per request
+    // Generic LLM settings are read per request too (llm.js resolves config.llm
+    // each call), so a provider/model/key change applies without a restart.
+    const llmPaths = changedPaths.filter((path) => path.startsWith('llm.'));
+    if (llmPaths.length > 0) {
+      applied.push(...llmPaths);
+      const provider = config.llm?.provider ?? 'deepseek';
+      const model = config.llm?.model ?? config.deepseek?.model ?? '?';
+      log.info(`llm settings reloaded (${provider} / ${model})`);
+    }
+    // Memory auto-ingest is captured when the RAG client is created; a restart
+    // is the honest answer for changing it at runtime.
+    const ragPaths = changedPaths.filter((path) => path === 'rag.autoIngest');
+    if (ragPaths.length > 0) restartRequired.push(...ragPaths);
     const minimaxKey = changedPaths.filter((path) => path === 'minimax.apiKey');
     if (minimaxKey.length > 0) {
       const ok = await recreateTts();

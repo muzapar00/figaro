@@ -262,6 +262,28 @@ Item {
                 ctx.arc(9, 12.9, 0.9, 0, Math.PI * 2, false);
                 ctx.fill();
                 break;
+            case "info":
+                ctx.beginPath();
+                ctx.arc(9, 9, 6.4, 0, Math.PI * 2, false);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(9, 8.2); ctx.lineTo(9, 12.6);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(9, 5.9, 0.95, 0, Math.PI * 2, false);
+                ctx.fill();
+                break;
+            case "external":
+                ctx.beginPath();
+                ctx.moveTo(7.4, 4.2); ctx.lineTo(4.6, 4.2); ctx.lineTo(4.6, 13.8); ctx.lineTo(14.2, 13.8); ctx.lineTo(14.2, 11.0);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(10.6, 3.4); ctx.lineTo(14.6, 3.4); ctx.lineTo(14.6, 7.4);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(9.0, 9.0); ctx.lineTo(14.4, 3.6);
+                ctx.stroke();
+                break;
             case "dot":
                 ctx.beginPath();
                 ctx.arc(9, 9, 3.2, 0, Math.PI * 2, false);

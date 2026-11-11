@@ -7,6 +7,8 @@ import "../components"
 MPageScroll {
     id: page
 
+    signal infoRequested(string title, string body, string linkLabel, string linkUrl)
+
     property string sink: ""
     property string voiceId: ""
     property string draftSink: ""
@@ -16,7 +18,7 @@ MPageScroll {
     property var ackPhrases: []
     property bool editingPhrases: false
     property string draftPhrases: ""
-    property string previewText: "你好，我是费加罗。今天想帮你做点什么？"
+    property string previewText: I18n.t("你好，我是费加罗。今天想帮你做点什么？")
     property int previewSeq: 0
     property bool sfxEnabled: true
     property real sfxVolume: 0.35
@@ -27,12 +29,21 @@ MPageScroll {
     readonly property bool ttsSupported: !Ipc.unsupported("test.tts")
     // Voices already benchmarked on this machine (tests/tts/bench-voice.mjs).
     readonly property var voiceCandidates: [
-        { id: "male-qn-jingying", label: "精英青年音色（当前默认）" },
-        { id: "male-qn-qingse", label: "青涩青年音色" },
-        { id: "Chinese (Mandarin)_Gentleman", label: "温润男声" },
-        { id: "Chinese (Mandarin)_Radio_Host", label: "电台男主播" },
-        { id: "Chinese (Mandarin)_Male_Announcer", label: "播报男声" },
+        { id: "male-qn-jingying", label: I18n.t("精英青年音色（当前默认）") },
+        { id: "male-qn-qingse", label: I18n.t("青涩青年音色") },
+        { id: "Chinese (Mandarin)_Gentleman", label: I18n.t("温润男声") },
+        { id: "Chinese (Mandarin)_Radio_Host", label: I18n.t("电台男主播") },
+        { id: "Chinese (Mandarin)_Male_Announcer", label: I18n.t("播报男声") },
     ]
+
+    function openMinimaxInfo() {
+        page.infoRequested(
+            I18n.t("MiniMax · 推荐语音服务商"),
+            I18n.t("我们无法直接提供高质量的实时 TTS 服务，需要你自己向服务商申请 API Key。Key 只保存在本机 config.json（权限 600），不会上传给我们，也不会写进日志。MiniMax 是推荐服务商，不是唯一选择。"),
+            I18n.t("打开 MiniMax 控制台"),
+            "https://platform.minimaxi.com/user-center/basic-information/interface-key");
+        return "minimax-info";
+    }
 
     function syncFromConfig() {
         page.sink = String(Ipc.cfg("tts.sink", "") || "");
@@ -49,14 +60,14 @@ MPageScroll {
     // The daemon returns [{name, description, isDefault, isCurrent}]; the fake
     // daemon uses {id, label}. Accept both shapes.
     function sinkItems() {
-        const items = [{ id: "", label: "系统默认输出" }];
+        const items = [{ id: "", label: I18n.t("系统默认输出") }];
         for (let i = 0; i < page.sinks.length; i++) {
             const s = page.sinks[i];
             const id = String(s.name !== undefined ? s.name : (s.id !== undefined ? s.id : s));
             let label = String(s.description !== undefined && s.description.length > 0 ? s.description
                 : (s.label !== undefined ? s.label : id));
-            if (s.isDefault) label += " · 默认";
-            if (s.isCurrent) label += " · 当前";
+            if (s.isDefault) label += I18n.t(" · 默认");
+            if (s.isCurrent) label += I18n.t(" · 当前");
             items.push({ id: id, label: label });
         }
         return items;
@@ -87,7 +98,7 @@ MPageScroll {
     function voiceLabel() {
         for (let i = 0; i < page.voiceCandidates.length; i++)
             if (page.voiceCandidates[i].id === page.voiceId) return page.voiceCandidates[i].label;
-        return page.voiceId.length > 0 ? page.voiceId : "未设置";
+        return page.voiceId.length > 0 ? page.voiceId : I18n.t("未设置");
     }
 
     function setVoiceId(id) {
@@ -96,7 +107,7 @@ MPageScroll {
     }
 
     function previewVoice() {
-        const text = page.previewText.trim().length > 0 ? page.previewText.trim() : "你好，我是费加罗。";
+        const text = page.previewText.trim().length > 0 ? page.previewText.trim() : I18n.t("你好，我是费加罗。");
         page.previewSeq += 1;
         Ipc.ttsTest(text, page.voiceId);
         return "tts-preview:" + text;
@@ -140,7 +151,7 @@ MPageScroll {
 
     function snapshot() {
         return {
-            title: "语音",
+            title: I18n.t("语音"),
             sink: page.sink,
             voiceId: page.voiceId,
             speed: page.speed,
@@ -163,28 +174,28 @@ MPageScroll {
     Component.onCompleted: page.syncFromConfig()
 
     MPageHeader {
-        title: "语音"
-        subtitle: "输出设备、音色试听、语速与唤醒应答"
+        title: I18n.t("语音")
+        subtitle: I18n.t("输出设备、音色试听、语速与唤醒应答")
         icon: "speaker"
     }
 
     MCard {
-        title: "输出设备"
+        title: I18n.t("输出设备")
 
         MRow {
-            label: "输出 sink"
-            subtitle: "写入 tts.sink · 空 = 系统默认输出"
+            label: I18n.t("输出 sink")
+            subtitle: I18n.t("写入 tts.sink · 空 = 系统默认输出")
             showSeparator: page.editingSink
             MDropdown {
                 items: page.sinkItems()
                 currentId: page.sink
-                placeholder: "选择输出设备…"
+                placeholder: I18n.t("选择输出设备…")
                 onPicked: (id) => page.applySink(id)
             }
         }
         MRow {
-            label: "手动填写"
-            subtitle: "诊断接口没有候选 sink 时，直接输入 PipeWire/PulseAudio sink 名"
+            label: I18n.t("手动填写")
+            subtitle: I18n.t("诊断接口没有候选 sink 时，直接输入 PipeWire/PulseAudio sink 名")
             showSeparator: false
             RowLayout {
                 spacing: 8
@@ -192,10 +203,10 @@ MPageScroll {
                     inputWidth: 230
                     text: page.draftSink
                     placeholder: "alsa_output.…"
-                    onTextChanged: page.draftSink = text
+                    onEdited: (value) => page.draftSink = value
                 }
                 MButton {
-                    text: "应用"
+                    text: I18n.t("应用")
                     onClicked: page.applySink(page.draftSink.trim())
                 }
             }
@@ -203,7 +214,7 @@ MPageScroll {
         Text {
             visible: Ipc.unsupported("config.get")
             Layout.fillWidth: true
-            text: "当前 daemon 不支持 config.get：sink/语速/应答设置显示默认值，修改不会生效。"
+            text: I18n.t("当前 daemon 不支持 config.get：sink/语速/应答设置显示默认值，修改不会生效。")
             color: Theme.yellow
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -211,9 +222,9 @@ MPageScroll {
         }
         Text {
             Layout.fillWidth: true
-            text: "当前：" + (page.sink.length > 0 ? page.sink : "系统默认")
-                + (page.ttsInfo.sinkStatus ? "  ·  sink 状态 " + page.ttsInfo.sinkStatus : "")
-                + (page.sinks.length > 0 ? "  ·  诊断提供 " + page.sinks.length + " 个候选" : "")
+            text: I18n.t("当前：") + (page.sink.length > 0 ? page.sink : I18n.t("系统默认"))
+                + (page.ttsInfo.sinkStatus ? I18n.t("  ·  sink 状态 ") + page.ttsInfo.sinkStatus : "")
+                + (page.sinks.length > 0 ? I18n.t("  ·  诊断提供 ") + page.sinks.length + I18n.t(" 个候选") : "")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -223,19 +234,19 @@ MPageScroll {
 
     // -------------------------------------------------------------- 音色
     MCard {
-        title: "音色"
-        subtitle: "tts.voiceId · 已在本机实测过的男声候选；改动会重建 TTS 连接（热生效，约 0.2–0.4 s 首字延迟）"
+        title: I18n.t("音色")
+        subtitle: I18n.t("tts.voiceId · 已在本机实测过的男声候选；改动会重建 TTS 连接（热生效，约 0.2–0.4 s 首字延迟）")
 
         MRow {
-            label: "音色"
-            subtitle: "当前：" + page.voiceLabel() + "（" + (page.voiceId.length > 0 ? page.voiceId : "未设置") + "）"
+            label: I18n.t("音色")
+            subtitle: I18n.t("当前：") + page.voiceLabel() + "（" + (page.voiceId.length > 0 ? page.voiceId : I18n.t("未设置")) + "）"
             RowLayout {
                 spacing: 8
                 MApplyStatus { paths: ["tts.voiceId"] }
                 MDropdown {
                     items: page.voiceCandidates
                     currentId: page.voiceId
-                    placeholder: "选择音色…"
+                    placeholder: I18n.t("选择音色…")
                     onPicked: (id) => page.setVoiceId(id)
                 }
             }
@@ -244,14 +255,14 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: "试听当前音色"
+                text: I18n.t("试听当前音色")
                 icon: "play"
                 enabled: Ipc.connected && page.ttsSupported && !Ipc.ttsRunning
                 onClicked: page.previewVoice()
             }
             Text {
                 Layout.fillWidth: true
-                text: "实测（speech-2.6-turbo × 5 音色）：首字延迟 189–239 ms，生成 308–379 ms，语速 4.66–5.82 字/秒"
+                text: I18n.t("实测（speech-2.6-turbo × 5 音色）：首字延迟 189–239 ms，生成 308–379 ms，语速 4.66–5.82 字/秒")
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsTiny
@@ -260,9 +271,80 @@ MPageScroll {
         }
     }
 
+    // ---------------------------------------------- 推荐语音服务商 MiniMax
     MCard {
-        title: "音色试听"
-        subtitle: "test.tts：走和回复相同的 TTS 链路与输出设备，测首字延迟"
+        title: I18n.t("推荐语音服务商")
+        subtitle: I18n.t("费加罗的「嗓子」：把回复读出来需要 TTS 服务商；语音识别是本地的，不需要 Key")
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: minimaxLayout.implicitHeight + 24
+            radius: 10
+            color: Theme.insetBg
+            border.width: 0.5
+            border.color: Qt.rgba(1, 1, 1, 0.08)
+
+            ColumnLayout {
+                id: minimaxLayout
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "MiniMax"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 14
+                        font.weight: Font.DemiBold
+                    }
+                    MPill {
+                        text: I18n.t("推荐服务商")
+                        tone: Theme.accent
+                    }
+                    MIcon {
+                        kind: "info"
+                        size: 15
+                        color: Theme.accent
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.openMinimaxInfo()
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                    MButton {
+                        text: I18n.t("获取 API Key →")
+                        onClicked: Qt.openUrlExternally("https://platform.minimaxi.com/user-center/basic-information/interface-key")
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: I18n.t("音色自然、延迟低，费加罗的默认 TTS 选择；Key 填在「连接」页的 MiniMax API Key 里。")
+                    color: Theme.textDim
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.fsSmall
+                    wrapMode: Text.WordWrap
+                }
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: I18n.t("推荐服务商，非唯一选择；语音识别/唤醒词完全本地运行，不需要任何 Key。")
+            color: Theme.textFaint
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.fsTiny
+            wrapMode: Text.WordWrap
+        }
+    }
+
+    MCard {
+        title: I18n.t("音色试听")
+        subtitle: I18n.t("test.tts：走和回复相同的 TTS 链路与输出设备，测首字延迟")
         contentSpacing: 14
 
         Rectangle {
@@ -278,7 +360,7 @@ MPageScroll {
                 MIcon { kind: "warning"; size: 14; color: Theme.yellow }
                 Text {
                     Layout.fillWidth: true
-                    text: "当前 daemon 不支持此功能（test.tts 未响应）。"
+                    text: I18n.t("当前 daemon 不支持此功能（test.tts 未响应）。")
                     color: Theme.yellow
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
@@ -292,18 +374,18 @@ MPageScroll {
             MTextField {
                 Layout.fillWidth: true
                 text: page.previewText
-                placeholder: "试听文本"
-                onTextChanged: page.previewText = text
+                placeholder: I18n.t("试听文本")
+                onEdited: (value) => page.previewText = value
             }
             MButton {
-                text: Ipc.ttsRunning ? "合成中…" : "试听"
+                text: Ipc.ttsRunning ? I18n.t("合成中…") : I18n.t("试听")
                 icon: "play"
                 primary: true
                 enabled: Ipc.connected && page.ttsSupported && !Ipc.ttsRunning
                 onClicked: page.previewVoice()
             }
             MButton {
-                text: "试听应答"
+                text: I18n.t("试听应答")
                 enabled: Ipc.connected && page.ttsSupported && !Ipc.ttsRunning
                 onClicked: page.previewAck()
             }
@@ -313,28 +395,28 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 12
             MStat {
-                label: "首字延迟"
+                label: I18n.t("首字延迟")
                 value: Ipc.ttsResult.ms !== undefined ? String(Ipc.ttsResult.ms) : "—"
                 unit: "ms"
                 tone: Ipc.ttsResult.ms !== undefined && Ipc.ttsResult.ms < 500 ? Theme.green : Theme.orange
-                hint: "合成 + 交给播放器"
+                hint: I18n.t("合成 + 交给播放器")
             }
             MStat {
-                label: "合成耗时"
+                label: I18n.t("合成耗时")
                 value: Ipc.ttsResult.synthMs !== undefined ? String(Ipc.ttsResult.synthMs) : "—"
                 unit: "ms"
                 tone: Theme.text
             }
             MStat {
-                label: "音频时长"
+                label: I18n.t("音频时长")
                 value: Ipc.ttsResult.durationMs !== undefined ? String(Ipc.ttsResult.durationMs) : "—"
                 unit: "ms"
                 tone: Theme.text
                 hint: Ipc.ttsResult.sampleRate !== undefined ? Ipc.ttsResult.sampleRate + " Hz" : ""
             }
             MStat {
-                label: "结果"
-                value: Ipc.ttsResult.ok === undefined ? "—" : (Ipc.ttsResult.ok ? "成功" : "失败")
+                label: I18n.t("结果")
+                value: Ipc.ttsResult.ok === undefined ? "—" : (Ipc.ttsResult.ok ? I18n.t("成功") : I18n.t("失败"))
                 tone: Ipc.ttsResult.ok === false ? Theme.red : (Ipc.ttsResult.ok ? Theme.green : Theme.textDim)
                 hint: Ipc.ttsResult.error !== undefined ? String(Ipc.ttsResult.error) : ""
             }
@@ -343,12 +425,12 @@ MPageScroll {
 
     // -------------------------------------------------------------- 音效
     MCard {
-        title: "音效"
-        subtitle: "界面提示音（唤醒 / 采集结束 / 回答结束 / 退下 / 错误）· sfx.* · 音效比语音低 4–6 dB，不会盖住说话"
+        title: I18n.t("音效")
+        subtitle: I18n.t("界面提示音（唤醒 / 采集结束 / 回答结束 / 退下 / 错误）· sfx.* · 音效比语音低 4–6 dB，不会盖住说话")
 
         MRow {
-            label: "音效开关"
-            subtitle: "sfx.enabled · 5 个短音，走和语音同一个输出 sink"
+            label: I18n.t("音效开关")
+            subtitle: I18n.t("sfx.enabled · 5 个短音，走和语音同一个输出 sink")
             RowLayout {
                 spacing: 8
                 MApplyStatus { paths: ["sfx.enabled"] }
@@ -359,8 +441,8 @@ MPageScroll {
             }
         }
         MRow {
-            label: "音效音量"
-            subtitle: "sfx.volume · 0–1（默认 0.35，比语音低 4–6 dB）"
+            label: I18n.t("音效音量")
+            subtitle: I18n.t("sfx.volume · 0–1（默认 0.35，比语音低 4–6 dB）")
             showSeparator: false
             RowLayout {
                 spacing: 8
@@ -385,8 +467,8 @@ MPageScroll {
         }
         Text {
             Layout.fillWidth: true
-            text: "说明：音效与语音共用同一个 sink，做成短促的一声（约 100–300 ms）；音量刻意压低，"
-                + "不会盖住正在说的话。改动立即生效，无需重启 daemon。"
+            text: I18n.t("说明：音效与语音共用同一个 sink，做成短促的一声（约 100–300 ms）；音量刻意压低，")
+                + I18n.t("不会盖住正在说的话。改动立即生效，无需重启 daemon。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny
@@ -395,12 +477,12 @@ MPageScroll {
     }
 
     MAdvancedCard {
-        title: "高级 · 语速"
-        subtitle: "写入 tts.speed（MiniMax 语速倍率）"
+        title: I18n.t("高级 · 语速")
+        subtitle: I18n.t("写入 tts.speed（MiniMax 语速倍率）")
 
         MRow {
-            label: "语速"
-            subtitle: "0.6× 更慢 · 1.0× 正常 · 1.8× 更快"
+            label: I18n.t("语速")
+            subtitle: I18n.t("0.6× 更慢 · 1.0× 正常 · 1.8× 更快")
             showSeparator: false
             RowLayout {
                 spacing: 8
@@ -426,12 +508,12 @@ MPageScroll {
     }
 
     MAdvancedCard {
-        title: "高级 · 唤醒应答"
-        subtitle: "唤醒后立刻播报的短语（tts.ack.*），把“听到了”的反馈压到最短"
+        title: I18n.t("高级 · 唤醒应答")
+        subtitle: I18n.t("唤醒后立刻播报的短语（tts.ack.*），把“听到了”的反馈压到最短")
 
         MRow {
-            label: "开启应答"
-            subtitle: "写入 tts.ack.enabled"
+            label: I18n.t("开启应答")
+            subtitle: I18n.t("写入 tts.ack.enabled")
             MToggle {
                 checked: page.ackEnabled
                 onToggled: (value) => {
@@ -441,11 +523,11 @@ MPageScroll {
             }
         }
         MRow {
-            label: "应答短语"
-            subtitle: page.editingPhrases ? "逗号分隔" : (page.ackPhrases.length > 0 ? page.ackPhrases.join(" / ") : "未设置")
+            label: I18n.t("应答短语")
+            subtitle: page.editingPhrases ? I18n.t("逗号分隔") : (page.ackPhrases.length > 0 ? page.ackPhrases.join(" / ") : I18n.t("未设置"))
             visible: !page.editingPhrases
             MButton {
-                text: "编辑短语"
+                text: I18n.t("编辑短语")
                 icon: "sliders"
                 onClicked: {
                     page.editingPhrases = true;
@@ -463,22 +545,22 @@ MPageScroll {
                 MTextField {
                     Layout.fillWidth: true
                     text: page.draftPhrases
-                    placeholder: "我在, 在的, 请指示"
+                    placeholder: I18n.t("我在, 在的, 请指示")
                 }
                 MButton {
-                    text: "保存"
+                    text: I18n.t("保存")
                     primary: true
                     onClicked: page.savePhrases()
                 }
                 MButton {
-                    text: "取消"
+                    text: I18n.t("取消")
                     onClicked: page.editingPhrases = false;
                 }
             }
         }
         MRow {
-            label: "应答超时"
-            subtitle: "超过该时间没合成出来就跳过应答 · tts.ack.timeoutMs"
+            label: I18n.t("应答超时")
+            subtitle: I18n.t("超过该时间没合成出来就跳过应答 · tts.ack.timeoutMs")
             showSeparator: false
             Text {
                 text: String(Ipc.cfg("tts.ack.timeoutMs", 800)) + " ms"
@@ -490,7 +572,7 @@ MPageScroll {
         Text {
             visible: Ipc.configErrors.length > 0
             Layout.fillWidth: true
-            text: "daemon 拒绝：" + Ipc.configErrors.join("；")
+            text: I18n.t("daemon 拒绝：") + Ipc.configErrors.join("；")
             color: Theme.orange
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall

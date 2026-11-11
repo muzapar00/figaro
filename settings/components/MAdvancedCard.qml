@@ -7,7 +7,7 @@ import ".."
 Rectangle {
     id: root
 
-    property string title: "高级"
+    property string title: I18n.t("高级")
     property string subtitle: ""
     property bool expanded: false
     property int expandedHeight: -1
@@ -84,7 +84,7 @@ Rectangle {
             anchors.right: parent.right
             anchors.rightMargin: root.innerPadding
             anchors.verticalCenter: parent.verticalCenter
-            text: root.expanded ? "收起" : "展开"
+            text: root.expanded ? I18n.t("收起") : I18n.t("展开")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny

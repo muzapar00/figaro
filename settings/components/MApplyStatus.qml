@@ -13,12 +13,12 @@ Item {
     readonly property string state: root.status ? root.status.state : ""
     readonly property string label: {
         switch (root.state) {
-        case "pending": return "写入中…";
-        case "applied": return "已生效";
-        case "restart": return "已写入 · 需重启 daemon";
-        case "forbidden": return "daemon 未开放此配置";
-        case "unknown": return "已写入 · 未报告生效";
-        case "error": return root.status && root.status.message ? root.status.message : "写入失败";
+        case "pending": return I18n.t("写入中…");
+        case "applied": return I18n.t("已生效");
+        case "restart": return I18n.t("已写入 · 需重启 daemon");
+        case "forbidden": return I18n.t("daemon 未开放此配置");
+        case "unknown": return I18n.t("已写入 · 未报告生效");
+        case "error": return root.status && root.status.message ? root.status.message : I18n.t("写入失败");
         default: return "";
         }
     }

@@ -15,16 +15,17 @@ Rectangle {
     property string pageKey: "overview"
 
     readonly property var navModel: [
-        { key: "overview", label: "概览", icon: "overview", advanced: false },
-        { key: "wizard", label: "引导测试", icon: "wand", advanced: false },
-        { key: "appearance", label: "外观", icon: "sliders", advanced: false },
-        { key: "api", label: "连接", icon: "key", advanced: false },
-        { key: "wake", label: "唤醒", icon: "wake", advanced: true },
-        { key: "interaction", label: "交互", icon: "chat", advanced: true },
-        { key: "mic", label: "麦克风", icon: "mic", advanced: true },
-        { key: "voice", label: "语音", icon: "speaker", advanced: true },
-        { key: "asr", label: "识别", icon: "text", advanced: true },
-        { key: "diagnostics", label: "诊断", icon: "diagnostics", advanced: true },
+        { key: "overview", label: I18n.t("概览"), icon: "overview", advanced: false },
+        { key: "wizard", label: I18n.t("新手引导"), icon: "wand", advanced: false },
+        { key: "llm", label: I18n.t("模型服务"), icon: "chat", advanced: false },
+        { key: "appearance", label: I18n.t("外观"), icon: "sliders", advanced: false },
+        { key: "api", label: I18n.t("连接"), icon: "key", advanced: false },
+        { key: "wake", label: I18n.t("唤醒"), icon: "wake", advanced: true },
+        { key: "interaction", label: I18n.t("交互"), icon: "chat", advanced: true },
+        { key: "mic", label: I18n.t("麦克风"), icon: "mic", advanced: true },
+        { key: "voice", label: I18n.t("语音"), icon: "speaker", advanced: true },
+        { key: "asr", label: I18n.t("识别"), icon: "text", advanced: true },
+        { key: "diagnostics", label: I18n.t("诊断"), icon: "diagnostics", advanced: true },
     ]
 
     function showPage(key) {
@@ -49,25 +50,62 @@ Rectangle {
     // Modal for CLI commands the settings window cannot run itself (voiceprint
     // enrollment drives the microphone through `figaro enroll-voice`).
     function showEnrollCommand() {
-        commandDialog.title = "重新录制声纹";
+        commandDialog.title = I18n.t("重新录制声纹");
         commandDialog.command = "figaro enroll-voice";
-        commandDialog.note = "在安静环境里按提示录 3 句（约 10 秒），录完会自动启用声纹门控。"
-            + "录制需要麦克风，所以由 daemon 的 CLI 完成，设置窗口不能直接驱动录音。"
-            + "录完后回这里点「刷新」即可看到新的声纹状态。";
+        commandDialog.note = I18n.t("在安静环境里按提示录 3 句（约 10 秒），录完会自动启用声纹门控。")
+            + I18n.t("录制需要麦克风，所以由 daemon 的 CLI 完成，设置窗口不能直接驱动录音。")
+            + I18n.t("录完后回这里点「刷新」即可看到新的声纹状态。");
         commandDialog.show();
         return "enroll-dialog-open";
+    }
+
+    function showInfoDialog(title, body, linkLabel, linkUrl) {
+        infoDialog.title = title;
+        infoDialog.body = body;
+        infoDialog.linkLabel = linkLabel;
+        infoDialog.linkUrl = linkUrl;
+        infoDialog.show();
+        return "info-open";
     }
 
     function runAction(name) {
         // scroll:<px> lets the self-test harness park the page at an offset.
         if (name.indexOf("scroll:") === 0) return app.scrollCurrent(name.slice(7));
+        if (name.indexOf("llm-provider:") === 0) return llmPage.useProvider(name.slice(13));
+        if (name.indexOf("wizard-goto:") === 0) return wizardPage.gotoStep(name.slice(12));
+        if (name.indexOf("wizard-region:") === 0) {
+            wizardPage.selectRegion(name.slice(14));
+            wizardPage.gotoStep(3);
+            return "wizard-region-" + name.slice(14);
+        }
+        if (name.indexOf("wizard-memory:") === 0) {
+            wizardPage.setMemory(name.slice(14) === "on");
+            wizardPage.gotoStep(4);
+            return "wizard-memory-" + name.slice(14);
+        }
+        if (name.indexOf("llm-info:") === 0) return llmPage.openProviderInfo(name.slice(9));
+        if (name.indexOf("lang:") === 0) {
+            I18n.setLanguage(name.slice(5));
+            return "language-" + name.slice(5);
+        }
         switch (name) {
         case "wizard-start": app.showPage("wizard"); return wizardPage.startWizard();
-        case "wizard-run": return wizardPage.runCurrentStep();
         case "wizard-next": return wizardPage.nextStep();
+        case "wizard-prev": return wizardPage.prevStep();
         case "wizard-skip": return wizardPage.skipStep();
         case "wizard-reset": return wizardPage.resetWizard();
-        case "wizard-finish": return wizardPage.finishWizardSummary();
+        case "wizard-finish": return wizardPage.finishWizard();
+        case "wizard-selftest": wizardPage.gotoStep(7); return wizardPage.runSelfTest();
+        case "wizard-memory-info": wizardPage.gotoStep(4); return wizardPage.openMemoryInfo();
+        case "voice-minimax-info": return voicePage.openMinimaxInfo();
+        case "wizard-selftest-pass": wizardPage.gotoStep(7); return wizardPage.markSelfTest();
+        case "wizard-llm-demo": return wizardPage.fillLlmDemo();
+        case "wizard-finish-summary": return wizardPage.finishWizard();
+        case "llm-demo": return llmPage.demoWrite();
+        case "llm-save": return llmPage.save();
+        case "llm-test": return llmPage.testConnection();
+
+        case "info-close": infoDialog.close(); return "info-closed";
         case "appearance-demo": return appearancePage.demoWrite();
         case "appearance-reset": return appearancePage.resetDefaults();
         case "api-demo": return apiKeysPage.demoWrite();
@@ -109,7 +147,7 @@ Rectangle {
     }
 
     function currentPage() {
-        const pages = [overviewPage, wizardPage, appearancePage, apiKeysPage,
+        const pages = [overviewPage, wizardPage, llmPage, appearancePage, apiKeysPage,
                        wakePage, interactionPage, micPage, voicePage, asrPage, diagnosticsPage];
         return pages[app.pageIndex] || null;
     }
@@ -151,6 +189,7 @@ Rectangle {
             wizard: wizardPage.snapshot(),
             appearance: appearancePage.snapshot(),
             api: apiKeysPage.snapshot(),
+            llm: llmPage.snapshot(),
             ui: Ipc.uiSnapshot,
             windowButtonSize: Math.round(Number(Ipc.uiValue("windowButtonSize", 16))),
             wake: wakePage.snapshot(),
@@ -171,11 +210,11 @@ Rectangle {
         width: parent.width
         height: Theme.titleBarH
         targetWindow: app.targetWindow
-        title: "费加罗"
+        title: I18n.t("费加罗")
         subtitle: ""
         buttonSize: Math.round(Number(Ipc.uiValue("windowButtonSize", 16)))
-        modeText: Ipc.usingTestSocket ? "测试 daemon" : ""
-        statusText: Ipc.connected ? "已连接" : "未连接"
+        modeText: Ipc.usingTestSocket ? I18n.t("测试 daemon") : ""
+        statusText: Ipc.connected ? I18n.t("已连接") : I18n.t("未连接")
         statusTone: Ipc.connected ? Theme.green : Theme.red
     }
 
@@ -193,13 +232,13 @@ Rectangle {
         y: titleBar.height
         width: Theme.sidebarW
         height: parent.height - titleBar.height
-        appName: "费加罗"
-        appSubtitle: "语音助手 · 系统设置"
+        appName: I18n.t("费加罗")
+        appSubtitle: I18n.t("语音助手 · 系统设置")
         model: app.navModel
         currentIndex: app.pageIndex
         currentKey: app.pageKey
         footerText: "Figaro " + (Ipc.diagnostics.version ? String(Ipc.diagnostics.version).split(" ")[0] : "0.1.0")
-            + (Ipc.usingTestSocket ? " · 测试模式" : "")
+            + (Ipc.usingTestSocket ? I18n.t(" · 测试模式") : "")
         onSelected: (index, key) => app.showPage(key)
     }
 
@@ -235,46 +274,54 @@ Rectangle {
             visible: app.pageIndex === 1
             onGoOverview: app.showPage("overview")
         }
+        LlmPage {
+            id: llmPage
+            anchors.fill: parent
+            visible: app.pageIndex === 2
+            onInfoRequested: (title, body, linkLabel, linkUrl) => app.showInfoDialog(title, body, linkLabel, linkUrl)
+        }
         AppearancePage {
             id: appearancePage
             anchors.fill: parent
-            visible: app.pageIndex === 2
+            visible: app.pageIndex === 3
         }
         ApiKeysPage {
             id: apiKeysPage
             anchors.fill: parent
-            visible: app.pageIndex === 3
+            visible: app.pageIndex === 4
+            onInfoRequested: (title, body, linkLabel, linkUrl) => app.showInfoDialog(title, body, linkLabel, linkUrl)
         }
         WakePage {
             id: wakePage
             anchors.fill: parent
-            visible: app.pageIndex === 4
+            visible: app.pageIndex === 5
             onEnrollCommandRequested: app.showEnrollCommand()
         }
         InteractionPage {
             id: interactionPage
             anchors.fill: parent
-            visible: app.pageIndex === 5
+            visible: app.pageIndex === 6
         }
         MicPage {
             id: micPage
             anchors.fill: parent
-            visible: app.pageIndex === 6
+            visible: app.pageIndex === 7
         }
         VoicePage {
             id: voicePage
             anchors.fill: parent
-            visible: app.pageIndex === 7
+            visible: app.pageIndex === 8
+            onInfoRequested: (title, body, linkLabel, linkUrl) => app.showInfoDialog(title, body, linkLabel, linkUrl)
         }
         AsrPage {
             id: asrPage
             anchors.fill: parent
-            visible: app.pageIndex === 8
+            visible: app.pageIndex === 9
         }
         DiagnosticsPage {
             id: diagnosticsPage
             anchors.fill: parent
-            visible: app.pageIndex === 9
+            visible: app.pageIndex === 10
         }
     }
 
@@ -282,5 +329,11 @@ Rectangle {
         id: commandDialog
         anchors.fill: parent
         z: 60
+    }
+
+    MInfoDialog {
+        id: infoDialog
+        anchors.fill: parent
+        z: 61
     }
 }

@@ -71,7 +71,7 @@ MPageScroll {
 
     function snapshot() {
         return {
-            title: "诊断",
+            title: I18n.t("诊断"),
             confirmRestart: page.confirmRestart,
             restartState: Ipc.restartState,
             lastExportPath: page.lastExportPath,
@@ -120,20 +120,20 @@ MPageScroll {
     }
 
     MPageHeader {
-        title: "诊断"
-        subtitle: "配置、日志、服务维护与诊断报告"
+        title: I18n.t("诊断")
+        subtitle: I18n.t("配置、日志、服务维护与诊断报告")
         icon: "diagnostics"
     }
 
     MCard {
-        title: "运行环境"
+        title: I18n.t("运行环境")
 
         MRow {
-            label: "配置文件"
+            label: I18n.t("配置文件")
             subtitle: page.diag.configPath !== undefined ? String(page.diag.configPath) : Ipc.configPath
             controlMinWidth: 60
             MButton {
-                text: "复制路径"
+                text: I18n.t("复制路径")
                 onClicked: Quickshell.clipboardText = page.diag.configPath !== undefined ? String(page.diag.configPath) : Ipc.configPath;
             }
         }
@@ -141,12 +141,12 @@ MPageScroll {
             label: "Socket"
             subtitle: Ipc.socketPath
             MPill {
-                text: Ipc.usingTestSocket ? "测试 socket" : "生产 socket"
+                text: Ipc.usingTestSocket ? I18n.t("测试 socket") : I18n.t("生产 socket")
                 tone: Ipc.usingTestSocket ? Theme.orange : Theme.green
             }
         }
         MRow {
-            label: "日志"
+            label: I18n.t("日志")
             subtitle: page.diag.logPath !== undefined ? String(page.diag.logPath) : "journalctl --user -u figaro"
             Text {
                 text: "journalctl --user -u figaro -f"
@@ -156,7 +156,7 @@ MPageScroll {
             }
         }
         MRow {
-            label: "版本 / 运行时长"
+            label: I18n.t("版本 / 运行时长")
             Text {
                 text: (page.diag.version !== undefined ? String(page.diag.version) : "—")
                     + "  ·  " + (page.diag.uptimeMs !== undefined ? Ipc.fmtDuration(page.diag.uptimeMs) : "—")
@@ -166,7 +166,7 @@ MPageScroll {
             }
         }
         MRow {
-            label: "进程"
+            label: I18n.t("进程")
             showSeparator: false
             Text {
                 text: page.diag.pid !== undefined ? "pid " + page.diag.pid : "—"
@@ -178,11 +178,11 @@ MPageScroll {
     }
 
     MCard {
-        title: "服务维护"
+        title: I18n.t("服务维护")
 
         MRow {
-            label: "重启 daemon"
-            subtitle: "service.restart：会短暂中断语音功能"
+            label: I18n.t("重启 daemon")
+            subtitle: I18n.t("service.restart：会短暂中断语音功能")
             showSeparator: true
             RowLayout {
                 spacing: 8
@@ -190,11 +190,11 @@ MPageScroll {
                     visible: Ipc.restartState.length > 0
                     text: {
                         switch (Ipc.restartState) {
-                        case "sent": return "已发送";
-                        case "accepted": return "正在重启";
-                        case "restarting": return "等待重连";
-                        case "done": return "已恢复";
-                        case "unsupported": return "不支持";
+                        case "sent": return I18n.t("已发送");
+                        case "accepted": return I18n.t("正在重启");
+                        case "restarting": return I18n.t("等待重连");
+                        case "done": return I18n.t("已恢复");
+                        case "unsupported": return I18n.t("不支持");
                         default: return Ipc.restartState;
                         }
                     }
@@ -203,7 +203,7 @@ MPageScroll {
                 }
                 MButton {
                     visible: !page.confirmRestart
-                    text: "重启服务"
+                    text: I18n.t("重启服务")
                     icon: "refresh"
                     danger: true
                     enabled: Ipc.connected && !Ipc.unsupported("service.restart")
@@ -211,54 +211,54 @@ MPageScroll {
                 }
                 MButton {
                     visible: page.confirmRestart
-                    text: "确认重启"
+                    text: I18n.t("确认重启")
                     danger: true
                     onClicked: page.confirmRestartNow()
                 }
                 MButton {
                     visible: page.confirmRestart
-                    text: "取消"
+                    text: I18n.t("取消")
                     onClicked: page.confirmRestart = false
                 }
             }
         }
         MRow {
-            label: "复制日志"
-            subtitle: "最近 300 行 journalctl 日志 → 剪贴板"
+            label: I18n.t("复制日志")
+            subtitle: I18n.t("最近 300 行 journalctl 日志 → 剪贴板")
             RowLayout {
                 spacing: 8
                 Text {
                     visible: page.logCopyState.length > 0
-                    text: page.logCopyState === "copying" ? "复制中…"
-                        : page.logCopyState === "empty" ? "日志为空"
-                        : page.logCopyState === "failed" ? "读取失败"
-                        : "已复制 " + page.logCopyLines + " 行"
+                    text: page.logCopyState === "copying" ? I18n.t("复制中…")
+                        : page.logCopyState === "empty" ? I18n.t("日志为空")
+                        : page.logCopyState === "failed" ? I18n.t("读取失败")
+                        : I18n.t("已复制 ") + page.logCopyLines + I18n.t(" 行")
                     color: page.logCopyState.indexOf("copied") === 0 ? Theme.green : Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
                 }
                 MButton {
-                    text: "复制日志"
+                    text: I18n.t("复制日志")
                     icon: "text"
                     onClicked: page.copyLogs()
                 }
             }
         }
         MRow {
-            label: "导出诊断报告"
-            subtitle: "config / diagnostics / 最近错误 / 自测状态 → ~/figaro-diagnostics-<时间戳>.json"
+            label: I18n.t("导出诊断报告")
+            subtitle: I18n.t("config / diagnostics / 最近错误 / 自测状态 → ~/figaro-diagnostics-<时间戳>.json")
             showSeparator: false
             RowLayout {
                 spacing: 8
                 Text {
                     visible: page.lastExportPath.length > 0
-                    text: "已导出"
+                    text: I18n.t("已导出")
                     color: Theme.green
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
                 }
                 MButton {
-                    text: "导出 JSON"
+                    text: I18n.t("导出 JSON")
                     icon: "export"
                     primary: true
                     onClicked: page.exportReport()
@@ -277,7 +277,7 @@ MPageScroll {
         Text {
             visible: Ipc.unsupported("service.restart")
             Layout.fillWidth: true
-            text: "当前 daemon 不支持此功能（service.restart 未响应）。"
+            text: I18n.t("当前 daemon 不支持此功能（service.restart 未响应）。")
             color: Theme.yellow
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -285,13 +285,13 @@ MPageScroll {
     }
 
     MCard {
-        title: "最近错误"
-        subtitle: "daemon 的 recentErrors + 本次会话收到的 error 帧"
+        title: I18n.t("最近错误")
+        subtitle: I18n.t("daemon 的 recentErrors + 本次会话收到的 error 帧")
 
         Text {
             visible: Ipc.recentErrors.length === 0
             Layout.fillWidth: true
-            text: "暂无错误。"
+            text: I18n.t("暂无错误。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -329,8 +329,8 @@ MPageScroll {
     }
 
     MCard {
-        title: "能力探测"
-        subtitle: "§3.1 消息在本 daemon 上的支持状态（超时即视为未实现）"
+        title: I18n.t("能力探测")
+        subtitle: I18n.t("§3.1 消息在本 daemon 上的支持状态（超时即视为未实现）")
 
         Repeater {
             model: ["config.get", "config.set", "diagnostics", "test.mic.start", "test.asr.start",
@@ -352,8 +352,8 @@ MPageScroll {
                     font.pixelSize: Theme.fsSmall
                 }
                 MPill {
-                    text: Ipc.supported(modelData) ? "支持"
-                        : (Ipc.unsupported(modelData) ? "当前 daemon 不支持此功能" : "未探测")
+                    text: Ipc.supported(modelData) ? I18n.t("支持")
+                        : (Ipc.unsupported(modelData) ? I18n.t("当前 daemon 不支持此功能") : I18n.t("未探测"))
                     tone: Ipc.supported(modelData) ? Theme.green
                         : (Ipc.unsupported(modelData) ? Theme.orange : Theme.textDim)
                 }

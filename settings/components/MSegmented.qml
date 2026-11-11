@@ -48,14 +48,17 @@ Item {
             model: root.options.length
 
             Rectangle {
+                id: segment
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                implicitWidth: segLabel.implicitWidth + 18
                 radius: 6
                 color: root.currentIndex === index
                     ? (root.interactive ? Theme.controlBgActive : Theme.controlBg)
                     : "transparent"
 
                 Text {
+                    id: segLabel
                     anchors.centerIn: parent
                     text: root.labelAt(index)
                     color: root.currentIndex === index ? Theme.text : Theme.textDim

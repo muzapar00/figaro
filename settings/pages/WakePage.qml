@@ -77,11 +77,11 @@ MPageScroll {
 
     function speakerLabel() {
         switch (page.speakerState) {
-        case "ready": return "就绪";
-        case "not-enrolled": return "未注册";
-        case "model-missing": return "模型缺失";
-        case "disabled": return "关闭";
-        default: return page.speakerInfo ? "未知" : "未提供";
+        case "ready": return I18n.t("就绪");
+        case "not-enrolled": return I18n.t("未注册");
+        case "model-missing": return I18n.t("模型缺失");
+        case "disabled": return I18n.t("关闭");
+        default: return page.speakerInfo ? I18n.t("未知") : I18n.t("未提供");
         }
     }
     function speakerTone() {
@@ -96,24 +96,24 @@ MPageScroll {
     function speakerNote() {
         switch (page.speakerState) {
         case "ready":
-            return "声纹已就绪：唤醒时会先比对你的声纹，非主人声音会被过滤掉。";
+            return I18n.t("声纹已就绪：唤醒时会先比对你的声纹，非主人声音会被过滤掉。");
         case "not-enrolled":
-            return "还没有录制声纹：运行下面的命令在安静环境录 3 句，录完自动启用。";
+            return I18n.t("还没有录制声纹：运行下面的命令在安静环境录 3 句，录完自动启用。");
         case "model-missing":
-            return "缺少声纹模型：先运行 scripts/fetch-models.sh（或检查 asr.speaker.model 路径）。";
+            return I18n.t("缺少声纹模型：先运行 scripts/fetch-models.sh（或检查 asr.speaker.model 路径）。");
         case "disabled":
-            return "声纹门控关闭时，任何人喊「费加罗」都会唤醒。开启前建议先录制声纹。";
+            return I18n.t("声纹门控关闭时，任何人喊「费加罗」都会唤醒。开启前建议先录制声纹。");
         default:
-            return "当前 daemon 没有提供声纹状态（旧 daemon 或 ASR 模块未加载）。";
+            return I18n.t("当前 daemon 没有提供声纹状态（旧 daemon 或 ASR 模块未加载）。");
         }
     }
     function speakerScoreText() {
-        if (page.speakerState === "disabled") return "声纹门控已关闭";
+        if (page.speakerState === "disabled") return I18n.t("声纹门控已关闭");
         if (!page.speakerInfo) return "—";
         const parts = [];
-        if (page.speakerLastScore >= 0) parts.push("上次 score " + page.speakerLastScore.toFixed(2));
-        parts.push("已检测 " + page.speakerChecked + " 次");
-        parts.push("已过滤 " + page.speakerRejected + " 次");
+        if (page.speakerLastScore >= 0) parts.push(I18n.t("上次 score ") + page.speakerLastScore.toFixed(2));
+        parts.push(I18n.t("已检测 ") + page.speakerChecked + I18n.t(" 次"));
+        parts.push(I18n.t("已过滤 ") + page.speakerRejected + I18n.t(" 次"));
         return parts.join(" · ");
     }
     function setSpeakerEnabled(value) {
@@ -266,14 +266,14 @@ MPageScroll {
 
     function sensitivityNote() {
         if (page.sensitivity === "high")
-            return "实测（15.2 分钟负样本）：中文 8/8 · 英文 19/20 · 近音误触发 5/40 · 合计误唤醒 6 次（更灵敏，近音代价更高）";
+            return I18n.t("实测（15.2 分钟负样本）：中文 8/8 · 英文 19/20 · 近音误触发 5/40 · 合计误唤醒 6 次（更灵敏，近音代价更高）");
         if (page.sensitivity === "medium")
-            return "实测（15.2 分钟负样本）：中文 8/8 · 英文 20/20 · 近音误触发 2/40 · 合计误唤醒 3 次";
-        return "实测（15.2 分钟负样本）：中文 8/8 · 英文 20/20 · 近音误触发 2/40 · 真人中文 0/10min · 合计 3 次（默认，最保守）";
+            return I18n.t("实测（15.2 分钟负样本）：中文 8/8 · 英文 20/20 · 近音误触发 2/40 · 合计误唤醒 3 次");
+        return I18n.t("实测（15.2 分钟负样本）：中文 8/8 · 英文 20/20 · 近音误触发 2/40 · 真人中文 0/10min · 合计 3 次（默认，最保守）");
     }
 
     function sensitivityLatencyNote() {
-        return "中文检测中位 ≈ 900 ms（「费加」说完）；onWake 延迟中位：中文 ≈ 1249 ms / 英文 ≈ 1435 ms";
+        return I18n.t("中文检测中位 ≈ 900 ms（「费加」说完）；onWake 延迟中位：中文 ≈ 1249 ms / 英文 ≈ 1435 ms");
     }
 
     function setWakeEnabled(value) {
@@ -330,7 +330,7 @@ MPageScroll {
 
     function snapshot() {
         return {
-            title: "唤醒",
+            title: I18n.t("唤醒"),
             testMode: page.testMode,
             wakeArmed: Ipc.wakeArmed,
             wakeSupported: page.wakeSupported,
@@ -468,7 +468,7 @@ MPageScroll {
             MIcon { kind: "warning"; size: 14; color: Theme.yellow }
             Text {
                 Layout.fillWidth: true
-                text: "当前 daemon 不支持 config.get：以下显示本机默认值，修改不会生效。"
+                text: I18n.t("当前 daemon 不支持 config.get：以下显示本机默认值，修改不会生效。")
                 color: Theme.yellow
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -477,17 +477,17 @@ MPageScroll {
     }
 
     MPageHeader {
-        title: "唤醒"
-        subtitle: "唤醒词、灵敏度与误唤醒自测"
+        title: I18n.t("唤醒")
+        subtitle: I18n.t("唤醒词、灵敏度与误唤醒自测")
         icon: "wake"
     }
 
     MCard {
-        title: "唤醒设置"
+        title: I18n.t("唤醒设置")
 
         MRow {
-            label: "唤醒监听"
-            subtitle: "总开关 · 写入 asr.enabled"
+            label: I18n.t("唤醒监听")
+            subtitle: I18n.t("总开关 · 写入 asr.enabled")
             RowLayout {
                 spacing: 8
                 MApplyStatus { paths: ["asr.enabled"] }
@@ -500,15 +500,15 @@ MPageScroll {
         Text {
             visible: page.masterSwitchNeedsRestart()
             Layout.fillWidth: true
-            text: "asr.enabled 需要重启 daemon 才能生效（诊断页有「重启服务」按钮）。"
+            text: I18n.t("asr.enabled 需要重启 daemon 才能生效（诊断页有「重启服务」按钮）。")
             color: Theme.orange
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
             wrapMode: Text.WordWrap
         }
         MRow {
-            label: "灵敏度"
-            subtitle: "low 更保守（少误唤醒）· high 更灵敏 · 热切换立即生效"
+            label: I18n.t("灵敏度")
+            subtitle: I18n.t("low 更保守（少误唤醒）· high 更灵敏 · 热切换立即生效")
             RowLayout {
                 spacing: 8
                 MApplyStatus { paths: ["asr.sensitivity"] }
@@ -538,7 +538,7 @@ MPageScroll {
         Text {
             visible: Ipc.configErrors.length > 0
             Layout.fillWidth: true
-            text: "daemon 拒绝：" + Ipc.configErrors.join("；")
+            text: I18n.t("daemon 拒绝：") + Ipc.configErrors.join("；")
             color: Theme.orange
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -548,12 +548,12 @@ MPageScroll {
 
     // ---------------------------------------------------------- 声纹（门控）
     MCard {
-        title: "声纹"
-        subtitle: "用你自己的声音做二次校验：别人喊「费加罗」不会唤醒（asr.speaker.*）"
+        title: I18n.t("声纹")
+        subtitle: I18n.t("用你自己的声音做二次校验：别人喊「费加罗」不会唤醒（asr.speaker.*）")
 
         MRow {
-            label: "声纹门控"
-            subtitle: "开启后唤醒前先比对声纹 · 写入 asr.speaker.enabled（需重启 daemon）"
+            label: I18n.t("声纹门控")
+            subtitle: I18n.t("开启后唤醒前先比对声纹 · 写入 asr.speaker.enabled（需重启 daemon）")
             RowLayout {
                 spacing: 8
                 MPill {
@@ -568,8 +568,8 @@ MPageScroll {
             }
         }
         MRow {
-            label: "相似度阈值"
-            subtitle: "0.35–0.90 · 越高越严格 · config 优先（需重启）"
+            label: I18n.t("相似度阈值")
+            subtitle: I18n.t("0.35–0.90 · 越高越严格 · config 优先（需重启）")
             RowLayout {
                 spacing: 8
                 Text {
@@ -592,11 +592,11 @@ MPageScroll {
             }
         }
         MRow {
-            label: "声纹记录"
-            subtitle: "安静环境下用正常音量录 3 句，约 10 秒；录完自动启用"
+            label: I18n.t("声纹记录")
+            subtitle: I18n.t("安静环境下用正常音量录 3 句，约 10 秒；录完自动启用")
             showSeparator: false
             MButton {
-                text: "重新录制声纹"
+                text: I18n.t("重新录制声纹")
                 icon: "mic"
                 onClicked: page.openEnrollDialog()
             }
@@ -621,12 +621,12 @@ MPageScroll {
     }
 
     MAdvancedCard {
-        title: "高级 · 热键与防抖"
-        subtitle: "平时不用管：两次唤醒的最小间隔、全局热键重新绑定"
+        title: I18n.t("高级 · 热键与防抖")
+        subtitle: I18n.t("平时不用管：两次唤醒的最小间隔、全局热键重新绑定")
 
         MRow {
-            label: "防抖冷却"
-            subtitle: "两次唤醒之间的最小间隔 · 写入 asr.wakeCooldownMs"
+            label: I18n.t("防抖冷却")
+            subtitle: I18n.t("两次唤醒之间的最小间隔 · 写入 asr.wakeCooldownMs")
             RowLayout {
                 spacing: 8
                 Text {
@@ -649,8 +649,8 @@ MPageScroll {
             }
         }
         MRow {
-            label: "全局热键"
-            subtitle: "保存在 asr.hotkey；daemon 重启后向系统注册"
+            label: I18n.t("全局热键")
+            subtitle: I18n.t("保存在 asr.hotkey；daemon 重启后向系统注册")
             visible: !page.editingHotkey
             RowLayout {
                 spacing: 8
@@ -664,14 +664,14 @@ MPageScroll {
                     Text {
                         id: hotkeyText
                         anchors.centerIn: parent
-                        text: page.hotkey.length > 0 ? page.hotkey : "未绑定"
+                        text: page.hotkey.length > 0 ? page.hotkey : I18n.t("未绑定")
                         color: Theme.text
                         font.family: "JetBrains Mono, Inter, " + Theme.fontCJK
                         font.pixelSize: Theme.fsSmall
                     }
                 }
                 MButton {
-                    text: "重新绑定"
+                    text: I18n.t("重新绑定")
                     onClicked: {
                         page.editingHotkey = true;
                         page.draftHotkey = page.hotkey;
@@ -692,10 +692,10 @@ MPageScroll {
                     MTextField {
                         Layout.fillWidth: true
                         text: page.draftHotkey
-                        placeholder: "例如 CTRL+ALT+F5"
+                        placeholder: I18n.t("例如 CTRL+ALT+F5")
                     }
                     MButton {
-                        text: "保存"
+                        text: I18n.t("保存")
                         primary: true
                         onClicked: {
                             Ipc.applyPatch({ asr: { hotkey: page.draftHotkey.trim() } });
@@ -703,14 +703,14 @@ MPageScroll {
                         }
                     }
                     MButton {
-                        text: "取消"
+                        text: I18n.t("取消")
                         onClicked: page.editingHotkey = false;
                     }
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: "保存后请在系统弹出的 XDG GlobalShortcuts 授权窗口里点「允许」。"
-                        + "未弹出时，重启 daemon（诊断页）会重新注册热键。"
+                    text: I18n.t("保存后请在系统弹出的 XDG GlobalShortcuts 授权窗口里点「允许」。")
+                        + I18n.t("未弹出时，重启 daemon（诊断页）会重新注册热键。")
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsTiny
@@ -726,14 +726,14 @@ MPageScroll {
 
     // -------------------------------------------------------- 唤醒词（中英）
     MCard {
-        title: "唤醒词（中英双语）"
-        subtitle: "模型 sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 · 中文拼音与英文音素同时监听"
+        title: I18n.t("唤醒词（中英双语）")
+        subtitle: I18n.t("模型 sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 · 中文拼音与英文音素同时监听")
         contentSpacing: 14
-            + " · 默认灵敏度 low 实测中文 8/8、英文 20/20"
+            + I18n.t(" · 默认灵敏度 low 实测中文 8/8、英文 20/20")
 
         Text {
             Layout.fillWidth: true
-            text: "中文唤醒词"
+            text: I18n.t("中文唤醒词")
             color: Theme.textDim
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -742,23 +742,23 @@ MPageScroll {
         MChipEditor {
             Layout.fillWidth: true
             values: page.wakeWords
-            placeholder: "例如：费加罗"
-            addLabel: "添加中文唤醒词"
-            emptyText: "（空：中文无法唤醒）"
+            placeholder: I18n.t("例如：费加罗")
+            addLabel: I18n.t("添加中文唤醒词")
+            emptyText: I18n.t("（空：中文无法唤醒）")
             onEdited: (values) => page.setWakeWords(values)
         }
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: "恢复默认"
+                text: I18n.t("恢复默认")
                 icon: "refresh"
                 onClicked: page.setWakeWords(page.chineseDefaults.slice(0))
             }
             MApplyStatus { paths: ["asr.wakeWords"] }
             Item { Layout.fillWidth: true }
             Text {
-                text: "共 " + page.wakeWords.length + " 条"
+                text: I18n.t("共 ") + page.wakeWords.length + I18n.t(" 条")
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -773,8 +773,8 @@ MPageScroll {
         }
 
         MRow {
-            label: "英文唤醒"
-            subtitle: "asr.wakeWordsEn · 模型自带 en.phone 音素，Figaro / Hey Figaro 都能唤醒"
+            label: I18n.t("英文唤醒")
+            subtitle: I18n.t("asr.wakeWordsEn · 模型自带 en.phone 音素，Figaro / Hey Figaro 都能唤醒")
             RowLayout {
                 spacing: 8
                 MApplyStatus { paths: ["asr.wakeWordsEn"] }
@@ -788,9 +788,9 @@ MPageScroll {
             Layout.fillWidth: true
             visible: page.englishEnabled
             values: page.wakeWordsEn
-            placeholder: "例如：figaro / hey figaro"
-            addLabel: "添加英文唤醒词"
-            emptyText: "（空：英文无法唤醒）"
+            placeholder: I18n.t("例如：figaro / hey figaro")
+            addLabel: I18n.t("添加英文唤醒词")
+            emptyText: I18n.t("（空：英文无法唤醒）")
             onEdited: (values) => page.setWakeWordsEn(values)
         }
         RowLayout {
@@ -798,14 +798,14 @@ MPageScroll {
             spacing: 8
             visible: page.englishEnabled
             MButton {
-                text: "恢复默认英文"
+                text: I18n.t("恢复默认英文")
                 icon: "refresh"
                 onClicked: page.setWakeWordsEn(page.englishDefaults.slice(0))
             }
             MApplyStatus { paths: ["asr.wakeWordsEn"] }
             Item { Layout.fillWidth: true }
             Text {
-                text: "共 " + page.wakeWordsEn.length + " 条"
+                text: I18n.t("共 ") + page.wakeWordsEn.length + I18n.t(" 条")
                 color: Theme.textFaint
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fsSmall
@@ -813,9 +813,9 @@ MPageScroll {
         }
         Text {
             Layout.fillWidth: true
-            text: "中文按拼音生成关键词（含「费加/菲加」两字短前缀：召回 8/8 的代价是近音句偶发命中）；"
-                + "英文按 6 个 FIGARO + 3 个 HEY_FIGARO 发音变体匹配，实测英文原生音色 12/12、中文口音英文 8/8。"
-                + "词表改动需要重启 daemon 才会重建 KWS 关键词文件。"
+            text: I18n.t("中文按拼音生成关键词（含「费加/菲加」两字短前缀：召回 8/8 的代价是近音句偶发命中）；")
+                + I18n.t("英文按 6 个 FIGARO + 3 个 HEY_FIGARO 发音变体匹配，实测英文原生音色 12/12、中文口音英文 8/8。")
+                + I18n.t("词表改动需要重启 daemon 才会重建 KWS 关键词文件。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny
@@ -825,8 +825,8 @@ MPageScroll {
 
     // ------------------------------------------------------------ 唤醒测试
     MCard {
-        title: "唤醒测试"
-        subtitle: "说 3~5 次「费加罗」，观察实时 KWS 分数、命中次数与延迟"
+        title: I18n.t("唤醒测试")
+        subtitle: I18n.t("说 3~5 次「费加罗」，观察实时 KWS 分数、命中次数与延迟")
         contentSpacing: 14
 
         Rectangle {
@@ -842,7 +842,7 @@ MPageScroll {
                 MIcon { kind: "warning"; size: 15; color: Theme.yellow }
                 Text {
                     Layout.fillWidth: true
-                    text: "当前 daemon 不支持此功能（test.wake.arm 未响应）。"
+                    text: I18n.t("当前 daemon 不支持此功能（test.wake.arm 未响应）。")
                     color: Theme.yellow
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
@@ -854,14 +854,14 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: page.testMode === "wake" ? "停止测试" : "开始 15 秒测试"
+                text: page.testMode === "wake" ? I18n.t("停止测试") : I18n.t("开始 15 秒测试")
                 icon: page.testMode === "wake" ? "stop" : "record"
                 primary: page.testMode !== "wake"
                 enabled: Ipc.connected && page.wakeSupported && (page.testMode === "" || page.testMode === "wake")
                 onClicked: page.testMode === "wake" ? page.stopWakeTest() : page.startWakeTest()
             }
             MPill {
-                text: page.testMode === "wake" ? "测试中" : (page.wakeDone ? "已结束" : "未开始")
+                text: page.testMode === "wake" ? I18n.t("测试中") : (page.wakeDone ? I18n.t("已结束") : I18n.t("未开始"))
                 tone: page.testMode === "wake" ? Theme.accent : (page.wakeDone ? Theme.green : Theme.textDim)
             }
             Text {
@@ -873,7 +873,7 @@ MPageScroll {
             }
             Item { Layout.fillWidth: true }
             Text {
-                text: "KWS 分数 " + (Ipc.wakeScore > 0 ? Ipc.wakeScore.toFixed(2) : "—")
+                text: I18n.t("KWS 分数 ") + (Ipc.wakeScore > 0 ? Ipc.wakeScore.toFixed(2) : "—")
                 color: Ipc.wakeScore > 0.8 ? Theme.red : Theme.textDim
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.fs
@@ -921,36 +921,36 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 12
             MStat {
-                label: "命中次数"
+                label: I18n.t("命中次数")
                 value: page.wakeHitsShown()
                 tone: Theme.green
             }
             MStat {
-                label: "平均命中延迟"
+                label: I18n.t("平均命中延迟")
                 value: page.averageLatency()
                 tone: Theme.accent
             }
             MStat {
-                label: "最高分"
+                label: I18n.t("最高分")
                 value: page.maxScoreShown()
                 tone: Theme.text
             }
             MStat {
-                label: "漏检"
+                label: I18n.t("漏检")
                 value: page.wakeMissesShown()
                 tone: Theme.orange
-                hint: "窗口内 0 命中视为可疑"
+                hint: I18n.t("窗口内 0 命中视为可疑")
             }
         }
 
         Text {
             Layout.fillWidth: true
             text: page.wakeDone
-                ? "上一次测试：" + (page.wakeEndInfo.hits || 0) + " 次命中 / "
-                    + (page.wakeEndInfo.falseAlarms || 0) + " 次误触发 / 最高分 "
+                ? I18n.t("上一次测试：") + (page.wakeEndInfo.hits || 0) + I18n.t(" 次命中 / ")
+                    + (page.wakeEndInfo.falseAlarms || 0) + I18n.t(" 次误触发 / 最高分 ")
                     + (page.wakeEndInfo.maxScore !== undefined ? page.wakeEndInfo.maxScore : page.maxScore())
                     + " · " + Ipc.fmtDuration(page.wakeEndInfo.ms || page.wakeEndInfo.durationMs || 0)
-                : "提示：分数条越过橙色阈值（0.80）通常意味着 KWS 认为听到了唤醒词。"
+                : I18n.t("提示：分数条越过橙色阈值（0.80）通常意味着 KWS 认为听到了唤醒词。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsSmall
@@ -960,33 +960,33 @@ MPageScroll {
 
     // ------------------------------------------------------ 环境音抑制测试
     MCard {
-        title: "环境音抑制测试"
-        subtitle: "播放音乐/背景噪音，统计误唤醒次数——任何命中都算误触发"
+        title: I18n.t("环境音抑制测试")
+        subtitle: I18n.t("播放音乐/背景噪音，统计误唤醒次数——任何命中都算误触发")
         contentSpacing: 14
 
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             MButton {
-                text: page.testMode === "ambient" ? "停止统计" : "开始统计"
+                text: page.testMode === "ambient" ? I18n.t("停止统计") : I18n.t("开始统计")
                 icon: page.testMode === "ambient" ? "stop" : "record"
                 primary: page.testMode !== "ambient"
                 enabled: Ipc.connected && page.wakeSupported && (page.testMode === "" || page.testMode === "ambient")
                 onClicked: page.testMode === "ambient" ? page.stopAmbientTest() : page.startAmbientTest()
             }
             MSegmented {
-                options: ["30 秒", "1 分钟", "2 分钟"]
+                options: [I18n.t("30 秒"), I18n.t("1 分钟"), I18n.t("2 分钟")]
                 currentIndex: page.ambientDurationIndex
                 onActivated: (index, value) => page.ambientDurationIndex = index
             }
             MButton {
-                text: page.noisePlaying ? "停止白噪音" : "播放白噪音"
+                text: page.noisePlaying ? I18n.t("停止白噪音") : I18n.t("播放白噪音")
                 icon: page.noisePlaying ? "stop" : "speaker"
                 onClicked: page.setNoisePlayback(!page.noisePlaying)
             }
             Item { Layout.fillWidth: true }
             MButton {
-                text: "导出 CSV"
+                text: I18n.t("导出 CSV")
                 icon: "export"
                 enabled: page.ambientRows.length > 0 || page.lastCsvPath.length > 0
                 onClicked: page.exportAmbientCsv()
@@ -997,32 +997,32 @@ MPageScroll {
             Layout.fillWidth: true
             spacing: 12
             MStat {
-                label: "误唤醒"
+                label: I18n.t("误唤醒")
                 value: String(page.testMode === "ambient" ? page.ambientRows.length
                     : (page.wakeEndInfo.noise ? (page.wakeEndInfo.falseAlarms || 0) : page.ambientRows.length))
                 tone: page.ambientRows.length > 0 ? Theme.red : Theme.green
-                unit: "次"
+                unit: I18n.t("次")
             }
             MStat {
-                label: "事件记录"
+                label: I18n.t("事件记录")
                 value: String(page.ambientRows.length)
                 tone: Theme.text
-                unit: "条"
+                unit: I18n.t("条")
             }
             MStat {
-                label: "误唤醒率"
+                label: I18n.t("误唤醒率")
                 value: page.ambientRate()
-                unit: "次/分"
+                unit: I18n.t("次/分")
                 tone: page.ambientRows.length > 0 ? Theme.orange : Theme.green
             }
             MStat {
-                label: "测试时长"
+                label: I18n.t("测试时长")
                 value: page.testMode === "ambient" ? page.countdown : Ipc.fmtDuration(page.ambientElapsedMs)
-                unit: page.testMode === "ambient" ? "s 剩余" : ""
+                unit: page.testMode === "ambient" ? I18n.t("s 剩余") : ""
                 tone: Theme.textDim
             }
             MStat {
-                label: "最高分"
+                label: I18n.t("最高分")
                 value: page.maxScore()
                 tone: Theme.orange
             }
@@ -1045,35 +1045,35 @@ MPageScroll {
                     height: 24
                     spacing: 0
                     Text {
-                        text: "时间"
+                        text: I18n.t("时间")
                         Layout.preferredWidth: 90
                         color: Theme.textFaint
                         font.family: Theme.fontSans
                         font.pixelSize: Theme.fsTiny
                     }
                     Text {
-                        text: "分数"
+                        text: I18n.t("分数")
                         Layout.preferredWidth: 70
                         color: Theme.textFaint
                         font.family: Theme.fontSans
                         font.pixelSize: Theme.fsTiny
                     }
                     Text {
-                        text: "KWS 命中"
+                        text: I18n.t("KWS 命中")
                         Layout.preferredWidth: 90
                         color: Theme.textFaint
                         font.family: Theme.fontSans
                         font.pixelSize: Theme.fsTiny
                     }
                     Text {
-                        text: "误触发"
+                        text: I18n.t("误触发")
                         Layout.preferredWidth: 80
                         color: Theme.textFaint
                         font.family: Theme.fontSans
                         font.pixelSize: Theme.fsTiny
                     }
                     Text {
-                        text: "延迟"
+                        text: I18n.t("延迟")
                         Layout.fillWidth: true
                         color: Theme.textFaint
                         font.family: Theme.fontSans
@@ -1118,14 +1118,14 @@ MPageScroll {
                                 font.pixelSize: Theme.fsSmall
                             }
                             Text {
-                                text: "是"
+                                text: I18n.t("是")
                                 Layout.preferredWidth: 90
                                 color: Theme.text
                                 font.family: Theme.fontSans
                                 font.pixelSize: Theme.fsSmall
                             }
                             Text {
-                                text: "是"
+                                text: I18n.t("是")
                                 Layout.preferredWidth: 80
                                 color: Theme.red
                                 font.family: Theme.fontSans
@@ -1158,8 +1158,8 @@ MPageScroll {
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignHCenter
                     text: page.testMode === "ambient"
-                        ? "监听中… 播放音乐或白噪音，命中会实时出现在这里"
-                        : "还没有数据。点「开始统计」并播放背景声音。"
+                        ? I18n.t("监听中… 播放音乐或白噪音，命中会实时出现在这里")
+                        : I18n.t("还没有数据。点「开始统计」并播放背景声音。")
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.fsSmall
@@ -1170,8 +1170,8 @@ MPageScroll {
         Text {
             Layout.fillWidth: true
             text: page.lastCsvPath.length > 0
-                ? "CSV 已导出：" + page.lastCsvPath
-                : "没有音频设备时，「播放白噪音」会自动降级——用手机或音乐软件放歌同样有效。"
+                ? I18n.t("CSV 已导出：") + page.lastCsvPath
+                : I18n.t("没有音频设备时，「播放白噪音」会自动降级——用手机或音乐软件放歌同样有效。")
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: Theme.fsTiny

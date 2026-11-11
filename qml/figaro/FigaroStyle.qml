@@ -30,6 +30,22 @@ import Quickshell.Io
 Singleton {
     id: style
 
+    // ---- compositor capabilities ------------------------------------------
+    // Quickshell is Wayland-only and shows the overlay through wlr-layer-shell:
+    // KDE (KWin), sway/Hyprland and other wlroots compositors provide it,
+    // GNOME's Mutter does not. KOS's liquid glass is a KDE-only native plugin, so
+    // every other desktop skips the probe and uses FigaroCapsule's own
+    // translucent fill (docs/platform-support.md has the full matrix).
+    readonly property string desktopName: String(Quickshell.env("XDG_CURRENT_DESKTOP") || "")
+    readonly property string sessionType: String(Quickshell.env("XDG_SESSION_TYPE") || "")
+    readonly property bool kdeDesktop: /(^|[:;])(KDE|Plasma)/i.test(desktopName)
+        || /^(1|true)$/i.test(String(Quickshell.env("KDE_FULL_SESSION") || ""))
+    readonly property bool waylandSession: sessionType === "wayland"
+        || String(Quickshell.env("WAYLAND_DISPLAY") || "").length > 0
+    // KOS (KWin compositor glass) only exists on KDE; elsewhere the Loader is not
+    // created at all, so a missing plugin does not log an error on every start.
+    readonly property bool useCompositorGlass: kdeDesktop && waylandSession
+
     // ---- palette -----------------------------------------------------------
     readonly property color listenColor: "#4a7dff"
     readonly property color thinkColor: "#8b5cf6"

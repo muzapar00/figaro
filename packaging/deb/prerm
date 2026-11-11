@@ -1,0 +1,36 @@
+#!/bin/sh
+# Figaro deb prerm.
+#
+# Removing the package cannot clean up other users' user-level units: those live
+# in ~/.config/systemd/user and were written by `figaro install-user` as that
+# user. So this script only prints the exact per-user cleanup, never fails, and
+# never deletes user data (config, keys, models, voiceprint).
+set -e
+
+case "$1" in
+  remove)
+    cat >&2 <<'EOF'
+
+==================================================================
+ 正在移除费加罗系统文件（/usr/lib/figaro、启动器、systemd 静态 units）。
+
+ 用户级组件还在 ~/.config/systemd/user 里，请以桌面用户执行：
+     systemctl --user disable --now figaro figaro-ui
+     rm -rf ~/.config/quickshell/figaro ~/.config/quickshell/figaro-settings
+     rm -f  ~/.local/share/applications/figaro-settings.desktop
+     rm -f  ~/.local/bin/figaro
+
+ 会保留（需要时自己删）：
+     ~/.config/figaro/                配置与 API key、声纹
+     ~/.local/share/figaro/models/    语音模型
+==================================================================
+
+EOF
+    ;;
+  upgrade|deconfigure|failed-upgrade)
+    ;;
+  *)
+    ;;
+esac
+
+exit 0
