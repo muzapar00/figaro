@@ -41,6 +41,7 @@ import { createMicGainController } from './mic-gain.js';
 import { createWakeScoreTracker } from './wake-score.js';
 import { createBargeInDetector, normalizeBargeInConfig } from './barge-in.js';
 import { normalizeVerifyWakeConfig, matchWakeText, POST_ROLL_MS } from './wake-verify.js';
+import { createSpeakerGate } from './speaker.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -201,6 +202,13 @@ export function createAsr(opts) {
   };
   const emitError = (err) => safe(onError, asError(err));
   const log = (msg) => safe(onLog, msg);
+  // Voiceprint gate: the wake word is only the first half; the second half is
+  // "did *you* say it". Disabled/unregistered => wake exactly as before.
+  const speakerGate = createSpeakerGate({
+    config,
+    repoRoot: REPO_ROOT,
+    logger: { info: log, warn: log },
+  });
 
   const preRollMaxSamples = Math.round((SAMPLE_RATE * PRE_ROLL_MS) / 1000);
 
@@ -687,8 +695,17 @@ export function createAsr(opts) {
         } else if (verifyWake.enabled) {
           startWakeVerify(hit);
         } else {
-          lastWakeAt = now;
-          handleWake(`kws:${hit.keyword}${hit.lang === 'en' ? '(en)' : ''}`);
+          const verdict = speakerGate.verify(preRollPcm());
+          if (!verdict.ok) {
+            lastWakeAt = now; // keep the cooldown: do not re-check the same music burst
+            log(`声纹不符（score=${verdict.score}，阈值 ${verdict.threshold ?? speakerGate.threshold}，原因 ${verdict.reason ?? 'mismatch'}），忽略唤醒 ${hit.keyword}`);
+          } else {
+            lastWakeAt = now;
+            if (!verdict.skipped) {
+              log(`声纹通过（score=${verdict.score}），唤醒 ${hit.keyword}`);
+            }
+            handleWake(`kws:${hit.keyword}${hit.lang === 'en' ? '(en)' : ''}`);
+          }
         }
       }
     } else if (state === 'capturing' && capture) {
@@ -1302,6 +1319,7 @@ export function createAsr(opts) {
           lastVerify: verifyStats.lastVerify,
         },
         verifyPending: Boolean(verifyPending),
+        speaker: speakerGate.status(),
         bargeIn: bargeDetector.config,
         bargeInStats: {
           active: bargeDetector.active,

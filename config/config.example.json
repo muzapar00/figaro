@@ -13,7 +13,24 @@
   },
   "asr": {
     "hotkey": "F5",
-    "wakeWords": ["费加罗", "菲加罗", "飞加罗", "figaro"]
+    "wakeWords": [
+      "费加罗",
+      "菲加罗",
+      "飞加罗",
+      "figaro"
+    ],
+    "silenceStopMs": 3000,
+    "maxCaptureMs": 30000,
+    "wakeGiveUpMs": 7000,
+    "speaker": {
+      "enabled": false,
+      "model": "models/speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx",
+      "profile": "",
+      "threshold": 0.65,
+      "minRms": 0.008
+    }
   },
-  "tts": { "enabled": true }
+  "tts": {
+    "enabled": true
+  }
 }

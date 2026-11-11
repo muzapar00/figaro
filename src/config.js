@@ -44,8 +44,11 @@ export const DEFAULTS = {
     offlineModelDir: 'models/asr-offline',
     device: 'default',
     // push-to-talk / capture behaviour
-    silenceStopMs: 900,
-    maxCaptureMs: 15000,
+    // The user kept getting cut off mid-sentence; only give up thinking after a
+    // real pause. 3000 ms is deliberate: short pauses in Chinese speech are
+    // 300-800 ms, so 900 ms finalized sentences too early.
+    silenceStopMs: 3000,
+    maxCaptureMs: 30000,
     minCaptureMs: 350,
     // Push-to-talk key (XDG GlobalShortcuts portal); empty => disabled.
     // Not F5: that is refresh in every browser and IDE, and a global grab on it
@@ -63,7 +66,7 @@ export const DEFAULTS = {
     // null = let the module calibrate the ALSA capture gain; a number pins it.
     inputGainPercent: null,
     // Waking and then saying nothing for this long exits quietly.
-    wakeGiveUpMs: 5000,
+    wakeGiveUpMs: 7000,
     // Barge-in (talking over the assistant) needs a deliberate voice, not any
     // noise: the level has to be clearly above what the microphone hears from
     // Figaro's own speaker output, and it has to last.
@@ -77,6 +80,21 @@ export const DEFAULTS = {
       minMs: 500,
     },
     longPressMs: 260,
+    // Voiceprint gate: after the keyword matches, verify that the enrolled
+    // speaker said it. `figaro enroll-voice` writes ~/.config/figaro/speaker-profile.json.
+    // Disabled or not enrolled => the assistant wakes exactly as before.
+    speaker: {
+      enabled: false,
+      // CAM++ speaker-embedding model (sherpa-onnx, Apache-2.0), fetched by scripts/fetch-models.sh
+      model: 'models/speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx',
+      // empty => ~/.config/figaro/speaker-profile.json
+      profile: '',
+      // cosine similarity threshold; measured self-similarity is ~0.85-0.95 and
+      // different speakers land at ~0.2-0.45, so 0.65 leaves room for both.
+      threshold: 0.65,
+      // ignore wake audio quieter than this (normalized RMS)
+      minRms: 0.008,
+    },
   },
   tts: {
     enabled: true,

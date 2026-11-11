@@ -27,6 +27,8 @@ const USAGE = `用法:
   figaro talk                            唤醒一次（等同喊「费加罗」，可绑到桌面快捷键）
   figaro status [--json]                 查看状态与健康
   figaro doctor [--json] [--fix] [--net] 一键体检（服务/模型/麦克风/音频出口/热键/桌面/资源）
+  figaro enroll-voice [--samples 3] [--seconds 3] [--device 源] [--threshold 0.65]
+                                         录你的声纹，之后只认你的声音唤醒
   figaro help                            显示帮助
 
 ask 默认不朗读；--speak 让守护进程同时朗读。
@@ -314,6 +316,134 @@ async function commandSay(flags, positional) {
   process.exit(0);
 }
 
+
+async function recordMic({ seconds, device }) {
+  return new Promise((resolve, reject) => {
+    const args = ['--rate=16000', '--channels=1', '--format=s16le', '--raw', '--latency-msec=50'];
+    if (device) args.push(`--device=${device}`);
+    let child;
+    try {
+      child = spawn('parec', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const chunks = [];
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      if (err) { reject(err); return; }
+      const buf = Buffer.concat(chunks);
+      const pcm = new Float32Array(Math.floor(buf.length / 2));
+      for (let i = 0; i < pcm.length; i += 1) pcm[i] = buf.readInt16LE(i * 2) / 32768;
+      resolve(pcm);
+    };
+    child.on('error', (err) => finish(err));
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    const timer = setTimeout(() => { try { child.kill('SIGTERM'); } catch { /* ignore */ } }, seconds * 1000);
+    child.on('close', () => { clearTimeout(timer); finish(null); });
+  });
+}
+
+async function commandEnrollVoice(flags) {
+  const { loadConfig: loadCfg, CONFIG_PATH } = await import('../src/config.js');
+  const {
+    createEmbedder, saveProfile, cosineSimilarity, defaultProfilePath, resolveSpeakerModelPath, DEFAULT_SPEAKER_THRESHOLD,
+  } = await import('../src/voice/asr/speaker.js');
+  const config = loadCfg();
+  const repoRoot = config.paths?.root ?? process.cwd();
+  const sampleCount = Math.max(1, Math.round(Number(flags.get('samples') ?? 3)));
+  const seconds = Math.max(1.5, Number(flags.get('seconds') ?? 3));
+  const threshold = Number.isFinite(Number(flags.get('threshold'))) ? Number(flags.get('threshold')) : (config.asr.speaker.threshold ?? DEFAULT_SPEAKER_THRESHOLD);
+  const model = resolveSpeakerModelPath(flags.get('model') ?? config.asr.speaker.model, repoRoot);
+  const profilePath = flags.get('profile') ? path.resolve(String(flags.get('profile'))) : defaultProfilePath();
+  const device = flags.get('device') ?? (config.asr.device && config.asr.device !== 'default' ? config.asr.device : undefined);
+  const embedder = createEmbedder({ model, repoRoot, logger: { info: (m) => console.log(`  ${m}`), warn: (m) => console.warn(`  ${m}`) } });
+  console.log('费加罗 · 声纹录制');
+  console.log(`  模型: ${model}`);
+  console.log(`  档案: ${profilePath}`);
+  console.log(`  麦克风: ${device ?? '(系统默认)'}`);
+  console.log('  请在安静环境里，用平常的音量和语速说话；每句录 ' + seconds + ' 秒。');
+  if (!embedder.preload()) {
+    console.error('\n✗ 声纹模型加载失败。先下载模型：bash scripts/fetch-models.sh');
+    process.exit(1);
+  }
+  const prompts = [
+    '费加罗，帮我打开演示文件夹',
+    '今天天气怎么样，帮我看一下',
+    '把音量调小一点，然后告诉我现在几点',
+    '帮我找一下上次那个文档',
+    '随便聊两句，说一句完整的话就好',
+  ];
+  const vectors = [];
+  let index = 0;
+  while (vectors.length < sampleCount) {
+    const prompt = prompts[index % prompts.length];
+    index += 1;
+    console.log(`\n第 ${vectors.length + 1}/${sampleCount} 条 —— 请说：「${prompt}」`);
+    for (let n = 3; n > 0; n -= 1) {
+      process.stdout.write(`  ${n}...`);
+      await SLEEP(700);
+    }
+    console.log('\n  录音中…');
+    let pcm;
+    try {
+      pcm = await recordMic({ seconds, device });
+    } catch (err) {
+      console.error(`  录音失败：${err?.message || err}（确保 parec 可用、麦克风没被占用）`);
+      process.exit(1);
+    }
+    let sum = 0;
+    for (let i = 0; i < pcm.length; i += 1) sum += pcm[i] * pcm[i];
+    const level = Math.sqrt(sum / Math.max(1, pcm.length));
+    if (level < 0.005) {
+      console.log(`  声音太小（rms=${level.toFixed(4)}），这条重录`);
+      continue;
+    }
+    const vector = embedder.embed(pcm);
+    if (!vector) {
+      console.log('  没能提取声纹，这条重录（说话时间再长一点）');
+      continue;
+    }
+    if (vectors.length > 0) {
+      const sim = cosineSimilarity(vector, vectors[vectors.length - 1]);
+      console.log(`  已录入（rms=${level.toFixed(3)}，与上一句相似度 ${sim.toFixed(2)}）`);
+      if (sim < 0.35) console.log('  提示：这条和上一条差得有点多，可能环境噪声大或换了距离，建议后面多录一条');
+    } else {
+      console.log(`  已录入（rms=${level.toFixed(3)}）`);
+    }
+    vectors.push(vector);
+  }
+  const sims = [];
+  for (let i = 0; i < vectors.length; i += 1) {
+    for (let j = i + 1; j < vectors.length; j += 1) sims.push(cosineSimilarity(vectors[i], vectors[j]));
+  }
+  const avg = sims.length ? sims.reduce((a, b) => a + b, 0) / sims.length : 1;
+  const min = sims.length ? Math.min(...sims) : 1;
+  console.log(`\n样本一致性：平均 ${avg.toFixed(2)}，最低 ${min.toFixed(2)}（真人同一人一般 > 0.7）`);
+  if (sims.length && min < 0.4) {
+    console.warn('✗ 样本之间差异太大，声纹会不稳。建议在安静环境、同一距离重新录一次。');
+    process.exit(1);
+  }
+  const saved = saveProfile(profilePath, {
+    speaker: 'owner',
+    model: path.basename(model),
+    dim: vectors[0].length,
+    threshold,
+    embeddings: vectors,
+  });
+  // 顺手把 asr.speaker.enabled 打开，用户不用再改 JSON
+  let raw = {};
+  try { raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch { raw = {}; }
+  raw.asr = raw.asr ?? {};
+  raw.asr.speaker = { ...(raw.asr.speaker ?? {}), enabled: true, threshold };
+  fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  console.log(`\n✓ 声纹已保存（${saved.embeddings.length} 个样本，阈值 ${threshold}）并已启用`);
+  console.log('  重启守护进程后生效：systemctl --user restart figaro');
+  console.log('  以后只有你的声音说「费加罗」才会唤醒；唱歌/电视里的同音词会被声纹挡掉。');
+}
+
 async function commandStatus(flags) {
   const config = loadConfig();
   let client;
@@ -374,6 +504,15 @@ async function commandStatus(flags) {
     if (model?.model) {
       const langs = model.hasEnglish ? '中英双语' : '中文';
       console.log(`  唤醒模型: ${langs}（${model.model}，${(model.wakeWordsEn ?? []).join('/') || '—'}）`);
+    }
+    const speaker = asr.speaker;
+    if (speaker) {
+      let speakerLine;
+      if (!speaker.enabled) speakerLine = '关闭（config.asr.speaker.enabled=false）';
+      else if (!speaker.enrolled) speakerLine = '未注册（运行 figaro enroll-voice 录声纹）';
+      else if (speaker.state === 'ready') speakerLine = `就绪（阈值 ${speaker.threshold}，已过滤 ${speaker.rejected ?? 0} 次非本人唤醒）`;
+      else speakerLine = `不可用（${speaker.reason ?? speaker.state}）`;
+      console.log(`  声纹: ${speakerLine}`);
     }
     const barge = model?.bargeIn;
     if (barge) console.log(`  插话打断: ${barge.enabled ? `开（响度 ≥ ${barge.minRms}，持续 ${barge.minMs}ms）` : '关'}`);
@@ -450,6 +589,10 @@ async function main() {
     case 'status':
       await commandStatus(flags);
       break;
+    case 'enroll-voice': {
+      await commandEnrollVoice(flags);
+      break;
+    }
     case 'doctor': {
       const { runDoctor } = await import('../src/doctor.js');
       const code = await runDoctor({

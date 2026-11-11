@@ -164,6 +164,8 @@ Everything lives in `~/.config/figaro/config.json`, and most of it can also be c
 |---|---|---|
 | `asr.sensitivity` | `low` | three wake-word sensitivity levels (measured numbers in the settings app) |
 | `asr.hotkey` | `F9` | hold to talk / tap to cancel |
+| `asr.silenceStopMs` | `3000` | how much silence ends a sentence (900 ms cut people off mid-sentence) |
+| `asr.speaker` | `{enabled:false, threshold:0.65}` | voiceprint: after `figaro enroll-voice`, only your voice can wake it |
 | `asr.bargeIn` | `{enabled:true, minRms:0.09, echoFactor:2.5, minMs:500}` | how loud a voice must be to interrupt |
 | `asr.verifyWake` | `{enabled:false, timeoutMs:1800}` | two-stage wake verification (0/40 false wakes, +600 ms per wake) |
 | `asr.modelDir` | `null` | custom wake/ASR model directory; bundled models by default |
@@ -188,6 +190,7 @@ floor, audio sink and mute state, hotkey binding, the KWin glass plugin, VRAM/CP
 |---|---|
 | No sound | `tts.sink` points at a muted or unconnected sink; `figaro doctor` names it, or pick the output device in settings. The daemon and the earcons share one sink |
 | Wake word does nothing | try `medium/high` sensitivity; check `asr.inputGainPercent` against the live level in `figaro doctor`; make sure the KWS model is downloaded |
+| Music / TV wakes it up | record your voiceprint once with `figaro enroll-voice`; after that the wake audio is matched against your voice (config `asr.speaker`) |
 | False wakes from TV or music | enable `asr.verifyWake.enabled` (near-homophone false wakes 2/40 → 0/40, at +600 ms per wake) |
 | F9 does not work | the portal is still starting, or the session predates the login. The daemon retries for ~50 s and then re-checks every minute, so give it a moment or restart `figaro`. If it never binds, the portal cannot resolve the app id: KDE System Settings → Shortcuts → add the command `figaro talk`, bind F9 |
 | Nothing happens after logging out and back in | expected for a couple of seconds: the units follow `graphical-session.target`, so the daemon stops on logout and comes back once PipeWire and the portal are ready (≈3–10 s). `systemctl --user status figaro figaro-ui`, then `systemctl --user restart figaro figaro-ui` if it is still down |

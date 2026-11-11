@@ -4,7 +4,7 @@
 #   ./scripts/fetch-models.sh              # download what is missing (auto mirror)
 #   ./scripts/fetch-models.sh --check      # verify installed models, no network
 #   ./scripts/fetch-models.sh --force      # re-download everything
-#   ./scripts/fetch-models.sh --only=kws   # one artifact: kws | asr | sensevoice | vad
+#   ./scripts/fetch-models.sh --only=kws   # one artifact: kws | asr | sensevoice | vad | speaker
 #   FIGARO_MIRROR=modelscope|github|hf|auto ./scripts/fetch-models.sh
 #
 # Models land in <repo>/models (git-ignored) exactly where config.asr points:
@@ -12,6 +12,7 @@
 #   models/asr-stream   sherpa-onnx streaming zipformer zh 14M     (live partials)
 #   models/asr-offline  sherpa-onnx paraformer zh                  (final transcript)
 #   models/vad          silero_vad.onnx                            (speech/silence)
+#   models/speaker      3dspeaker CAM++ speaker embedding             (voiceprint: 只认你的声音)
 #
 # Mirrors: ModelScope is tried first by default (domestic), then GitHub releases,
 # then HuggingFace. Downloads are resumable (curl -C -) and idempotent; a partial
@@ -100,6 +101,9 @@ artifact_complete() {
     vad)
       file_ok "${MODELS_DIR}/vad/silero_vad.onnx" 100000 || return 1
       return 0 ;;
+    speaker)
+      file_ok "${MODELS_DIR}/speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx" 25000000 || return 1
+      return 0 ;;
   esac
   return 1
 }
@@ -112,6 +116,7 @@ artifact_report() {
     asr-offline) dir="${MODELS_DIR}/asr-offline" ;;
     asr-sensevoice) dir="${MODELS_DIR}/asr-offline-sensevoice" ;;
     vad) dir="${MODELS_DIR}/vad" ;;
+    speaker) dir="${MODELS_DIR}/speaker" ;;
   esac
   if artifact_complete "$name"; then
     for f in "$dir"/*; do [[ -f "$f" && "$(basename "$f")" != .figaro-model ]] && total=$((total + $(size_of "$f"))); done
@@ -365,6 +370,20 @@ fetch_vad() {
   log "vad 安装完成"
 }
 
+fetch_speaker() {
+  local dir="${MODELS_DIR}/speaker"
+  local name='3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx'
+  mkdir -p "${dir}"
+  if artifact_complete speaker && [[ ${FORCE} -eq 0 ]]; then log "speaker 已就绪，跳过"; return 0; fi
+  download "${dir}/${name}.part" 25000000 \
+    "$(gh_release "speaker-recongition-models/${name}")" \
+    || die "无法下载 ${name}（声纹模型）"
+  mv -f "${dir}/${name}.part" "${dir}/${name}"
+  artifact_complete speaker || die "${name} 不完整"
+  write_stamp speaker github '3dspeaker-campplus-sv-zh-cn-16k'
+  log "speaker 安装完成（声纹）"
+}
+
 # --- main --------------------------------------------------------------------
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   log "模型目录: ${MODELS_DIR}（mirror=${MIRROR}）"
@@ -383,8 +402,9 @@ case "${ONLY}" in
   asr) fetch_asr_stream; fetch_asr_offline ;;
   sensevoice) fetch_asr_sensevoice ;;
   vad) fetch_vad ;;
-  "") fetch_kws; fetch_asr_stream; fetch_asr_offline; fetch_vad ;;
-  *) die "--only 只支持 kws|asr|sensevoice|vad" ;;
+  speaker) fetch_speaker ;;
+  "") fetch_kws; fetch_asr_stream; fetch_asr_offline; fetch_vad; fetch_speaker ;;
+  *) die "--only 只支持 kws|asr|sensevoice|vad|speaker" ;;
 esac
 
 artifact_report kws || true

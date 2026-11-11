@@ -101,7 +101,8 @@ idle ──wake──► waking(ack) ──► listening ──speechEnd──�
 {
   "asr": {
     "longPressMs": 260,        // 长按阈值：达到=唤醒，未达=短按取消
-    "wakeGiveUpMs": 5000,      // 唤醒后多久没说话就退出
+    "silenceStopMs": 3000,     // 多久静音算一句结束（900ms 会打断说话人）
+    "wakeGiveUpMs": 7000,      // 唤醒后多久没说话就退出
     "wakeCooldownMs": 2500     // 两次唤醒最小间隔
   },
   "interaction": {
@@ -110,6 +111,28 @@ idle ──wake──► waking(ack) ──► listening ──speechEnd──�
   }
 }
 ```
+
+
+## 声纹：只认你的声音（可选）
+
+唤醒词是"声音的模式"，所以音乐里出现近似发音也可能触发。声纹校验解决"是谁说的"：
+
+```bash
+figaro enroll-voice            # 录 3 句（每句 3 秒），写入 ~/.config/figaro/speaker-profile.json
+systemctl --user restart figaro
+figaro status                  # 看「声纹: 就绪（阈值 0.65，已过滤 N 次非本人唤醒）」
+```
+
+- 实现：sherpa-onnx 的 CAM++ 说话人嵌入模型（`models/speaker/…onnx`，
+  `scripts/fetch-models.sh --only=speaker` 下载），本地计算余弦相似度，不联网。
+- 校验时机：KWS 命中后，用**包含唤醒词的 pre-roll（~1.5s）**做声纹比对；不通过就
+  当作没听见——**不播应答、不开麦、不进 thinking**，零打扰。
+- 热键 F9 不受声纹限制（按键本身就是你）。
+- 降级：`asr.speaker.enabled=false`、没录过声纹、模型缺失时，全部退回"只认唤醒词"，
+  不会因为声纹把助手变成聋子。
+- 调参：`asr.speaker.threshold`（默认 0.65；同一人自相似度实测约 0.85–0.95，
+  不同人约 0.2–0.45）。如果自己的声音被误拒，先降到 0.55 再试；误唤醒仍多就升到 0.72。
+- 隐私：声纹档案在 `~/.config/figaro/`（0600），不进仓库、不进日志、不上传。
 
 ## 验收清单（每条都要有测试）
 
@@ -121,3 +144,4 @@ idle ──wake──► waking(ack) ──► listening ──speechEnd──�
 6. speaking 期间检测到用户开口 → barge-in（停 TTS → ack → listening）。
 7. 任意取消/异常路径后：`state=idle`、`muted=false`、唤醒监听仍在（用 `diagnostics` 断言）。
 8. `followUpWindowMs>0` 时：回复后直接说话可进 listening；超时回 idle。
+9. 声纹：本人唤醒通过；他人/音乐唤醒被拒且不播应答；模型缺失/未注册时退回纯唤醒词。

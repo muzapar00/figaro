@@ -722,6 +722,9 @@ export function createSettingsService(options = {}) {
         hotkey: config.asr?.hotkey ?? '',
         hotkeyState: typeof asr?.hotkeyState === 'object' && asr.hotkeyState !== null ? asr.hotkeyState : null,
         muted: typeof asr?.muted === 'boolean' ? asr.muted : null,
+        // Voiceprint gate state (disabled / not-enrolled / ready / model-missing)
+        // and how many non-owner wakes it already filtered.
+        speaker: asrInfo?.speaker ?? null,
         modelInfo: asrInfo,
         lastFinalMs: finiteNumber(asr?.lastFinalMs, null),
       },
