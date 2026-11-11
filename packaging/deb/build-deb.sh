@@ -105,7 +105,7 @@ else
   mkdir -p "$work"
   install -m644 "$repo/package.json" "$work/package.json"
   install -m644 "$repo/package-lock.json" "$work/package-lock.json"
-  ( cd "$work" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund ) || die "npm ci 失败"
+  ( cd "$work" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-remote=all ) || die "npm ci 失败"
   mkdir -p "$root$libdir/node_modules"
   ( cd "$work" && tar -cf - node_modules ) | ( cd "$root$libdir" && tar -xf - )
 fi

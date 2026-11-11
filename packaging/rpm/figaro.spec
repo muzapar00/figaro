@@ -72,7 +72,7 @@ bundled; /usr/lib/figaro/scripts/fetch-models.sh downloads them at run time.
 %setup -q
 
 %build
-npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+npm ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-remote=all
 
 %install
 rm -rf %{buildroot}

@@ -41,7 +41,7 @@ sha256sums=('SKIP')
 
 build() {
   cd "${srcdir}/${pkgname}"
-  npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+  npm ci --omit=dev --ignore-scripts --no-audit --no-fund --allow-remote=all
 }
 
 check() {

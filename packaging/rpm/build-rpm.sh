@@ -25,16 +25,20 @@ EOF
   exit 2
 fi
 
+# CI containers may own the checkout as a different user; git otherwise refuses
+# with "detected dubious ownership" (exit 128).
+repo_safe() { git -c safe.directory="$repo" -C "$repo" "$@"; }
+
 topdir="$here/out"
 mkdir -p "$topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 tarball="$topdir/SOURCES/figaro-$version.tar.gz"
 tag="v$version"
-if git -C "$repo" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+if repo_safe rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
   echo "[build-rpm] 用 tag $tag 生成源码包" >&2
-  git -C "$repo" archive --format=tar.gz --prefix="figaro-$version/" -o "$tarball" "$tag"
+  repo_safe archive --format=tar.gz --prefix="figaro-$version/" -o "$tarball" "$tag"
 else
   echo "[build-rpm] 警告：没有 tag $tag，用工作树 HEAD 生成源码包（仅本地验证）" >&2
-  git -C "$repo" archive --format=tar.gz --prefix="figaro-$version/" -o "$tarball" HEAD
+  repo_safe archive --format=tar.gz --prefix="figaro-$version/" -o "$tarball" HEAD
 fi
 cp -f "$here/figaro.spec" "$topdir/SPECS/figaro.spec"
 

@@ -24,6 +24,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # npm >= 12 disables fetching lockfile entries whose resolved URL is a remote
+  # tarball (EALLOWREMOTE); the lock came from a China mirror. Pin the policy.
+  NPM_CONFIG_ALLOW_REMOTE: all
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
